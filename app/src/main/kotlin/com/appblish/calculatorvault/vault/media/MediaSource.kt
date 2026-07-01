@@ -148,6 +148,27 @@ class MediaSource(
         }
     }
 
+    /**
+     * Delete the public source contacts behind [vcardUris] (the vCard content Uris the
+     * picker handed out). Unlike MediaStore items, contacts have no system delete-consent
+     * dialog, so this deletes directly via [ContactsContract] and needs `WRITE_CONTACTS`.
+     * Each vCard Uri's last path segment is the contact lookup key, which resolves to the
+     * aggregate contact's lookup Uri; deleting that removes all its raw contacts. Returns
+     * the number of contacts removed; a missing permission surfaces as 0 (nothing deleted).
+     */
+    fun deleteContacts(vcardUris: List<String>): Int =
+        try {
+            var deleted = 0
+            for (raw in vcardUris) {
+                val lookupKey = runCatching { Uri.parse(raw).lastPathSegment }.getOrNull() ?: continue
+                val lookupUri = Uri.withAppendedPath(ContactsContract.Contacts.CONTENT_LOOKUP_URI, lookupKey)
+                deleted += runCatching { resolver.delete(lookupUri, null, null) }.getOrDefault(0)
+            }
+            deleted
+        } catch (e: SecurityException) {
+            0
+        }
+
     // --- Contacts (exported as vCard) ---
 
     private fun contactAlbums(): List<SourceAlbum> {

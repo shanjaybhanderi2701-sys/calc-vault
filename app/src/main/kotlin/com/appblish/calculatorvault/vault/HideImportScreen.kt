@@ -25,6 +25,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -36,6 +37,7 @@ import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.components.RowTrailing
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.ui.VaultTopBar
 import com.appblish.calculatorvault.vault.ui.color
@@ -125,6 +127,7 @@ fun HideImportScreen(
                         )
                     }
                 }
+                val sourcesById = remember(state.sources) { state.sources.associateBy { it.id } }
                 DateGroupedMediaGrid(
                     items = state.sources.map { MediaItem(id = it.id, dateLabel = it.dateLabel, sortKey = it.sortKey) },
                     selectionMode = true,
@@ -133,6 +136,9 @@ fun HideImportScreen(
                     onItemClick = { viewModel.toggle(it.id) },
                     onItemLongPress = { viewModel.toggle(it.id) },
                     modifier = Modifier.weight(1f),
+                    loadThumbnail = { media ->
+                        sourcesById[media.id]?.let { VaultThumbnails.forSource(context, it) }
+                    },
                 )
                 PillButton(
                     text = if (state.selectedIds.isEmpty()) "Hide Now" else "Hide Now (${state.selectedIds.size})",
@@ -169,7 +175,9 @@ private fun EmptyPickerState(
 /** Runtime permissions needed to enumerate [category]'s public-storage originals. */
 private fun requiredPermissions(category: VaultCategory): Array<String> =
     when (category) {
-        VaultCategory.CONTACTS -> arrayOf(Manifest.permission.READ_CONTACTS)
+        // WRITE_CONTACTS lets the hide flow delete the source contact after export.
+        VaultCategory.CONTACTS ->
+            arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
         VaultCategory.PHOTOS ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 arrayOf(Manifest.permission.READ_MEDIA_IMAGES)

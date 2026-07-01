@@ -118,12 +118,20 @@ class HideImportViewModel(
         viewModelScope.launch {
             repository.hide(chosen.map { src -> src.toVaultItem(category) })
             val deletable = chosen.mapNotNull { it.contentUri.takeIf { uri -> uri.isNotBlank() } }
-            _state.update {
-                if (deletable.isEmpty()) {
-                    it.copy(hiding = false, done = true, selectedIds = emptySet())
-                } else {
-                    it.copy(hiding = false, selectedIds = emptySet(), pendingDeleteUris = deletable)
+            when {
+                deletable.isEmpty() ->
+                    _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }
+                // Contacts have no MediaStore delete-consent dialog: delete the source rows
+                // directly via ContactsContract (WRITE_CONTACTS was granted with the flow).
+                category == VaultCategory.CONTACTS -> {
+                    withContext(Dispatchers.IO) { mediaSource?.deleteContacts(deletable) }
+                    _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }
                 }
+                // Media: hand the originals to the screen's MediaStore delete-request.
+                else ->
+                    _state.update {
+                        it.copy(hiding = false, selectedIds = emptySet(), pendingDeleteUris = deletable)
+                    }
             }
         }
     }

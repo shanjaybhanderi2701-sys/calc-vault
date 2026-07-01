@@ -1,7 +1,10 @@
 package com.appblish.calculatorvault.vault
 
+import android.content.Context
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -76,6 +79,18 @@ class CategoryViewModel(
 
     fun clearSelection() {
         selection.value = SelectionState()
+    }
+
+    /**
+     * Decode a grid thumbnail for [itemId] from its decrypted blob (image bitmap / video
+     * frame; null for non-visual categories). Runs off the caller's composition on IO.
+     */
+    suspend fun thumbnail(
+        context: Context,
+        itemId: String,
+    ): ImageBitmap? {
+        val item = state.value.items.firstOrNull { it.id == itemId } ?: return null
+        return VaultThumbnails.forItem(context, item) { repository.openDecrypted(itemId) }
     }
 
     fun recycleSelected() = mutateSelection { repository.moveToRecycleBin(it) }

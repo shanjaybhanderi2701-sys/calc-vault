@@ -27,6 +27,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
@@ -58,6 +59,7 @@ fun CategoryScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = VaultTheme.colors
+    val context = LocalContext.current
     var fabExpanded by remember { mutableStateOf(false) }
     var showCreateFolder by remember { mutableStateOf(false) }
 
@@ -100,6 +102,7 @@ fun CategoryScreen(
                             checkIcon = Icons.Filled.Check,
                             onItemClick = { media -> onItemClicked(state, viewModel, media.id, onOpenItem) },
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
+                            loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
                         )
                     else ->
                         CategoryList(

@@ -4,8 +4,10 @@
     <!--
       Media/contacts read access for the hide/import pipeline. On API 33+ the granular
       READ_MEDIA_* permissions apply; on API 32 and below READ_EXTERNAL_STORAGE covers
-      photos/videos/audio/files. Public originals are removed via MediaStore delete
-      requests (user-consented on API 30+), so no broad write permission is needed.
+      photos/videos/audio/files. Media originals are removed via MediaStore delete
+      requests (user-consented on API 30+). Contacts are not MediaStore items and have
+      no system delete-consent dialog, so hiding a contact deletes its source row via
+      ContactsContract, which requires WRITE_CONTACTS (the runtime grant is the consent).
     -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
@@ -14,6 +16,7 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <application
         android:name=".CalculatorVaultApp"

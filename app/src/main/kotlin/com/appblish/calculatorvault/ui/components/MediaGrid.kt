@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.ui.components
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Box
@@ -17,10 +18,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 
@@ -51,7 +56,11 @@ fun groupMediaByDate(items: List<MediaItem>): List<MediaGroup> =
 /**
  * The date-grouped media grid from the deck: square thumbnails under sticky-style
  * date headers, with a selection-check overlay in multi-select ("pinch") mode.
- * Thumbnails render as neutral placeholders until the encrypted media store lands.
+ *
+ * When [loadThumbnail] is supplied, each tile lazily decodes a real preview for its item
+ * (a decrypted image/video frame for hidden items, or a MediaStore thumbnail for picker
+ * sources); tiles show the neutral placeholder while the load is in flight or returns
+ * null. With no [loadThumbnail] (Compose previews / tests) every tile is a placeholder.
  */
 @Composable
 fun DateGroupedMediaGrid(
@@ -63,6 +72,7 @@ fun DateGroupedMediaGrid(
     onItemLongPress: (MediaItem) -> Unit,
     modifier: Modifier = Modifier,
     columns: Int = 3,
+    loadThumbnail: (suspend (MediaItem) -> ImageBitmap?)? = null,
 ) {
     val spacing = VaultTheme.spacing
     val groups = groupMediaByDate(items)
@@ -87,6 +97,7 @@ fun DateGroupedMediaGrid(
                     checkIcon = checkIcon,
                     onClick = { onItemClick(item) },
                     onLongPress = { onItemLongPress(item) },
+                    loadThumbnail = loadThumbnail,
                 )
             }
         }
@@ -102,8 +113,12 @@ private fun MediaThumbnail(
     checkIcon: ImageVector,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
+    loadThumbnail: (suspend (MediaItem) -> ImageBitmap?)? = null,
 ) {
     val colors = VaultTheme.colors
+    val thumbnail: ImageBitmap? by produceState<ImageBitmap?>(initialValue = null, item.id) {
+        value = loadThumbnail?.invoke(item)
+    }
     Box(
         modifier =
             Modifier
@@ -113,6 +128,14 @@ private fun MediaThumbnail(
                 .background(colors.surfaceVariant)
                 .combinedClickable(onClick = onClick, onLongClick = onLongPress),
     ) {
+        thumbnail?.let { bmp ->
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
         if (selectionMode) {
             Box(
                 contentAlignment = Alignment.Center,
