@@ -1,4 +1,6 @@
 <resources>
     <!-- Launcher icon background. Neutral so the disguise looks like a stock calculator. -->
     <color name="ic_launcher_background">#3B6EA5</color>
+    <!-- Alternate ("Calc") disguise tile — a graphite background so it reads as a different, plainer app. -->
+    <color name="ic_launcher_alt_background">#2A2F37</color>
 </resources>

@@ -10,6 +10,11 @@ import com.appblish.calculatorvault.calculator.CalculatorScreen
 import com.appblish.calculatorvault.fakepassword.FakePasswordScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.recovery.ForgotPasswordRoute
+import com.appblish.calculatorvault.settings.BackupScreen
+import com.appblish.calculatorvault.settings.ChangePinScreen
+import com.appblish.calculatorvault.settings.PermissionManagementScreen
+import com.appblish.calculatorvault.settings.SettingsScreen
+import com.appblish.calculatorvault.settings.ThemeScreen
 import com.appblish.calculatorvault.vault.UnlockedVaultScreen
 
 /**
@@ -74,12 +79,50 @@ fun VaultNavHost() {
             UnlockedVaultScreen(
                 kind = kind,
                 onManageFakePasswords = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
+                onOpenSettings =
+                    if (kind is com.appblish.calculatorvault.auth.VaultKind.Real) {
+                        { navController.navigate(VaultDestinations.SETTINGS) }
+                    } else {
+                        null
+                    },
                 onLock = { navController.popBackStack(VaultDestinations.CALCULATOR, inclusive = false) },
             )
         }
 
         composable(VaultDestinations.FAKE_PASSWORD) {
             FakePasswordScreen(onBack = { navController.popBackStack() })
+        }
+
+        // Settings surface (real vault only). The gear opens the root; each row navigates
+        // to a dedicated sub-screen. Phase 5.
+        composable(VaultDestinations.SETTINGS) {
+            SettingsScreen(
+                onBack = { navController.popBackStack() },
+                onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
+                onManageFakePasswords = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
+                onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
+                onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
+                onBackup = { navController.navigate(VaultDestinations.SETTINGS_BACKUP) },
+            )
+        }
+
+        composable(VaultDestinations.SETTINGS_CHANGE_PIN) {
+            ChangePinScreen(
+                onDone = { navController.popBackStack() },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        composable(VaultDestinations.SETTINGS_THEME) {
+            ThemeScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.SETTINGS_PERMISSIONS) {
+            PermissionManagementScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.SETTINGS_BACKUP) {
+            BackupScreen(onBack = { navController.popBackStack() })
         }
     }
 }

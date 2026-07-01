@@ -1,0 +1,10 @@
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Alternate glyph: a plain equals sign, reads as a generic calc/utility app. -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M38,46h32a3,3 0 0 1 0,6h-32a3,3 0 0 1 0,-6z M38,58h32a3,3 0 0 1 0,6h-32a3,3 0 0 1 0,-6z" />
+</vector>

@@ -39,6 +39,7 @@ fun UnlockedVaultScreen(
     onManageFakePasswords: () -> Unit,
     onLock: () -> Unit,
     modifier: Modifier = Modifier,
+    onOpenSettings: (() -> Unit)? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -101,6 +102,14 @@ fun UnlockedVaultScreen(
                 style = PillButtonStyle.Secondary,
                 modifier = Modifier.padding(top = spacing.xxl),
             )
+            if (onOpenSettings != null) {
+                PillButton(
+                    text = "Settings",
+                    onClick = onOpenSettings,
+                    style = PillButtonStyle.Secondary,
+                    modifier = Modifier.padding(top = spacing.md),
+                )
+            }
             PillButton(
                 text = "Lock",
                 onClick = onLock,

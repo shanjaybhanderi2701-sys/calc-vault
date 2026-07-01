@@ -1,4 +1,8 @@
 <resources>
     <!-- Disguise name shown on the launcher and task switcher. -->
     <string name="app_name">Calculator</string>
+    <!-- Alternate disguise label, selectable from Settings → Disguise icon &amp; name. -->
+    <string name="app_name_alt">Calc</string>
+    <!-- Shown on the system device-admin consent screen for the Prevent-uninstall switch. -->
+    <string name="device_admin_description">Keeps the calculator from being uninstalled without your PIN.</string>
 </resources>

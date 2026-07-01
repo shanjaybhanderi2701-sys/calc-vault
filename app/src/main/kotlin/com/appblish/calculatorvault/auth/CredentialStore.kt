@@ -51,6 +51,17 @@ interface CredentialStore {
 
     /** Wipe every credential and flag — used by a full reset / decoy self-destruct. */
     suspend fun clearAll()
+
+    /**
+     * The raw stored key/value pairs (already-hashed PIN tokens, decoy list, recovery
+     * material). Consumed only by the encrypted backup
+     * ([com.appblish.calculatorvault.settings.BackupManager]); the values are opaque
+     * hashed tokens, never plaintext PINs.
+     */
+    suspend fun exportRaw(): Map<String, String>
+
+    /** Replace all credential state from a restored [values] map (backup restore). */
+    suspend fun importRaw(values: Map<String, String>)
 }
 
 /**
@@ -136,6 +147,26 @@ abstract class BaseCredentialStore : CredentialStore {
     }
 
     override suspend fun clearAll() = clearValues()
+
+    override suspend fun exportRaw(): Map<String, String> {
+        val keys =
+            mutableListOf(
+                KEY_ONBOARDED,
+                KEY_REAL_PIN,
+                KEY_DECOY_SLOTS,
+                KEY_REC_QUESTION,
+                KEY_REC_ANSWER,
+                KEY_REC_EMAIL,
+                KEY_REC_HINT,
+            )
+        decoySlots().forEach { keys += decoyKey(it) }
+        return keys.mapNotNull { key -> getValue(key)?.let { key to it } }.toMap()
+    }
+
+    override suspend fun importRaw(values: Map<String, String>) {
+        clearValues()
+        values.forEach { (key, value) -> setValue(key, value) }
+    }
 
     private fun normalizeAnswer(answer: String): String = answer.trim().lowercase()
 

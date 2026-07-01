@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Minimal device-admin policy for the Prevent-uninstall switch. We request only force-lock;
+  we deliberately do NOT request wipe-data or password policies. Being an active admin is
+  what blocks uninstall — the policy set is kept as small as possible.
+-->
+<device-admin xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-policies>
+        <force-lock />
+    </uses-policies>
+</device-admin>
