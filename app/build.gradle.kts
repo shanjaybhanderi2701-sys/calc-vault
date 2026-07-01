@@ -50,6 +50,14 @@ android {
         buildConfig = true
     }
 
+    lint {
+        // The Compose runtime check mis-fires when produceState assigns `value` from the
+        // result of a suspend call (e.g. `value = repo.load()`), reporting it as unassigned.
+        // The value IS assigned inside the producer at every call site; this is a known
+        // false positive, so we opt out of the check rather than obscure the code.
+        disable += "ProduceStateDoesNotAssignValue"
+    }
+
     sourceSets["main"].java.srcDir("src/main/kotlin")
     sourceSets["test"].java.srcDir("src/test/kotlin")
 }
@@ -72,6 +80,12 @@ dependencies {
 
     // EncryptedSharedPreferences / MasterKey — backing for the vault storage interface.
     implementation(libs.androidx.security.crypto)
+
+    // AppLock (Phase 3): CameraX for the Intruder Selfie, Biometric for the lock method.
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.biometric)
 
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)

@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-159-vault-core]
+    branches: [main, app-159-vault-core, app-160-phase3-applock]
   pull_request:
   workflow_dispatch:
 

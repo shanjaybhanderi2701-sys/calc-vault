@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  AppLock enforcement service config (Phase 3, APP-160). We only need window-state changes
+  (foreground app switches) to know when a locked app comes forward; we retrieve no window
+  content and provide no feedback. flagRetrieveInteractiveWindows lets us read the active
+  package reliably across launchers.
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagRetrieveInteractiveWindows"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/applock_service_description"
+    android:notificationTimeout="100" />

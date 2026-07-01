@@ -17,6 +17,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.appblish.calculatorvault.applock.ui.AppLockScreen
 import com.appblish.calculatorvault.ui.components.NavItem
 import com.appblish.calculatorvault.ui.components.VaultBottomNav
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -66,7 +67,7 @@ fun VaultShellScreen(
                     onSettingsClick = onSettingsClick,
                     modifier = Modifier.padding(innerPadding),
                 )
-            1 -> TabPlaceholder("AppLock", "Per-app lock arrives in Phase 3.", Modifier.padding(innerPadding))
+            1 -> AppLockScreen(modifier = Modifier.padding(innerPadding))
             else -> TabPlaceholder("Explore", "Quick Tools arrive in Phase 4.", Modifier.padding(innerPadding))
         }
     }
