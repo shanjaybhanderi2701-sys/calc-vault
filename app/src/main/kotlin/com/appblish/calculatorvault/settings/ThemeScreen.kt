@@ -91,8 +91,8 @@ fun ThemeScreen(
 
         Text(
             text =
-                "Skins change only the accent colour and key shape — never the calculator layout — " +
-                    "so the disguise is never given away.",
+                "Skins change only the green accent tone and key shape — never the calculator layout " +
+                    "or its single-green identity — so the disguise is never given away.",
             style = VaultTheme.typography.labelMedium,
             color = colors.textSecondary,
             modifier = Modifier.padding(all = spacing.lg),

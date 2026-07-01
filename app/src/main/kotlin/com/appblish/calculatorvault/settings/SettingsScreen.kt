@@ -2,20 +2,23 @@ package com.appblish.calculatorvault.settings
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
+import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -51,11 +54,11 @@ fun SettingsScreen(
     viewModel: SettingsViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val colors = VaultTheme.colors
     val settings = state.settings
     val context = LocalContext.current
     val uninstallController = remember { PreventUninstallController(context) }
     var showRecovery by remember { mutableStateOf(false) }
+    var showHowItWorks by remember { mutableStateOf(false) }
 
     // Device-admin consent result → record whether protection actually became active.
     val adminLauncher =
@@ -97,7 +100,6 @@ fun SettingsScreen(
             title = "Break-in alerts",
             subtitle = "Capture an intruder selfie after wrong PINs",
             leadingIcon = Icons.Filled.Warning,
-            leadingChipColor = colors.destructive,
             trailing = RowTrailing.Toggle(settings.breakInAlertsEnabled, viewModel::setBreakInAlerts),
         )
         ListRow(
@@ -157,6 +159,18 @@ fun SettingsScreen(
             trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
             onClick = onTheme,
         )
+        ListRow(
+            title = "Shuffle PIN pad",
+            subtitle = "Randomise digit positions each unlock to defeat shoulder-surfing",
+            leadingIcon = Icons.Filled.Refresh,
+            trailing = RowTrailing.Toggle(settings.shufflePinPadEnabled, viewModel::setShufflePinPad),
+        )
+        ListRow(
+            title = "Incorrect vibration",
+            subtitle = "Buzz the device on a wrong PIN entry",
+            leadingIcon = Icons.Filled.Notifications,
+            trailing = RowTrailing.Toggle(settings.incorrectVibrationEnabled, viewModel::setIncorrectVibration),
+        )
 
         SettingsSectionHeader("Backup")
         ListRow(
@@ -167,20 +181,53 @@ fun SettingsScreen(
             onClick = onBackup,
         )
 
+        SettingsSectionHeader("Support")
+        ListRow(
+            title = "How it works",
+            subtitle = "Where your files go and how they stay private",
+            leadingIcon = Icons.Filled.Info,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = { showHowItWorks = true },
+        )
+        ListRow(
+            title = "Rate CalcVault",
+            subtitle = "Leave a rating on the Play Store",
+            leadingIcon = Icons.Filled.Star,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = { SupportActions.rate(context) },
+        )
+        ListRow(
+            title = "Share",
+            subtitle = "Tell a friend about CalcVault",
+            leadingIcon = Icons.Filled.Share,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = { SupportActions.share(context) },
+        )
+        ListRow(
+            title = "Privacy policy",
+            subtitle = "How your data is handled",
+            leadingIcon = Icons.Filled.Lock,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = { SupportActions.privacyPolicy(context) },
+        )
+        ListRow(
+            title = "Feedback",
+            subtitle = "Report a problem or suggest a feature",
+            leadingIcon = Icons.Filled.Email,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = { SupportActions.feedback(context) },
+        )
+
         SettingsSectionHeader("About")
         ListRow(
             title = "CalcVault",
             subtitle = "Version 0.1.0 · dark theme · single green accent",
             leadingIcon = Icons.Filled.Info,
         )
-        Text(
-            text =
-                "Everything is stored encrypted on this device. Keep a backup somewhere safe — a " +
-                    "forgotten PIN with no recovery cannot be reset.",
-            style = VaultTheme.typography.labelMedium,
-            color = colors.textSecondary,
-            modifier = Modifier.padding(all = VaultTheme.spacing.lg),
-        )
+    }
+
+    if (showHowItWorks) {
+        HowItWorksDialog(onDismiss = { showHowItWorks = false })
     }
 
     if (showRecovery) {
@@ -192,4 +239,30 @@ fun SettingsScreen(
             onCancel = { showRecovery = false },
         )
     }
+}
+
+/** Native-trust explainer for the Support → *How it works* row (no scare language). */
+@Composable
+private fun HowItWorksDialog(onDismiss: () -> Unit) {
+    val colors = VaultTheme.colors
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = colors.surface,
+        title = { Text("How CalcVault works", color = colors.textPrimary) },
+        text = {
+            Text(
+                text =
+                    "Anything you hide is encrypted and kept on this device only — nothing is ever " +
+                        "uploaded. The calculator is fully working; entering your PIN opens the vault. " +
+                        "Keep a backup somewhere safe: a forgotten PIN with no recovery cannot be reset.",
+                style = VaultTheme.typography.bodyMedium,
+                color = colors.textSecondary,
+            )
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("Got it", color = colors.accent)
+            }
+        },
+    )
 }

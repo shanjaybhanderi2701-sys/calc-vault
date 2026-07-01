@@ -46,6 +46,8 @@ abstract class BaseSettingsStore : SettingsStore {
             preventUninstallEnabled = getBool(KEY_PREVENT_UNINSTALL, default = false),
             disguiseIconEnabled = getBool(KEY_DISGUISE, default = false),
             relockOnBackgroundEnabled = getBool(KEY_RELOCK, default = true),
+            shufflePinPadEnabled = getBool(KEY_SHUFFLE, default = false),
+            incorrectVibrationEnabled = getBool(KEY_VIBRATION, default = true),
         )
 
     override suspend fun save(settings: VaultSettings) {
@@ -56,6 +58,8 @@ abstract class BaseSettingsStore : SettingsStore {
         setValue(KEY_PREVENT_UNINSTALL, settings.preventUninstallEnabled.toString())
         setValue(KEY_DISGUISE, settings.disguiseIconEnabled.toString())
         setValue(KEY_RELOCK, settings.relockOnBackgroundEnabled.toString())
+        setValue(KEY_SHUFFLE, settings.shufflePinPadEnabled.toString())
+        setValue(KEY_VIBRATION, settings.incorrectVibrationEnabled.toString())
     }
 
     override suspend fun exportRaw(): Map<String, String> = allValues()
@@ -75,6 +79,8 @@ abstract class BaseSettingsStore : SettingsStore {
         const val KEY_PREVENT_UNINSTALL = "prevent_uninstall"
         const val KEY_DISGUISE = "disguise_icon"
         const val KEY_RELOCK = "relock_on_background"
+        const val KEY_SHUFFLE = "shuffle_pin_pad"
+        const val KEY_VIBRATION = "incorrect_vibration"
 
         val KNOWN_KEYS =
             setOf(
@@ -85,6 +91,8 @@ abstract class BaseSettingsStore : SettingsStore {
                 KEY_PREVENT_UNINSTALL,
                 KEY_DISGUISE,
                 KEY_RELOCK,
+                KEY_SHUFFLE,
+                KEY_VIBRATION,
             )
     }
 }

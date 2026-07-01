@@ -63,6 +63,10 @@ class SettingsViewModel(
 
     fun setRelockOnBackground(enabled: Boolean) = mutate { it.copy(relockOnBackgroundEnabled = enabled) }
 
+    fun setShufflePinPad(enabled: Boolean) = mutate { it.copy(shufflePinPadEnabled = enabled) }
+
+    fun setIncorrectVibration(enabled: Boolean) = mutate { it.copy(incorrectVibrationEnabled = enabled) }
+
     /** Record the prevent-uninstall result after the OS consent flow resolves. */
     fun setPreventUninstall(enabled: Boolean) = mutate { it.copy(preventUninstallEnabled = enabled) }
 

@@ -8,10 +8,11 @@ import androidx.compose.ui.graphics.Color
 // switches are armed. Persisted through SettingsStore.
 
 /**
- * A keypad skin for the calculator disguise. Only [accent] and [keyShape] change — the
- * layout, digits, and secret-unlock behaviour stay identical so the cover never looks like
- * anything other than a calculator. The accent stays a single vivid hue per the taste
- * guide; skins swap *which* hue, never introducing a second accent on one screen.
+ * A keypad skin for the calculator disguise. Only the accent *tone* and [keyShape] change —
+ * the layout, digits, and secret-unlock behaviour stay identical so the cover never looks
+ * like anything other than a calculator. Per the standing board rule the accent stays a
+ * single **green** identity hue on every screen; skins vary the green tone and key
+ * silhouette only, never introducing a competing colour.
  */
 enum class KeypadSkin(
     val displayName: String,
@@ -21,14 +22,14 @@ enum class KeypadSkin(
     /** The default deck skin: vivid green, circular keys. */
     GREEN_CLASSIC("Classic Green", Color(0xFF22C55E), KeySkinShape.CIRCLE),
 
-    /** Same circular keys, cool indigo accent. */
-    INDIGO_NIGHT("Indigo Night", Color(0xFF6366F1), KeySkinShape.CIRCLE),
+    /** Deeper emerald green, rounded-square keys. */
+    EMERALD_ROUNDED("Emerald", Color(0xFF16A34A), KeySkinShape.ROUNDED),
 
-    /** Warm amber accent, rounded-square keys. */
-    AMBER_DUSK("Amber Dusk", Color(0xFFF59E0B), KeySkinShape.ROUNDED),
+    /** Darkest forest green — the most inconspicuous, rounded-square keys. */
+    FOREST_DEEP("Forest", Color(0xFF15803D), KeySkinShape.ROUNDED),
 
-    /** Monochrome graphite — the most inconspicuous, rounded-square keys. */
-    GRAPHITE("Graphite", Color(0xFF9AA0A6), KeySkinShape.ROUNDED),
+    /** Bright lime green, circular keys. */
+    LIME_BRIGHT("Lime", Color(0xFF4ADE80), KeySkinShape.CIRCLE),
     ;
 
     companion object {
@@ -47,18 +48,23 @@ enum class KeySkinShape {
 /**
  * The transition played when a correct PIN opens a vault. Cosmetic only; the resolve
  * decision has already been made by [com.appblish.calculatorvault.auth.CredentialStore].
+ * The six named options match the deck's Theme → *Unlock animation* list exactly — four
+ * directional slides plus fade-in/fade-out. No option is invented outside the deck.
  */
 enum class UnlockAnimation(
     val displayName: String,
     val description: String,
 ) {
-    FADE("Fade", "A quiet cross-fade into the vault."),
-    SLIDE_UP("Slide Up", "The vault rises over the calculator."),
-    NONE("Instant", "No animation — the fastest, most discreet open."),
+    SLIDE_TOP("Slide Top", "The vault slides up from the bottom of the screen."),
+    SLIDE_DOWN("Slide Down", "The vault drops in from the top of the screen."),
+    SLIDE_RIGHT("Slide Right", "The vault slides in from the left edge."),
+    SLIDE_LEFT("Slide Left", "The vault slides in from the right edge."),
+    FADE_IN("Fade In", "The vault fades gently into view."),
+    FADE_OUT("Fade Out", "The calculator fades out as the vault appears."),
     ;
 
     companion object {
-        val DEFAULT = FADE
+        val DEFAULT = FADE_IN
 
         fun fromNameOrNull(name: String?): UnlockAnimation? = entries.firstOrNull { it.name == name }
     }
@@ -81,4 +87,8 @@ data class VaultSettings(
     val disguiseIconEnabled: Boolean = false,
     /** Require the unlock PIN again whenever the app returns to the foreground. */
     val relockOnBackgroundEnabled: Boolean = true,
+    /** Randomise the calculator keypad digit positions on each unlock (anti shoulder-surf). */
+    val shufflePinPadEnabled: Boolean = false,
+    /** Vibrate the device on a wrong PIN entry. */
+    val incorrectVibrationEnabled: Boolean = true,
 )

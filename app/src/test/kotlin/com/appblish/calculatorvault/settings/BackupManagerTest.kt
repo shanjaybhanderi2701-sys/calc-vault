@@ -32,8 +32,8 @@ class BackupManagerTest {
             cred.completeOnboarding()
             settings.save(
                 VaultSettings(
-                    keypadSkin = KeypadSkin.INDIGO_NIGHT,
-                    unlockAnimation = UnlockAnimation.NONE,
+                    keypadSkin = KeypadSkin.FOREST_DEEP,
+                    unlockAnimation = UnlockAnimation.SLIDE_LEFT,
                     preventUninstallEnabled = true,
                 ),
             )
@@ -52,8 +52,8 @@ class BackupManagerTest {
             assertThat(cred.isOnboarded()).isTrue()
             assertThat(cred.verifyRecoveryAnswer("rex")).isTrue()
             val restored = settings.load()
-            assertThat(restored.keypadSkin).isEqualTo(KeypadSkin.INDIGO_NIGHT)
-            assertThat(restored.unlockAnimation).isEqualTo(UnlockAnimation.NONE)
+            assertThat(restored.keypadSkin).isEqualTo(KeypadSkin.FOREST_DEEP)
+            assertThat(restored.unlockAnimation).isEqualTo(UnlockAnimation.SLIDE_LEFT)
             assertThat(restored.preventUninstallEnabled).isTrue()
         }
 
