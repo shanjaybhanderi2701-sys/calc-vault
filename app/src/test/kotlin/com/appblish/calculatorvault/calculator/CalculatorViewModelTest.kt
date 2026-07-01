@@ -1,34 +1,80 @@
 package com.appblish.calculatorvault.calculator
 
+import com.appblish.calculatorvault.auth.VaultKind
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+import org.junit.Before
 import org.junit.Test
 
+@OptIn(ExperimentalCoroutinesApi::class)
 class CalculatorViewModelTest {
-    @Test
-    fun `equals shows arithmetic result for normal input`() {
-        val vm = CalculatorViewModel()
-        "7+8".forEach { vm.onDigit(it.toString()) }
-        vm.onEquals()
-        assertThat(vm.uiState.value.result).isEqualTo("15")
-        assertThat(vm.uiState.value.unlockRequested).isFalse()
+    // Unconfined so the viewModelScope coroutine in onEquals runs eagerly and the state
+    // is settled by the time each `onToken(EQUALS)` returns.
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(UnconfinedTestDispatcher())
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test
-    fun `equals requests unlock when input is the secret`() {
-        val vm =
-            CalculatorViewModel(
-                secretDetector = SecretCodeDetector(secretProvider = { "42" }),
-            )
-        "42".forEach { vm.onDigit(it.toString()) }
-        vm.onEquals()
-        assertThat(vm.uiState.value.unlockRequested).isTrue()
+    fun `equals shows arithmetic result for normal input`() =
+        runTest {
+            val vm = CalculatorViewModel(resolvePin = { null })
+            listOf(CalcToken.SEVEN, CalcToken.PLUS, CalcToken.EIGHT, CalcToken.EQUALS).forEach(vm::onToken)
+            assertThat(vm.uiState.value.display).isEqualTo("15")
+            assertThat(vm.uiState.value.unlock).isNull()
+        }
+
+    @Test
+    fun `equals unlocks the real vault when the code resolves to it`() =
+        runTest {
+            val vm = CalculatorViewModel(resolvePin = { if (it == "4242") VaultKind.Real else null })
+            listOf(CalcToken.FOUR, CalcToken.TWO, CalcToken.FOUR, CalcToken.TWO, CalcToken.EQUALS).forEach(vm::onToken)
+            assertThat(vm.uiState.value.unlock).isEqualTo(VaultKind.Real)
+        }
+
+    @Test
+    fun `equals routes a decoy code to its own decoy vault`() =
+        runTest {
+            val vm = CalculatorViewModel(resolvePin = { if (it == "5555") VaultKind.Decoy(0) else null })
+            val keys = listOf(CalcToken.FIVE, CalcToken.FIVE, CalcToken.FIVE, CalcToken.FIVE, CalcToken.EQUALS)
+            keys.forEach(vm::onToken)
+            assertThat(vm.uiState.value.unlock).isEqualTo(VaultKind.Decoy(0))
+        }
+
+    @Test
+    fun `a four-digit code that resolves to nothing is just arithmetic`() =
+        runTest {
+            val vm = CalculatorViewModel(resolvePin = { null })
+            listOf(CalcToken.ONE, CalcToken.TWO, CalcToken.THREE, CalcToken.FOUR, CalcToken.EQUALS).forEach(vm::onToken)
+            assertThat(vm.uiState.value.unlock).isNull()
+            assertThat(vm.uiState.value.display).isEqualTo("1234")
+        }
+
+    @Test
+    fun `clear resets the display`() {
+        val vm = CalculatorViewModel(resolvePin = { null })
+        vm.onToken(CalcToken.NINE)
+        vm.onToken(CalcToken.CLEAR)
+        assertThat(vm.uiState.value.display).isEmpty()
     }
 
     @Test
-    fun `clear resets state`() {
-        val vm = CalculatorViewModel()
-        vm.onDigit("9")
-        vm.onClear()
-        assertThat(vm.uiState.value.input).isEmpty()
+    fun `backspace deletes the last character`() {
+        val vm = CalculatorViewModel(resolvePin = { null })
+        vm.onToken(CalcToken.ONE)
+        vm.onToken(CalcToken.TWO)
+        vm.onToken(CalcToken.BACKSPACE)
+        assertThat(vm.uiState.value.display).isEqualTo("1")
     }
 }

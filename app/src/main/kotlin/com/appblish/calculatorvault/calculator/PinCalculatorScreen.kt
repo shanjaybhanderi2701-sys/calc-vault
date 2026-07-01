@@ -1,0 +1,61 @@
+package com.appblish.calculatorvault.calculator
+
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.AnnotatedString
+
+/** The vault's PINs are four digits, per the deck ("Create a 4-digit password…"). */
+const val PIN_LENGTH: Int = 4
+
+/**
+ * A calculator surface driven as a PIN pad. It reuses [CalculatorKeypad] verbatim — the
+ * board creates and confirms the PIN *on the calculator itself* — but constrains input to
+ * digits: only `0-9` count (up to [PIN_LENGTH]), `⌫` deletes, `AC` clears, and `=` submits
+ * once the code is complete. Operators/`.`/`( )`/`%` are inert here, exactly as the
+ * create-PIN frame implies. The entered digits are shown as typed (the frame shows the raw
+ * "1111"), not masked.
+ *
+ * This backs onboarding create/confirm, change-password, fake-password setup, and the
+ * forgot-password reset, so all of them are visually identical to the unlock surface.
+ */
+@Composable
+fun PinCalculatorScreen(
+    title: String?,
+    hint: AnnotatedString?,
+    onSubmit: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    onBack: (() -> Unit)? = null,
+) {
+    var entry by remember { mutableStateOf("") }
+
+    CalculatorKeypad(
+        display = entry,
+        title = title,
+        hint = hint,
+        onBack = onBack,
+        modifier = modifier,
+        onKey = { token ->
+            when (token) {
+                CalcToken.BACKSPACE -> entry = entry.dropLast(1)
+                CalcToken.CLEAR -> entry = ""
+                CalcToken.EQUALS -> {
+                    if (entry.length == PIN_LENGTH) {
+                        val submitted = entry
+                        entry = ""
+                        onSubmit(submitted)
+                    }
+                }
+                else -> {
+                    val ch = token.input
+                    if (ch != null && ch.isDigit() && entry.length < PIN_LENGTH) {
+                        entry += ch
+                    }
+                }
+            }
+        },
+    )
+}

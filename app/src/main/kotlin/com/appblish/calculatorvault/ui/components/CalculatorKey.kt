@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.ui.components
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -11,6 +12,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 
 /** Role of a calculator key — drives its color per the deck. */
@@ -23,6 +25,9 @@ enum class CalcKeyStyle {
 
     /** `AC` / `( )` / `%` — muted surface-variant. */
     Function,
+
+    /** `AC` on the disguise keypad — transparent with a green ring + green glyph (deck). */
+    Clear,
 
     /** `=` — filled green, the secret-unlock trigger. */
     Equals,
@@ -45,6 +50,7 @@ fun CalculatorKey(
             CalcKeyStyle.Digit -> colors.surface
             CalcKeyStyle.Operator -> colors.surfaceVariant
             CalcKeyStyle.Function -> colors.surfaceVariant
+            CalcKeyStyle.Clear -> colors.canvas
             CalcKeyStyle.Equals -> colors.accent
         }
     val content: Color =
@@ -52,17 +58,20 @@ fun CalculatorKey(
             CalcKeyStyle.Digit -> colors.textPrimary
             CalcKeyStyle.Operator -> colors.accent
             CalcKeyStyle.Function -> colors.textSecondary
+            CalcKeyStyle.Clear -> colors.accent
             CalcKeyStyle.Equals -> colors.onAccent
         }
 
+    val base =
+        modifier
+            .aspectRatio(1f)
+            .clip(CircleShape)
+            .background(container)
+    val shaped = if (style == CalcKeyStyle.Clear) base.border(1.5.dp, colors.accent, CircleShape) else base
+
     Box(
         contentAlignment = Alignment.Center,
-        modifier =
-            modifier
-                .aspectRatio(1f)
-                .clip(CircleShape)
-                .background(container)
-                .clickable(onClick = onClick),
+        modifier = shaped.clickable(onClick = onClick),
     ) {
         Text(
             text = label,
