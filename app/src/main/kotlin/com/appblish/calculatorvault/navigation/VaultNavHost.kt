@@ -13,7 +13,6 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.appblish.calculatorvault.calculator.CalculatorScreen
-import com.appblish.calculatorvault.pin.PinEntryScreen
 import com.appblish.calculatorvault.vault.CategoryScreen
 import com.appblish.calculatorvault.vault.CategoryViewModel
 import com.appblish.calculatorvault.vault.HideImportScreen
@@ -28,9 +27,13 @@ import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
 import com.appblish.calculatorvault.vault.viewer.ViewerViewModel
 
 /**
- * App navigation. Disguise spine (calculator → PIN → vault shell) stays shallow so
- * leaving the vault always lands back on the innocuous calculator. Inside the vault the
- * shell pushes category → hide/import, viewers, folder slideshow, and the recycle bin.
+ * App navigation. The disguise spine is shallow (calculator → vault shell) so leaving the
+ * vault always lands back on the innocuous calculator. The calculator itself is the real
+ * gate — the Phase-1 PIN pad (APP-158): typing the configured 4-digit code and pressing
+ * `=` resolves to the vault via the credential store and opens the shell; anything else is
+ * ordinary arithmetic, so there is no separate PIN screen to reveal the vault. Inside the
+ * vault the shell pushes category → hide/import, viewers, folder slideshow, and the
+ * recycle bin.
  */
 @Composable
 fun VaultNavHost() {
@@ -42,19 +45,18 @@ fun VaultNavHost() {
     ) {
         composable(VaultDestinations.CALCULATOR) {
             CalculatorScreen(
-                onUnlock = { navController.navigate(VaultDestinations.PIN) },
-            )
-        }
-
-        composable(VaultDestinations.PIN) {
-            PinEntryScreen(
-                onAuthenticated = {
+                // A resolved PIN opens the vault. Phase 2 has a single vault shell, so both
+                // the real vault and any decoy land here; per-[VaultKind] storage routing is
+                // the Phase-6 integration (APP-163).
+                onUnlock = {
                     navController.navigate(VaultDestinations.VAULT_SHELL) {
-                        // Drop the PIN screen so back from the vault returns to the calculator.
+                        // Drop nothing extra; back from the vault returns to the calculator.
                         popUpTo(VaultDestinations.CALCULATOR)
                     }
                 },
-                onDismiss = { navController.popBackStack() },
+                // Recovery (forgot-password) is wired in the Phase-6 integration; the hidden
+                // long-press gesture is inert in the standalone Phase-2 build.
+                onForgotPin = {},
             )
         }
 

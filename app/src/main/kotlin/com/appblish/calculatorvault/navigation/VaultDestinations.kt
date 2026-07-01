@@ -3,13 +3,13 @@ package com.appblish.calculatorvault.navigation
 import com.appblish.calculatorvault.vault.model.VaultCategory
 
 /**
- * Route table for the whole app. The disguise boundary (calculator → PIN → vault) stays
- * shallow; inside the vault the shell hosts the tabs, and category / hide / viewer /
- * slideshow / recycle-bin are pushed on top. Category is carried as an enum name arg.
+ * Route table for the whole app. The disguise boundary (calculator → vault) stays
+ * shallow; the calculator is itself the PIN gate, so there is no separate PIN route.
+ * Inside the vault the shell hosts the tabs, and category / hide / viewer / slideshow /
+ * recycle-bin are pushed on top. Category is carried as an enum name arg.
  */
 internal object VaultDestinations {
     const val CALCULATOR = "calculator"
-    const val PIN = "pin"
 
     /** Post-auth landing: the Vault/AppLock/Explore shell. */
     const val VAULT_SHELL = "vault_shell"
