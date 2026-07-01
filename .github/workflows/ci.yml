@@ -44,6 +44,15 @@ jobs:
       - name: Assemble (debug)
         run: ./gradlew --no-daemon --stacktrace assembleDebug
 
+      - name: Upload debug APK
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: warn
+          retention-days: 14
+
       - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
