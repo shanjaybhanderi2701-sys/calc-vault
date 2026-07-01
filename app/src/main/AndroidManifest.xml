@@ -18,6 +18,9 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
+    <!-- Explore · Private Browser (Phase 4): the in-app incognito WebView loads pages. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".CalculatorVaultApp"
         android:allowBackup="false"

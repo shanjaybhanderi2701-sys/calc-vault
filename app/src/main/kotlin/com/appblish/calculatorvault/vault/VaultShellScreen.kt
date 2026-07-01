@@ -17,6 +17,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.appblish.calculatorvault.explore.ExploreScreen
+import com.appblish.calculatorvault.explore.ExploreTool
 import com.appblish.calculatorvault.ui.components.NavItem
 import com.appblish.calculatorvault.ui.components.VaultBottomNav
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -25,8 +27,9 @@ import com.appblish.calculatorvault.vault.model.VaultItem
 
 /**
  * The three-tab nav shell — **Vault · AppLock · Explore** — that hosts the vault home.
- * Only the Vault tab is built in Phase 2; AppLock (Phase 3) and Explore (Phase 4) show a
- * labeled placeholder so the shell and tab-switching are complete and reviewable now.
+ * The Vault tab is built in Phase 2 and the Explore tab in Phase 4 (its Quick Tools push
+ * onto the nav graph via [onExploreToolClick]); AppLock (Phase 3) keeps a labeled
+ * placeholder until that phase lands.
  */
 @Composable
 fun VaultShellScreen(
@@ -34,6 +37,7 @@ fun VaultShellScreen(
     onRecentClick: (VaultItem) -> Unit,
     onRecycleBinClick: () -> Unit,
     onSettingsClick: () -> Unit,
+    onExploreToolClick: (ExploreTool) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var selectedTab by remember { mutableIntStateOf(0) }
@@ -67,7 +71,7 @@ fun VaultShellScreen(
                     modifier = Modifier.padding(innerPadding),
                 )
             1 -> TabPlaceholder("AppLock", "Per-app lock arrives in Phase 3.", Modifier.padding(innerPadding))
-            else -> TabPlaceholder("Explore", "Quick Tools arrive in Phase 4.", Modifier.padding(innerPadding))
+            else -> ExploreScreen(onToolClick = onExploreToolClick, modifier = Modifier.padding(innerPadding))
         }
     }
 }
