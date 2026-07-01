@@ -28,13 +28,20 @@ import com.appblish.calculatorvault.ui.theme.VaultTheme
 /** Trailing affordance for a [ListRow] — chevron (navigates), toggle, or nothing. */
 sealed interface RowTrailing {
     /** A chevron / disclosure indicator. */
-    data class Chevron(val icon: ImageVector) : RowTrailing
+    data class Chevron(
+        val icon: ImageVector,
+    ) : RowTrailing
 
     /** A lock/enable switch (App Lock rows). */
-    data class Toggle(val checked: Boolean, val onCheckedChange: (Boolean) -> Unit) : RowTrailing
+    data class Toggle(
+        val checked: Boolean,
+        val onCheckedChange: (Boolean) -> Unit,
+    ) : RowTrailing
 
     /** A short count / status badge. */
-    data class Badge(val label: String) : RowTrailing
+    data class Badge(
+        val label: String,
+    ) : RowTrailing
 
     /** No trailing element. */
     data object None : RowTrailing
