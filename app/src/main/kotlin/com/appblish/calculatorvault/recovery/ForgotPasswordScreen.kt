@@ -21,7 +21,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.auth.RecoveryInfo
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.theme.VaultTheme
