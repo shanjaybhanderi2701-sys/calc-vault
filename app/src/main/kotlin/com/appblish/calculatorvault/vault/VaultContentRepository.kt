@@ -51,6 +51,16 @@ interface VaultContentRepository {
         folderId: String?,
     )
 
+    /**
+     * Un-hide (restore to public storage) the vault items [itemIds]: decrypt each blob,
+     * write the bytes back to the original public location so it reappears in the system
+     * gallery, then remove the item (index + blob) from the vault. Returns the number of
+     * items successfully un-hidden; an item whose write-back fails is left untouched in
+     * the vault (its only copy is never lost). This is the board's "watch it return to
+     * the gallery" beat — the inverse of [hide].
+     */
+    suspend fun unhide(itemIds: Set<String>): Int
+
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)
 

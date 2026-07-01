@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -57,6 +58,7 @@ fun ItemViewerScreen(
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
     onShare: () -> Unit = {},
+    onUnhide: () -> Unit = {},
 ) {
     val colors = VaultTheme.colors
     Column(modifier = modifier.fillMaxSize().background(colors.canvas)) {
@@ -69,7 +71,7 @@ fun ItemViewerScreen(
                 else -> ImageStage(item, bytes) // Photos + Files preview
             }
         }
-        ViewerActionBar(onShare = onShare, onDelete = onDelete)
+        ViewerActionBar(onShare = onShare, onUnhide = onUnhide, onDelete = onDelete)
     }
 }
 
@@ -221,6 +223,7 @@ private fun ContactStage(
 @Composable
 private fun ViewerActionBar(
     onShare: () -> Unit,
+    onUnhide: () -> Unit,
     onDelete: () -> Unit,
 ) {
     val colors = VaultTheme.colors
@@ -231,6 +234,11 @@ private fun ViewerActionBar(
     ) {
         IconButton(onClick = onShare) {
             Icon(Icons.Filled.Share, contentDescription = "Share", tint = colors.textPrimary)
+        }
+        Spacer(Modifier.size(VaultTheme.spacing.xxl))
+        // Un-hide: decrypt back to public storage so it returns to the gallery.
+        IconButton(onClick = onUnhide) {
+            Icon(Icons.Filled.Refresh, contentDescription = "Unhide", tint = colors.textPrimary)
         }
         Spacer(Modifier.size(VaultTheme.spacing.xxl))
         IconButton(onClick = onDelete) {

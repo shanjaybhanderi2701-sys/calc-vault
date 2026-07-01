@@ -25,6 +25,9 @@ data class SourceItem(
     // to stream+encrypt the real bytes and to request deletion of the public copy.
     val contentUri: String = "",
     val mimeType: String? = null,
+    // Public-storage RELATIVE_PATH of the original (e.g. "DCIM/Camera/"), carried so the
+    // vault can un-hide it back to the same album. Empty for sample data or pre-Q rows.
+    val relativePath: String = "",
 )
 
 /** Hide/import flow state: album picker → date-grouped multi-select → Hide Now. */
@@ -150,6 +153,7 @@ class HideImportViewModel(
             sortKey = sortKey,
             sourceUri = contentUri.takeIf { it.isNotBlank() },
             mimeType = mimeType,
+            relativePath = relativePath.takeIf { it.isNotBlank() },
         )
 
     private companion object {

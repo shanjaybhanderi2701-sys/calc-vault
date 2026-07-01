@@ -12,6 +12,15 @@
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
+    <!--
+      Un-hide (restore-to-gallery) write-back to public storage on legacy devices (API ≤28):
+      restoring a hidden file writes a real file under the public external dir, which needs
+      WRITE_EXTERNAL_STORAGE. On API 29+ the MediaStore insert publishes with no storage
+      permission, so this is capped at 28.
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />

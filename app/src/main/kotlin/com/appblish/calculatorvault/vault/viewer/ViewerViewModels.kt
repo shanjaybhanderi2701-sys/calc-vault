@@ -42,6 +42,14 @@ class ViewerViewModel(
     fun delete() {
         viewModelScope.launch { repository.moveToRecycleBin(setOf(itemId)) }
     }
+
+    /**
+     * Un-hide this item: decrypt it back to public storage so it returns to the gallery,
+     * then remove it from the vault. The item flow goes null on success, closing the viewer.
+     */
+    fun unhide() {
+        viewModelScope.launch { repository.unhide(setOf(itemId)) }
+    }
 }
 
 /** Feeds the folder slideshow with a category's items (folder scoping lands with folders UI). */

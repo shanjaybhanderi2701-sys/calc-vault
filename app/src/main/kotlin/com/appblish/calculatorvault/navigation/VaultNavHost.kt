@@ -127,6 +127,10 @@ fun VaultNavHost() {
                         vm.delete()
                         navController.popBackStack()
                     },
+                    onUnhide = {
+                        vm.unhide()
+                        navController.popBackStack()
+                    },
                 )
             }
         }

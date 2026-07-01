@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.Uri
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyStore
+import com.appblish.calculatorvault.vault.media.MediaSink
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.VaultCategory
@@ -46,6 +47,7 @@ class EncryptedVaultContentRepository(
     private val resolver get() = appContext.contentResolver
     private val keyStore = VaultKeyStore(appContext)
     private val crypto by lazy { VaultCrypto(keyStore.secretKey()) }
+    private val mediaSink = MediaSink(appContext)
 
     private val baseDir = File(appContext.filesDir, "vault").apply { mkdirs() }
     private val blobsDir = File(baseDir, "blobs").apply { mkdirs() }
@@ -150,6 +152,36 @@ class EncryptedVaultContentRepository(
         persist()
     }
 
+    override suspend fun unhide(itemIds: Set<String>): Int =
+        withContext(Dispatchers.IO) {
+            val targets = itemsState.value.filter { it.id in itemIds }
+            var restored = 0
+            for (item in targets) {
+                val path = item.encryptedPath ?: continue
+                val blob = File(path)
+                if (!blob.exists()) continue
+                // Decrypt the blob back to cleartext bytes, then publish them to public
+                // storage. Only on a confirmed write-back do we drop the vault copy — a
+                // failed restore leaves the encrypted original in place.
+                val plain =
+                    try {
+                        ByteArrayOutputStream()
+                            .also { out -> blob.inputStream().use { source -> crypto.decrypt(source, out) } }
+                            .toByteArray()
+                    } catch (e: Exception) {
+                        continue
+                    }
+                mediaSink.writeBack(item, plain) ?: continue
+                blob.delete()
+                mutex.withLock {
+                    itemsState.value = itemsState.value.filterNot { it.id == item.id }
+                    persist()
+                }
+                restored++
+            }
+            restored
+        }
+
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
         mutex.withLock {
             val (moved, kept) = itemsState.value.partition { it.id in itemIds }
@@ -246,6 +278,7 @@ class EncryptedVaultContentRepository(
             put("sizeBytes", sizeBytes)
             put("durationMs", durationMs)
             put("mimeType", mimeType ?: JSONObject.NULL)
+            put("relativePath", relativePath ?: JSONObject.NULL)
         }
 
     private fun JSONObject.toVaultItem(): VaultItem =
@@ -260,6 +293,7 @@ class EncryptedVaultContentRepository(
             sizeBytes = optLong("sizeBytes", 0L),
             durationMs = optLong("durationMs", 0L),
             mimeType = optNullableString("mimeType"),
+            relativePath = optNullableString("relativePath"),
         )
 
     private fun VaultFolder.toJson(): JSONObject =
