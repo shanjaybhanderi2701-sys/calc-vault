@@ -1,6 +1,5 @@
 package com.appblish.calculatorvault.vault
 
-import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.google.common.truth.Truth.assertThat
