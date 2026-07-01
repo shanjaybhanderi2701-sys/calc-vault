@@ -1,0 +1,4 @@
+<resources>
+    <!-- Launcher icon background. Neutral so the disguise looks like a stock calculator. -->
+    <color name="ic_launcher_background">#3B6EA5</color>
+</resources>

@@ -1,0 +1,4 @@
+<resources>
+    <!-- Disguise name shown on the launcher and task switcher. -->
+    <string name="app_name">Calculator</string>
+</resources>

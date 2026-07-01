@@ -1,0 +1,8 @@
+<resources>
+    <!--
+      Base theme is a bare Material3 shell; all real theming (single accent per the
+      taste guide) is applied in Compose (ui/theme/Theme.kt). This XML theme exists
+      only so the manifest/splash have a valid parent before Compose takes over.
+    -->
+    <style name="Theme.CalculatorVault" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>
