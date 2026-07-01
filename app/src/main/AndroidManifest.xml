@@ -1,6 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!--
+      Media/contacts read access for the hide/import pipeline. On API 33+ the granular
+      READ_MEDIA_* permissions apply; on API 32 and below READ_EXTERNAL_STORAGE covers
+      photos/videos/audio/files. Public originals are removed via MediaStore delete
+      requests (user-consented on API 30+), so no broad write permission is needed.
+    -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
     <application
         android:name=".CalculatorVaultApp"
         android:allowBackup="false"

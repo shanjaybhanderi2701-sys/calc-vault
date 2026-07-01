@@ -35,6 +35,13 @@ data class VaultItem(
     val encryptedPath: String? = null,
     val sizeBytes: Long = 0L,
     val durationMs: Long = 0L,
+    // Import-only: the public-storage content Uri of the original, carried from the
+    // hide/import picker to the repository so it can stream the real bytes through
+    // VaultCrypto and then remove the public copy. Never persisted on a stored item.
+    val sourceUri: String? = null,
+    // MIME type of the original (e.g. "image/jpeg", "video/mp4"), used by viewers to
+    // decode the decrypted blob. Null for legacy/sample items.
+    val mimeType: String? = null,
 )
 
 /** A user-created folder within a category (Create Folder from the FAB menu). */
@@ -85,6 +92,5 @@ object RecycleBin {
         entries: List<RecycleBinEntry>,
         now: Long,
         windowDays: Long = AUTO_DELETE_WINDOW_DAYS,
-    ): Pair<List<RecycleBinEntry>, List<RecycleBinEntry>> =
-        entries.partition { isExpired(it, now, windowDays) }
+    ): Pair<List<RecycleBinEntry>, List<RecycleBinEntry>> = entries.partition { isExpired(it, now, windowDays) }
 }

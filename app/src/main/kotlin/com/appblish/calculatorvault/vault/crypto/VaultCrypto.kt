@@ -69,7 +69,6 @@ class VaultCrypto(
         const val KEY_BITS = 256
 
         /** Generate a fresh 256-bit AES key for a first-run install. */
-        fun newKey(): SecretKey =
-            KeyGenerator.getInstance("AES").apply { init(KEY_BITS) }.generateKey()
+        fun newKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(KEY_BITS) }.generateKey()
     }
 }

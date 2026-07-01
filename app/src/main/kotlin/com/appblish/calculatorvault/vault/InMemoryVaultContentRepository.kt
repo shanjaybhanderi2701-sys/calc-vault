@@ -38,8 +38,7 @@ class InMemoryVaultContentRepository(
     override fun items(category: VaultCategory): Flow<List<VaultItem>> =
         itemsState.map { all -> all.filter { it.category == category }.sortedByDescending { it.sortKey } }
 
-    override fun allItems(): Flow<List<VaultItem>> =
-        itemsState.map { all -> all.sortedByDescending { it.sortKey } }
+    override fun allItems(): Flow<List<VaultItem>> = itemsState.map { all -> all.sortedByDescending { it.sortKey } }
 
     override fun folders(category: VaultCategory): Flow<List<VaultFolder>> =
         foldersState.map { all -> all.filter { it.category == category } }
@@ -124,6 +123,7 @@ class InMemoryVaultContentRepository(
     private fun seedSampleContent() {
         val day = 24L * 60L * 60L * 1000L
         val base = 100L * day // fixed epoch base so sample dates are deterministic
+
         fun item(
             cat: VaultCategory,
             name: String,

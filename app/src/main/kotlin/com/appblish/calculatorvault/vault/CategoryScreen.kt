@@ -151,8 +151,7 @@ private fun onItemClicked(
     }
 }
 
-private fun VaultItem.toMediaItem(): MediaItem =
-    MediaItem(id = id, dateLabel = dateLabel, sortKey = sortKey)
+private fun VaultItem.toMediaItem(): MediaItem = MediaItem(id = id, dateLabel = dateLabel, sortKey = sortKey)
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -173,8 +172,7 @@ private fun CategoryList(
                         .combinedClickable(
                             onClick = { onItemClick(item) },
                             onLongClick = { onItemLongPress(item) },
-                        )
-                        .padding(horizontal = spacing.lg, vertical = spacing.md),
+                        ).padding(horizontal = spacing.lg, vertical = spacing.md),
             ) {
                 Text(text = item.originalName, style = VaultTheme.typography.bodyLarge, color = colors.textPrimary)
                 Text(text = item.dateLabel, style = VaultTheme.typography.labelMedium, color = colors.textSecondary)

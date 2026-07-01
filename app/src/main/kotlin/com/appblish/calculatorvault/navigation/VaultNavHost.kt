@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.navigation
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -19,6 +20,7 @@ import com.appblish.calculatorvault.vault.HideImportScreen
 import com.appblish.calculatorvault.vault.HideImportViewModel
 import com.appblish.calculatorvault.vault.RecycleBinScreen
 import com.appblish.calculatorvault.vault.VaultShellScreen
+import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
@@ -88,10 +90,14 @@ fun VaultNavHost() {
             arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
         ) { entry ->
             val category = entry.category()
+            val context = LocalContext.current.applicationContext
             val vm: HideImportViewModel =
                 viewModel(
                     key = "hide-${category.name}",
-                    factory = viewModelFactory { initializer { HideImportViewModel(category) } },
+                    factory =
+                        viewModelFactory {
+                            initializer { HideImportViewModel(category, mediaSource = MediaSource(context)) }
+                        },
                 )
             HideImportScreen(
                 viewModel = vm,
@@ -111,9 +117,11 @@ fun VaultNavHost() {
                     factory = viewModelFactory { initializer { ViewerViewModel(itemId) } },
                 )
             val item by vm.item.collectAsStateWithLifecycle()
+            val bytes by vm.decrypted.collectAsStateWithLifecycle()
             item?.let { current ->
                 ItemViewerScreen(
                     item = current,
+                    bytes = bytes,
                     onBack = { navController.popBackStack() },
                     onDelete = {
                         vm.delete()

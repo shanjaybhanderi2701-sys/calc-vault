@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.calculator
 
 import androidx.lifecycle.ViewModel
+import com.appblish.calculatorvault.BuildConfig
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,11 +22,11 @@ data class CalculatorUiState(
  */
 class CalculatorViewModel(
     private val engine: CalculatorEngine = CalculatorEngine,
-    private val secretDetector: SecretCodeDetector = SecretCodeDetector(secretProvider = { null }),
+    private val secretDetector: SecretCodeDetector = SecretCodeDetector(secretProvider = { defaultSecret() }),
 ) : ViewModel() {
     // Zero-arg constructor so the default Compose `viewModel()` factory (which needs a
     // no-arg JVM constructor) can instantiate this; the primary ctor stays open for tests.
-    constructor() : this(CalculatorEngine, SecretCodeDetector(secretProvider = { null }))
+    constructor() : this(CalculatorEngine, SecretCodeDetector(secretProvider = { defaultSecret() }))
 
     private val _uiState = MutableStateFlow(CalculatorUiState())
     val uiState: StateFlow<CalculatorUiState> = _uiState.asStateFlow()
@@ -57,4 +58,11 @@ class CalculatorViewModel(
 
     private fun formatResult(value: Double): String =
         if (value % 1.0 == 0.0) value.toLong().toString() else value.toString()
+
+    private companion object {
+        // Debug/dev builds ship a fixed unlock code ("1234=") so the vault is reachable on
+        // an emulator before the Phase 1 onboarding (which persists the real user secret)
+        // is merged into this branch. Release builds return null — no default backdoor.
+        fun defaultSecret(): String? = if (BuildConfig.DEBUG) "1234" else null
+    }
 }
