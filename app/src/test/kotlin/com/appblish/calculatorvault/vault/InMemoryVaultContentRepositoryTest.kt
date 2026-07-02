@@ -50,6 +50,22 @@ class InMemoryVaultContentRepositoryTest {
         }
 
     @Test
+    fun `seeded repo ships the predefined default folders`() =
+        runTest {
+            // The production/preview instance seeds sample content AND the default folders.
+            val repo = InMemoryVaultContentRepository(seed = true)
+            val counts = repo.folderCounts().first()
+            // Matches DefaultVaultFolders: Photos x2, Videos/Audios/Files x1, Contacts none.
+            assertThat(counts[VaultCategory.PHOTOS]).isEqualTo(2)
+            assertThat(counts[VaultCategory.VIDEOS]).isEqualTo(1)
+            assertThat(counts[VaultCategory.AUDIOS]).isEqualTo(1)
+            assertThat(counts[VaultCategory.FILES]).isEqualTo(1)
+            assertThat(counts[VaultCategory.CONTACTS]).isEqualTo(0)
+            assertThat(repo.folders(VaultCategory.PHOTOS).first().map { it.name })
+                .containsExactly("Camera", "Screenshots")
+        }
+
+    @Test
     fun `recycle then restore round-trips the item`() =
         runTest {
             val repo = repo()
