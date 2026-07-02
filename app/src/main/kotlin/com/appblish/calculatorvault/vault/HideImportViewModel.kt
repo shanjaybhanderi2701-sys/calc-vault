@@ -124,8 +124,9 @@ class HideImportViewModel(
             when {
                 deletable.isEmpty() ->
                     _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }
-                // Contacts have no MediaStore delete-consent dialog: delete the source rows
-                // directly via ContactsContract (WRITE_CONTACTS was granted with the flow).
+                // Contacts have no MediaStore delete-consent dialog. Contacts access was
+                // dropped per board scope refinement (APP-207), so deleteContacts is now a
+                // no-op (returns 0) — kept for shape until the Contacts category is retired.
                 category == VaultCategory.CONTACTS -> {
                     withContext(Dispatchers.IO) { mediaSource?.deleteContacts(deletable) }
                     _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }

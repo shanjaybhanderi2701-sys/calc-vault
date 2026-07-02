@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -127,14 +126,6 @@ private fun rememberPermissionRows(): List<PermissionRow> {
                 "Captures who tried a wrong PIN, only when enabled",
                 Manifest.permission.CAMERA,
                 Icons.Filled.Warning,
-            ),
-        )
-        add(
-            PermissionRow(
-                "Contacts",
-                "Hide selected contacts in the vault",
-                Manifest.permission.READ_CONTACTS,
-                Icons.Filled.Person,
             ),
         )
     }

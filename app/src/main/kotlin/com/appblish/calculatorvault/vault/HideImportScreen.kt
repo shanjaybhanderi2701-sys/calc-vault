@@ -175,9 +175,10 @@ private fun EmptyPickerState(
 /** Runtime permissions needed to enumerate [category]'s public-storage originals. */
 private fun requiredPermissions(category: VaultCategory): Array<String> =
     when (category) {
-        // WRITE_CONTACTS lets the hide flow delete the source contact after export.
-        VaultCategory.CONTACTS ->
-            arrayOf(Manifest.permission.READ_CONTACTS, Manifest.permission.WRITE_CONTACTS)
+        // Contacts access was dropped per board scope refinement (APP-207): All Files Access
+        // is the only mandatory vault permission, so the Contacts category requests nothing
+        // and its source query returns empty.
+        VaultCategory.CONTACTS -> emptyArray()
         VaultCategory.PHOTOS ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 arrayOf(Manifest.permission.READ_MEDIA_IMAGES)

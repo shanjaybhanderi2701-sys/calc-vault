@@ -1,5 +1,8 @@
 package com.appblish.calculatorvault.vault
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -30,24 +33,31 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 
 /**
  * The vault-home "CalcVault" dashboard (Vault tab). Large-title header with the
- * app-disguise (icon-switch) action + settings, an "apps may be at risk" disguise promo
- * banner, the media categories laid out as a **2-column tile grid** with dual counts
+ * app-disguise (icon-switch) action + settings, a permission-gated "device is at risk"
+ * security banner (APP-207 — shown only when a required permission is actually missing),
+ * the media categories laid out as a **2-column tile grid** with dual counts
  * ("300 Photos / 8 Folders") plus a **Bin tile**, and a cross-category Recent strip. On
  * first run (empty vault) a "Hide Photos Here" coach-mark points at the Photos tile.
  * Matches the deck's `Home_Screen_Hint_and_Flow.pdf`; the AppLock/Explore tabs are
@@ -77,7 +87,7 @@ fun VaultHomeScreen(
     ) {
         HomeHeader(onDisguise = onDisguiseClick, onSettings = onSettingsClick)
 
-        DisguiseBanner(onClick = onDisguiseClick)
+        SecurityBanner()
 
         CategoryGrid(
             state = state,
@@ -133,12 +143,57 @@ private fun HomeHeader(
 }
 
 /**
- * The deck's frame-2 disguise promo: "Your apps may be at risk!" — invites the user to
- * switch app icons so the vault blends in. Taps route to the same disguise flow as the
- * header action.
+ * The "Your device is at risk" security banner (APP-207 — xlock parity). Unlike a standing
+ * promo, this appears **only when All Files Access is missing** — the sole mandatory vault
+ * permission (board scope refinement). It re-checks the live grant state on every resume via
+ * [VaultSecurityBanner] and renders nothing once the permission is granted. Tapping routes to
+ * the grant surface for All Files Access. Camera stays an opt-in app-lock permission for
+ * Intruder Selfie and is intentionally not part of this banner.
  */
 @Composable
-private fun DisguiseBanner(onClick: () -> Unit) {
+private fun SecurityBanner() {
+    val context = LocalContext.current
+
+    var state by
+        remember {
+            mutableStateOf(
+                VaultSecurityBanner.State(
+                    hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
+                ),
+            )
+        }
+
+    fun refresh() {
+        state =
+            VaultSecurityBanner.State(
+                hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
+            )
+    }
+
+    // Re-evaluate whenever the user returns from a system settings / permission round-trip.
+    LifecycleResumeEffect(Unit) {
+        refresh()
+        onPauseOrDispose { }
+    }
+
+    val storageLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
+
+    val warning = VaultSecurityBanner.firstMissing(state) ?: return
+
+    fun onGrant() {
+        when (warning.permission) {
+            VaultSecurityBanner.Permission.ALL_FILES_ACCESS ->
+                if (StoragePermissions.usesRuntimeWritePermission()) {
+                    storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                } else {
+                    StoragePermissions.allFilesAccessIntent(context)?.let { intent ->
+                        runCatching { context.startActivity(intent) }
+                    }
+                }
+        }
+    }
+
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
     Surface(
@@ -149,7 +204,7 @@ private fun DisguiseBanner(onClick: () -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = spacing.lg)
                 .clip(VaultTheme.shapes.card)
-                .clickable(onClick = onClick),
+                .clickable(onClick = ::onGrant),
     ) {
         Row(
             verticalAlignment = Alignment.CenterVertically,
@@ -161,12 +216,12 @@ private fun DisguiseBanner(onClick: () -> Unit) {
                     Modifier
                         .size(40.dp)
                         .clip(RoundedCornerShape(12.dp))
-                        .background(colors.accent.copy(alpha = 0.16f)),
+                        .background(colors.destructive.copy(alpha = 0.16f)),
             ) {
                 Icon(
                     imageVector = Icons.Filled.Warning,
                     contentDescription = null,
-                    tint = colors.accent,
+                    tint = colors.destructive,
                     modifier = Modifier.size(22.dp),
                 )
             }
@@ -177,12 +232,12 @@ private fun DisguiseBanner(onClick: () -> Unit) {
                         .padding(horizontal = spacing.md),
             ) {
                 Text(
-                    text = "Your apps may be at risk!",
+                    text = warning.title,
                     style = VaultTheme.typography.titleMedium,
                     color = colors.textPrimary,
                 )
                 Text(
-                    text = "Switch app icons anytime to make your vault look different",
+                    text = warning.message,
                     style = VaultTheme.typography.labelMedium,
                     color = colors.textSecondary,
                     modifier = Modifier.padding(top = spacing.xs),
