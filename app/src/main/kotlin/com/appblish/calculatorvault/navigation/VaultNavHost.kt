@@ -177,6 +177,9 @@ fun VaultNavHost() {
                 onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
                 onExploreToolClick = { navController.navigate(VaultDestinations.exploreRoute(it)) },
             )
+            // xlock parity (APP-212): offer the recovery security question only after the
+            // first real vault operation, never during onboarding. Real vault only.
+            DeferredRecoveryPrompt()
         }
 
         // --- Explore / Quick Tools (Phase 4) ------------------------------

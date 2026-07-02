@@ -11,11 +11,21 @@ package com.appblish.calculatorvault.auth
  * implementation can hash off the main thread and back onto encrypted storage.
  */
 interface CredentialStore {
-    /** True once onboarding has completed (real PIN set + recovery captured). */
+    /** True once onboarding has completed (real PIN set; recovery is deferred to first use). */
     suspend fun isOnboarded(): Boolean
 
-    /** Mark onboarding finished. Call after the real PIN and recovery have been saved. */
+    /** Mark onboarding finished. Call after the real PIN is set (recovery is deferred, APP-212). */
     suspend fun completeOnboarding()
+
+    /**
+     * True once the owner has opened the real vault at least once. Drives the deferred
+     * security-question prompt (APP-212): recovery is offered only *after* this first real
+     * vault operation, never during PIN/calculator onboarding.
+     */
+    suspend fun hasOpenedRealVault(): Boolean
+
+    /** Record that the real vault has been opened (the first real vault operation). Idempotent. */
+    suspend fun markRealVaultOpened()
 
     /** Set (or replace) the owner's real PIN. */
     suspend fun setRealPin(pin: String)
@@ -86,6 +96,10 @@ abstract class BaseCredentialStore : CredentialStore {
 
     override suspend fun completeOnboarding() = setValue(KEY_ONBOARDED, "true")
 
+    override suspend fun hasOpenedRealVault(): Boolean = getValue(KEY_REAL_VAULT_OPENED) == "true"
+
+    override suspend fun markRealVaultOpened() = setValue(KEY_REAL_VAULT_OPENED, "true")
+
     override suspend fun setRealPin(pin: String) = setValue(KEY_REAL_PIN, PinHasher.hash(pin))
 
     override suspend fun resolve(pin: String): VaultKind? {
@@ -152,6 +166,7 @@ abstract class BaseCredentialStore : CredentialStore {
         val keys =
             mutableListOf(
                 KEY_ONBOARDED,
+                KEY_REAL_VAULT_OPENED,
                 KEY_REAL_PIN,
                 KEY_DECOY_SLOTS,
                 KEY_REC_QUESTION,
@@ -174,6 +189,7 @@ abstract class BaseCredentialStore : CredentialStore {
 
     private companion object {
         const val KEY_ONBOARDED = "onboarded"
+        const val KEY_REAL_VAULT_OPENED = "real_vault_opened"
         const val KEY_REAL_PIN = "real_pin"
         const val KEY_DECOY_SLOTS = "decoy_slots"
         const val KEY_DECOY_PIN_PREFIX = "decoy_pin_"
