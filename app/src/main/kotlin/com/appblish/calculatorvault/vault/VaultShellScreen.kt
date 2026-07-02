@@ -33,6 +33,7 @@ fun VaultShellScreen(
     onCategoryClick: (VaultCategory) -> Unit,
     onRecentClick: (VaultItem) -> Unit,
     onRecycleBinClick: () -> Unit,
+    onDisguiseClick: () -> Unit,
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -63,6 +64,7 @@ fun VaultShellScreen(
                     onCategoryClick = onCategoryClick,
                     onRecentClick = onRecentClick,
                     onRecycleBinClick = onRecycleBinClick,
+                    onDisguiseClick = onDisguiseClick,
                     onSettingsClick = onSettingsClick,
                     modifier = Modifier.padding(innerPadding),
                 )

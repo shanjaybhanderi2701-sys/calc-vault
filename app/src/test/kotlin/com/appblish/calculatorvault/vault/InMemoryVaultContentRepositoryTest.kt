@@ -37,6 +37,19 @@ class InMemoryVaultContentRepositoryTest {
         }
 
     @Test
+    fun `folderCounts tracks folders per category for the home dual-count tiles`() =
+        runTest {
+            val repo = repo()
+            repo.createFolder(VaultCategory.PHOTOS, "Trip")
+            repo.createFolder(VaultCategory.PHOTOS, "Family")
+            repo.createFolder(VaultCategory.FILES, "Docs")
+            val counts = repo.folderCounts().first()
+            assertThat(counts[VaultCategory.PHOTOS]).isEqualTo(2)
+            assertThat(counts[VaultCategory.FILES]).isEqualTo(1)
+            assertThat(counts[VaultCategory.CONTACTS]).isEqualTo(0)
+        }
+
+    @Test
     fun `recycle then restore round-trips the item`() =
         runTest {
             val repo = repo()

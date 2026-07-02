@@ -48,6 +48,11 @@ class InMemoryVaultContentRepository(
             VaultCategory.entries.associateWith { cat -> all.count { it.category == cat } }
         }
 
+    override fun folderCounts(): Flow<Map<VaultCategory, Int>> =
+        foldersState.map { all ->
+            VaultCategory.entries.associateWith { cat -> all.count { it.category == cat } }
+        }
+
     override fun recent(limit: Int): Flow<List<VaultItem>> =
         itemsState.map { all -> all.sortedByDescending { it.sortKey }.take(limit) }
 

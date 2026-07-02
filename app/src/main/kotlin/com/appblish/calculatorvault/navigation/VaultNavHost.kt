@@ -99,6 +99,7 @@ fun VaultNavHost() {
                 onCategoryClick = { navController.navigate(VaultDestinations.category(it)) },
                 onRecentClick = { navController.navigate(VaultDestinations.viewer(it.id)) },
                 onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
+                onDisguiseClick = { /* App-icon switch / disguise customization — Phase 5 */ },
                 onSettingsClick = { /* Settings — Phase 5 */ },
             )
         }

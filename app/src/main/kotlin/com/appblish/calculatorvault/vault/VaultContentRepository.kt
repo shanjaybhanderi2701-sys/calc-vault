@@ -5,6 +5,7 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flowOf
 
 /**
  * Read/write boundary for hidden vault *content* (media, files, folders, recycle bin) —
@@ -38,6 +39,14 @@ interface VaultContentRepository {
 
     /** Per-category counts for the home dashboard tiles. */
     fun categoryCounts(): Flow<Map<VaultCategory, Int>>
+
+    /**
+     * Per-category folder counts for the home dashboard's dual-count tile subtitles
+     * ("300 Photos / 8 Folders"). Defaults to zeros so preview/test fakes need not
+     * implement it; the real repositories derive it from their folder index.
+     */
+    fun folderCounts(): Flow<Map<VaultCategory, Int>> =
+        flowOf(VaultCategory.entries.associateWith { 0 })
 
     /** The most recently hidden items across all categories (home "Recent" strip). */
     fun recent(limit: Int = 12): Flow<List<VaultItem>>
