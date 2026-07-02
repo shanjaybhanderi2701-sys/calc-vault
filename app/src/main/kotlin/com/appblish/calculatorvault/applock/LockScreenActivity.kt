@@ -13,6 +13,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.applock.ui.LockScreenContent
+import com.appblish.calculatorvault.applyImmersiveEdgeToEdge
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.intruder.IntruderCamera
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
@@ -39,6 +40,7 @@ class LockScreenActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        applyImmersiveEdgeToEdge()
         AuthGraph.init(applicationContext)
         AppLockGraph.init(applicationContext)
 
