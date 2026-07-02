@@ -68,22 +68,52 @@ class MediaSource(
             VaultCategory.CONTACTS -> error("contacts use ContactsContract")
         }
 
+    /** Per-bucket accumulator: display name, running count, and the newest item as cover. */
+    private class BucketAgg(
+        val name: String,
+        var count: Int,
+        val coverUri: Uri,
+        val coverMime: String?,
+    )
+
     private fun mediaAlbums(category: VaultCategory): List<SourceAlbum> {
-        val counts = LinkedHashMap<String, Pair<String, Int>>() // bucketId -> (name, count)
+        val buckets = LinkedHashMap<String, BucketAgg>()
+        var total = 0
+        var recentCover: Uri? = null
+        var recentMime: String? = null
+        // Rows arrive newest-first, so the first row seen (overall / per bucket) is its cover.
         queryMedia(category, bucketId = null) { row ->
-            val id = row.bucketId
-            val existing = counts[id]
-            counts[id] = (existing?.first ?: row.bucketName) to ((existing?.second ?: 0) + 1)
+            total++
+            if (recentCover == null) {
+                recentCover = row.uri
+                recentMime = row.mime
+            }
+            val agg = buckets[row.bucketId]
+            if (agg == null) {
+                buckets[row.bucketId] = BucketAgg(row.bucketName, 1, row.uri, row.mime)
+            } else {
+                agg.count++
+            }
         }
-        return counts.map { (id, nameCount) -> SourceAlbum(id, nameCount.first, nameCount.second) }
+        if (total == 0) return emptyList()
+        val albums =
+            buckets.map { (id, agg) ->
+                SourceAlbum(id, agg.name, agg.count, agg.coverUri.toString(), agg.coverMime)
+            }
+        // Lead with a "Recent" aggregate of every bucket — xlock's default public / All-Files
+        // folder so the picker is never empty and you can hide across every album at once.
+        val recent = SourceAlbum(SourceAlbum.RECENT_ID, "Recent", total, recentCover?.toString(), recentMime)
+        return listOf(recent) + albums
     }
 
     private fun mediaSources(
         category: VaultCategory,
         albumId: String,
     ): List<SourceItem> {
+        // The Recent aggregate has no bucket filter — enumerate every item in the collection.
+        val bucketFilter = albumId.takeUnless { it == SourceAlbum.RECENT_ID }
         val out = mutableListOf<SourceItem>()
-        queryMedia(category, bucketId = albumId) { row ->
+        queryMedia(category, bucketId = bucketFilter) { row ->
             out +=
                 SourceItem(
                     id = row.uri.toString(),
@@ -95,6 +125,8 @@ class MediaSource(
                     contentUri = row.uri.toString(),
                     mimeType = row.mime,
                     relativePath = row.relativePath,
+                    sizeBytes = row.sizeBytes,
+                    dateModified = row.dateModifiedMillis,
                 )
         }
         return out.sortedByDescending { it.sortKey }
@@ -108,6 +140,8 @@ class MediaSource(
         val bucketName: String,
         val mime: String?,
         val relativePath: String,
+        val sizeBytes: Long,
+        val dateModifiedMillis: Long,
     )
 
     private inline fun queryMedia(
@@ -118,6 +152,8 @@ class MediaSource(
         val idCol = MediaStore.MediaColumns._ID
         val nameCol = MediaStore.MediaColumns.DISPLAY_NAME
         val dateCol = MediaStore.MediaColumns.DATE_ADDED
+        val modifiedCol = MediaStore.MediaColumns.DATE_MODIFIED
+        val sizeCol = MediaStore.MediaColumns.SIZE
         val mimeCol = MediaStore.MediaColumns.MIME_TYPE
         val bucketIdCol = MediaStore.MediaColumns.BUCKET_ID
         val bucketNameCol = MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
@@ -125,7 +161,7 @@ class MediaSource(
         val relPathCol =
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.MediaColumns.RELATIVE_PATH else null
         val projection =
-            arrayOf(idCol, nameCol, dateCol, mimeCol, bucketIdCol, bucketNameCol) +
+            arrayOf(idCol, nameCol, dateCol, modifiedCol, sizeCol, mimeCol, bucketIdCol, bucketNameCol) +
                 (relPathCol?.let { arrayOf(it) } ?: emptyArray())
         val selection = if (bucketId != null) "$bucketIdCol = ?" else null
         val args = if (bucketId != null) arrayOf(bucketId) else null
@@ -133,6 +169,8 @@ class MediaSource(
             val idIdx = c.getColumnIndexOrThrow(idCol)
             val nameIdx = c.getColumnIndexOrThrow(nameCol)
             val dateIdx = c.getColumnIndexOrThrow(dateCol)
+            val modifiedIdx = c.getColumnIndex(modifiedCol)
+            val sizeIdx = c.getColumnIndex(sizeCol)
             val mimeIdx = c.getColumnIndexOrThrow(mimeCol)
             val bIdIdx = c.getColumnIndex(bucketIdCol)
             val bNameIdx = c.getColumnIndex(bucketNameCol)
@@ -153,6 +191,15 @@ class MediaSource(
                         bucketName = bName,
                         mime = if (c.isNull(mimeIdx)) null else c.getString(mimeIdx),
                         relativePath = relPath,
+                        sizeBytes = if (sizeIdx >= 0 && !c.isNull(sizeIdx)) c.getLong(sizeIdx) else 0L,
+                        // DATE_MODIFIED is in seconds like DATE_ADDED; 0 when the column is absent.
+                        dateModifiedMillis = if (modifiedIdx >= 0 &&
+                            !c.isNull(modifiedIdx)
+                        ) {
+                            c.getLong(modifiedIdx) * 1000L
+                        } else {
+                            0L
+                        },
                     ),
                 )
             }

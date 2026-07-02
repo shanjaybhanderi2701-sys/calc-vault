@@ -28,9 +28,50 @@ data class SourceItem(
     // Public-storage RELATIVE_PATH of the original (e.g. "DCIM/Camera/"), carried so the
     // vault can un-hide it back to the same album. Empty for sample data or pre-Q rows.
     val relativePath: String = "",
+    // Backing fields for the picker's sort menu (xlock parity). sizeBytes = MediaStore SIZE;
+    // dateModified = DATE_MODIFIED epoch millis. Both 0 for sample/preview or contacts.
+    val sizeBytes: Long = 0L,
+    val dateModified: Long = 0L,
 )
 
-/** Hide/import flow state: album picker → date-grouped multi-select → Hide Now. */
+/**
+ * Sort order for the in-vault picker's item grid, mirroring xlock's sort menu. [ADDED_TIME]
+ * keeps the real date-section grouping (newest first); the others collapse into a single
+ * section ordered by the chosen field, so the grid header reflects the active sort.
+ */
+enum class PickerSort(
+    val label: String,
+) {
+    ADDED_TIME("Added time"),
+    LAST_MODIFIED("Last modified"),
+    NAME("Name"),
+    SIZE("Size"),
+    ;
+
+    companion object {
+        /**
+         * Map [sources] to the grid's ([id], sectionLabel, sortKey) tuples for this sort.
+         * Pure so the ordering is unit-testable. For non-time sorts a synthetic descending
+         * key encodes the target order (the grid always renders by sortKey desc within a
+         * section): NAME → A→Z, SIZE → largest first, LAST_MODIFIED → most-recent first.
+         */
+        fun grid(
+            sources: List<SourceItem>,
+            sort: PickerSort,
+        ): List<Triple<String, String, Long>> =
+            when (sort) {
+                ADDED_TIME -> sources.map { Triple(it.id, it.dateLabel, it.sortKey) }
+                LAST_MODIFIED -> sources.map { Triple(it.id, "Last modified", it.dateModified) }
+                SIZE -> sources.map { Triple(it.id, "Largest first", it.sizeBytes) }
+                NAME ->
+                    sources
+                        .sortedBy { it.name.lowercase() }
+                        .mapIndexed { i, s -> Triple(s.id, "By name (A–Z)", (sources.size - i).toLong()) }
+            }
+    }
+}
+
+/** Hide/import flow state: folder picker → date-grouped multi-select → Hide Now. */
 data class HideImportState(
     val category: VaultCategory,
     val albums: List<SourceAlbum> = emptyList(),
@@ -39,6 +80,8 @@ data class HideImportState(
     val selectedIds: Set<String> = emptySet(),
     val hiding: Boolean = false,
     val done: Boolean = false,
+    // Active sort for the item grid (xlock parity sort menu).
+    val sort: PickerSort = PickerSort.ADDED_TIME,
     // True once the runtime media/contacts permission was granted and real sources loaded.
     val permissionGranted: Boolean = false,
     // Public-storage Uris whose originals still need deleting (after a successful hide);
@@ -47,24 +90,42 @@ data class HideImportState(
     val pendingDeleteUris: List<String> = emptyList(),
 ) {
     val hideEnabled: Boolean get() = selectedIds.isNotEmpty() && !hiding
+
+    /** The currently-open album, if any (used for the item-grid header subtitle). */
+    val selectedAlbum: SourceAlbum? get() = albums.firstOrNull { it.id == selectedAlbumId }
 }
 
-/** One album/bucket in the picker (Camera, Screenshots, Downloads…). */
+/**
+ * One album/bucket in the picker (Camera, Screenshots, Downloads…). [coverUri]/[coverMime]
+ * back the folder tile's thumbnail (newest item in the bucket); null for sample data or
+ * non-visual buckets, in which case the tile falls back to the category icon.
+ */
 data class SourceAlbum(
     val id: String,
     val name: String,
     val count: Int,
-)
+    val coverUri: String? = null,
+    val coverMime: String? = null,
+) {
+    companion object {
+        /**
+         * Id of the synthetic "Recent" album that aggregates every bucket — xlock's default
+         * public / "All Files" folder at the top of the picker. [MediaSource] recognises it
+         * and queries with no bucket filter.
+         */
+        const val RECENT_ID = "__recent__"
+    }
+}
 
 /**
  * Drives the hide/import flow shared by all five categories. On device it loads the real
  * public-storage candidates from [MediaSource] (MediaStore / ContactsContract) once the
  * runtime permission is granted; without a [MediaSource] (Compose preview / tests) it
- * shows deterministic sample data. The user picks an album, multi-selects date-grouped
- * items, and on **Hide Now** the chosen items are handed to
- * [VaultContentRepository.hide], which streams each original through `VaultCrypto` into
- * an encrypted blob. The public originals are then removed via the screen's delete
- * request (see [pendingDeleteUris]).
+ * shows deterministic sample data. The user picks a folder (or the "Recent"/All-Files
+ * aggregate), multi-selects date-grouped items, and on **Hide Now** the chosen items are
+ * handed to [VaultContentRepository.hide], which streams each original through
+ * `VaultCrypto` into an encrypted blob. The public originals are then removed via the
+ * screen's delete request (see [pendingDeleteUris]).
  */
 class HideImportViewModel(
     val category: VaultCategory,
@@ -111,6 +172,16 @@ class HideImportViewModel(
             val all = current.sources.map { it.id }.toSet()
             current.copy(selectedIds = if (current.selectedIds.containsAll(all)) emptySet() else all)
         }
+    }
+
+    /** Change the item-grid sort order (xlock parity sort menu). */
+    fun setSort(sort: PickerSort) {
+        _state.update { it.copy(sort = sort) }
+    }
+
+    /** Step back from the item grid to the folder picker (in-picker back navigation). */
+    fun clearAlbum() {
+        _state.update { it.copy(selectedAlbumId = null, sources = emptyList(), selectedIds = emptySet()) }
     }
 
     fun hideNow() {
@@ -168,23 +239,28 @@ class HideImportViewModel(
                 albums = if (mediaSource == null) sampleAlbums(category) else emptyList(),
             )
 
-        fun sampleAlbums(category: VaultCategory): List<SourceAlbum> =
-            when (category) {
-                VaultCategory.PHOTOS ->
-                    listOf(
-                        SourceAlbum("camera", "Camera", 248),
-                        SourceAlbum("screenshots", "Screenshots", 61),
-                        SourceAlbum("downloads", "Download", 12),
-                    )
-                VaultCategory.VIDEOS ->
-                    listOf(SourceAlbum("camera", "Camera", 34), SourceAlbum("downloads", "Download", 5))
-                VaultCategory.AUDIOS ->
-                    listOf(SourceAlbum("recordings", "Recordings", 18), SourceAlbum("music", "Music", 92))
-                VaultCategory.FILES ->
-                    listOf(SourceAlbum("downloads", "Download", 40), SourceAlbum("documents", "Documents", 23))
-                VaultCategory.CONTACTS ->
-                    listOf(SourceAlbum("phone", "Phone contacts", 214))
-            }
+        fun sampleAlbums(category: VaultCategory): List<SourceAlbum> {
+            val buckets =
+                when (category) {
+                    VaultCategory.PHOTOS ->
+                        listOf(
+                            SourceAlbum("camera", "Camera", 248),
+                            SourceAlbum("screenshots", "Screenshots", 61),
+                            SourceAlbum("downloads", "Download", 12),
+                        )
+                    VaultCategory.VIDEOS ->
+                        listOf(SourceAlbum("camera", "Camera", 34), SourceAlbum("downloads", "Download", 5))
+                    VaultCategory.AUDIOS ->
+                        listOf(SourceAlbum("recordings", "Recordings", 18), SourceAlbum("music", "Music", 92))
+                    VaultCategory.FILES ->
+                        listOf(SourceAlbum("downloads", "Download", 40), SourceAlbum("documents", "Documents", 23))
+                    VaultCategory.CONTACTS ->
+                        return listOf(SourceAlbum("phone", "Phone contacts", 214))
+                }
+            // Lead with the "Recent" aggregate (xlock's default public / All-Files folder).
+            val recent = SourceAlbum(SourceAlbum.RECENT_ID, "Recent", buckets.sumOf { it.count })
+            return listOf(recent) + buckets
+        }
 
         fun sampleSources(
             category: VaultCategory,
@@ -192,6 +268,7 @@ class HideImportViewModel(
         ): List<SourceItem> {
             val day = 24L * 60L * 60L * 1000L
             val base = 100L * day
+            val isRecent = albumId == SourceAlbum.RECENT_ID
             val album = sampleAlbums(category).firstOrNull { it.id == albumId }
             val albumName = album?.name ?: albumId
             val ext =
@@ -210,7 +287,7 @@ class HideImportViewModel(
                         1L -> "Yesterday"
                         else -> "${12 - ageDays} Jun 2026"
                     }
-                val prefix = albumName.take(3).uppercase()
+                val prefix = (if (isRecent) "IMG" else albumName.take(3)).uppercase()
                 val name = if (ext.isEmpty()) "Contact ${i + 1}" else "${prefix}_${1000 + i}.$ext"
                 SourceItem(
                     id = "$albumId-$i",
@@ -219,6 +296,8 @@ class HideImportViewModel(
                     sortKey = base - ageDays * day - i,
                     albumId = albumId,
                     albumName = albumName,
+                    sizeBytes = (i + 1) * 512L * 1024L,
+                    dateModified = base - i * 3_600_000L,
                 )
             }
         }
