@@ -12,6 +12,18 @@ object SettingsGraph {
     @Volatile
     private var store: SettingsStore? = null
 
+    /**
+     * Synchronously-readable snapshot of the "Re-lock on background" switch (APP-205). The
+     * `ON_STOP` re-lock in [com.appblish.calculatorvault.navigation.VaultNavHost] runs on the
+     * main thread with no coroutine to await the suspend [SettingsStore], so the flag is
+     * cached here: warmed from the store at startup ([warmCaches]) and updated the instant the
+     * user flips the switch in Settings ([cacheRelockOnBackground]). Defaults to the secure
+     * choice (on) so re-lock stays enabled even before the store has been read.
+     */
+    @Volatile
+    var relockOnBackgroundEnabled: Boolean = true
+        private set
+
     /** Wire the production encrypted store. Idempotent — safe to call from Application.onCreate. */
     fun init(context: Context) {
         if (store == null) {
@@ -22,6 +34,16 @@ object SettingsGraph {
     /** Replace the store (tests / previews). */
     fun override(store: SettingsStore) {
         this.store = store
+    }
+
+    /** Refresh the synchronous caches from persisted settings (called once at app startup). */
+    suspend fun warmCaches() {
+        runCatching { relockOnBackgroundEnabled = settingsStore.load().relockOnBackgroundEnabled }
+    }
+
+    /** Keep [relockOnBackgroundEnabled] in step with a live toggle change from Settings. */
+    fun cacheRelockOnBackground(enabled: Boolean) {
+        relockOnBackgroundEnabled = enabled
     }
 
     val settingsStore: SettingsStore

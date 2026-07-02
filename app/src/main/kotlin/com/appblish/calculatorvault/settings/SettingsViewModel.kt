@@ -96,6 +96,9 @@ class SettingsViewModel(
     private fun mutate(transform: (VaultSettings) -> VaultSettings) {
         val next = transform(_state.value.settings)
         _state.update { it.copy(settings = next) }
+        // Keep the synchronous re-lock cache in step so a just-flipped switch is honoured even
+        // if the user backgrounds the app before the async save completes (APP-205).
+        SettingsGraph.cacheRelockOnBackground(next.relockOnBackgroundEnabled)
         viewModelScope.launch { settingsStore.save(next) }
     }
 }

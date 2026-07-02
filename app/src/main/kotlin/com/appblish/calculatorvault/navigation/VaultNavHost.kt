@@ -1,8 +1,12 @@
 package com.appblish.calculatorvault.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -25,6 +29,7 @@ import com.appblish.calculatorvault.recovery.ForgotPasswordRoute
 import com.appblish.calculatorvault.settings.BackupScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
+import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.settings.SettingsScreen
 import com.appblish.calculatorvault.settings.ThemeScreen
 import com.appblish.calculatorvault.vault.CategoryScreen
@@ -69,6 +74,32 @@ fun VaultNavHost() {
             popUpTo(VaultDestinations.CALCULATOR)
             launchSingleTop = true
         }
+    }
+
+    // Re-lock on every background (APP-205). ProcessLifecycleOwner reports the whole app —
+    // not a single activity — so ON_STOP fires only when CalcVault genuinely goes to the
+    // background (not on rotation and not for in-app permission / delete-consent dialogs,
+    // which merely pause the activity). When it fires while the user is inside the unlocked
+    // vault we forget the session + data key and reset the back stack to the calculator, so
+    // the next foreground shows the disguise and demands the PIN again. Resetting here (while
+    // hidden) rather than on the next resume means no vault content ever flashes on return.
+    DisposableEffect(navController) {
+        val processLifecycle = ProcessLifecycleOwner.get().lifecycle
+        val observer =
+            LifecycleEventObserver { _, event ->
+                if (event == Lifecycle.Event.ON_STOP &&
+                    SettingsGraph.relockOnBackgroundEnabled &&
+                    SessionLock.isVaultSurface(navController.currentDestination?.route)
+                ) {
+                    SessionLock.relock()
+                    navController.navigate(VaultDestinations.CALCULATOR) {
+                        popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                }
+            }
+        processLifecycle.addObserver(observer)
+        onDispose { processLifecycle.removeObserver(observer) }
     }
 
     NavHost(

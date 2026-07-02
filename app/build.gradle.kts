@@ -75,6 +75,9 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
+    // ProcessLifecycleOwner — whole-app foreground/background signal for the vault re-lock
+    // (APP-205). Survives config changes and does not fire for in-app permission dialogs.
+    implementation(libs.androidx.lifecycle.process)
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.coroutines.android)
 

@@ -5,6 +5,10 @@ import com.appblish.calculatorvault.applock.AppLockGraph
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.vault.VaultGraph
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 
 /**
  * Application entry point. Installs the device-backed service locators every surface shares:
@@ -24,5 +28,8 @@ class CalculatorVaultApp : Application() {
         VaultGraph.init(this)
         AppLockGraph.init(this)
         SettingsGraph.init(this)
+        // Warm the synchronous re-lock cache from persisted settings so VaultNavHost's
+        // ON_STOP re-lock reflects the user's "Re-lock on background" choice (APP-205).
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { SettingsGraph.warmCaches() }
     }
 }
