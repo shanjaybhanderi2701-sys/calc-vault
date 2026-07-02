@@ -55,10 +55,25 @@ class CalculatorViewModelTest {
     @Test
     fun `a four-digit code that resolves to nothing is just arithmetic`() =
         runTest {
+            // 9999 rather than 1234 so this covers a genuinely unknown code — 1234 is the
+            // debug-only backdoor exercised by the test below.
+            val vm = CalculatorViewModel(resolvePin = { null })
+            val keys = listOf(CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.EQUALS)
+            keys.forEach(vm::onToken)
+            assertThat(vm.uiState.value.unlock).isNull()
+            assertThat(vm.uiState.value.display).isEqualTo("9999")
+        }
+
+    @Test
+    fun `debug 1234 fallback opens the real vault before onboarding sets a PIN`() =
+        runTest {
+            // No credential resolves the code, yet the fixed debug secret still opens the
+            // real vault on debug builds so the emulator is reachable pre-onboarding
+            // (release builds have no such fallback). testDebugUnitTest runs with DEBUG=true.
             val vm = CalculatorViewModel(resolvePin = { null })
             listOf(CalcToken.ONE, CalcToken.TWO, CalcToken.THREE, CalcToken.FOUR, CalcToken.EQUALS).forEach(vm::onToken)
-            assertThat(vm.uiState.value.unlock).isNull()
-            assertThat(vm.uiState.value.display).isEqualTo("1234")
+            assertThat(vm.uiState.value.unlock).isEqualTo(VaultKind.Real)
+            assertThat(vm.uiState.value.unlockCode).isEqualTo("1234")
         }
 
     @Test

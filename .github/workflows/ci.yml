@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, app-163-phase6-integration]
   pull_request:
   workflow_dispatch:
 
@@ -50,8 +50,8 @@ jobs:
         with:
           name: debug-apk
           path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: ignore
-          retention-days: 7
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: Upload reports
         if: always()
