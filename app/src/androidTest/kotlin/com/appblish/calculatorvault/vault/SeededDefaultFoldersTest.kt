@@ -46,7 +46,8 @@ class SeededDefaultFoldersTest {
             real.unlock()
             awaitUnlock(real)
 
-            val realPhotoFolders = real.folders(VaultCategory.PHOTOS).first().map { it.name }
+            // Seeded folders load into the index a beat after the key is derived; wait for them.
+            val realPhotoFolders = awaitPhotoFolders(real, expected = 2)
             assertThat(realPhotoFolders).containsExactly("Camera", "Screenshots")
             assertThat(real.folderCounts().first()[VaultCategory.FILES]).isEqualTo(1)
             // Contacts stay folderless (home tile shows a plain count).
@@ -61,7 +62,7 @@ class SeededDefaultFoldersTest {
             realReopened.unlock()
             awaitUnlock(realReopened)
             // Camera + Screenshots (seed) + RealSecrets (user) = 3, no duplicated seed folders.
-            assertThat(realReopened.folders(VaultCategory.PHOTOS).first().map { it.name })
+            assertThat(awaitPhotoFolders(realReopened, expected = 3))
                 .containsExactly("Camera", "Screenshots", "RealSecrets")
 
             // --- Decoy vault: its own independent seed, no real-vault leakage ---------------
@@ -70,7 +71,7 @@ class SeededDefaultFoldersTest {
             decoy.unlock()
             awaitUnlock(decoy)
 
-            val decoyPhotoFolders = decoy.folders(VaultCategory.PHOTOS).first().map { it.name }
+            val decoyPhotoFolders = awaitPhotoFolders(decoy, expected = 2)
             // Seeded defaults present…
             assertThat(decoyPhotoFolders).containsExactly("Camera", "Screenshots")
             // …but the real vault's user folder is absent — spaces are isolated by directory.
@@ -86,4 +87,23 @@ class SeededDefaultFoldersTest {
         repeat(200) { if (repo.isUnlocked()) return else Thread.sleep(100) }
         assertThat(repo.isUnlocked()).isTrue()
     }
+
+    /**
+     * Poll the Photos folder flow until it reaches [expected] entries. [isUnlocked] flips true
+     * the moment the data key is derived, but the index (and thus the folder state) is loaded a
+     * beat later; production observes the StateFlow, so this only bridges the test's imperative
+     * read.
+     */
+    private fun awaitPhotoFolders(
+        repo: EncryptedVaultContentRepository,
+        expected: Int,
+    ): List<String> =
+        runBlocking {
+            repeat(150) {
+                val names = repo.folders(VaultCategory.PHOTOS).first().map { it.name }
+                if (names.size >= expected) return@runBlocking names
+                Thread.sleep(100)
+            }
+            repo.folders(VaultCategory.PHOTOS).first().map { it.name }
+        }
 }
