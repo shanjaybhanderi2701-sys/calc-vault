@@ -53,6 +53,9 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
+    <!-- Explore · Private Browser (Phase 4): the in-app incognito WebView loads pages. -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <application
         android:name=".CalculatorVaultApp"
         android:allowBackup="false"

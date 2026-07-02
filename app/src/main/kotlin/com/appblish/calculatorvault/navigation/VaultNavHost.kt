@@ -13,6 +13,12 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.appblish.calculatorvault.calculator.CalculatorScreen
+import com.appblish.calculatorvault.explore.blocker.WebsiteBlockerScreen
+import com.appblish.calculatorvault.explore.browser.PrivateBrowserScreen
+import com.appblish.calculatorvault.explore.junk.JunkCleanerScreen
+import com.appblish.calculatorvault.explore.notes.NoteEditorScreen
+import com.appblish.calculatorvault.explore.notes.NotesScreen
+import com.appblish.calculatorvault.explore.notification.HideNotificationScreen
 import com.appblish.calculatorvault.fakepassword.FakePasswordScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.recovery.ForgotPasswordRoute
@@ -32,6 +38,7 @@ import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
 import com.appblish.calculatorvault.vault.viewer.ViewerViewModel
+import com.appblish.calculatorvault.explore.fakepassword.FakePasswordScreen as ExploreFakePasswordScreen
 
 /**
  * The unified app spine (Phase 6). Starts on the [VaultDestinations.GATE] splash, which
@@ -132,7 +139,46 @@ fun VaultNavHost() {
                 onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
                 onDisguiseClick = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
                 onSettingsClick = { /* Settings — wired to the Phase-5 screen during that merge. */ },
+                onExploreToolClick = { navController.navigate(VaultDestinations.exploreRoute(it)) },
             )
+        }
+
+        // --- Explore / Quick Tools (Phase 4) ------------------------------
+        composable(VaultDestinations.EXPLORE_JUNK) {
+            JunkCleanerScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.EXPLORE_BROWSER) {
+            PrivateBrowserScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.EXPLORE_BLOCKER) {
+            WebsiteBlockerScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.EXPLORE_NOTES) {
+            NotesScreen(
+                onBack = { navController.popBackStack() },
+                onOpenNote = { navController.navigate(VaultDestinations.noteEditor(it)) },
+                onNewNote = { navController.navigate(VaultDestinations.noteEditor(VaultDestinations.NEW_NOTE)) },
+            )
+        }
+
+        composable(
+            route = VaultDestinations.NOTE_EDITOR,
+            arguments = listOf(navArgument(VaultDestinations.ARG_NOTE_ID) { type = NavType.StringType }),
+        ) { entry ->
+            val raw = entry.arguments?.getString(VaultDestinations.ARG_NOTE_ID)
+            val noteId = raw?.takeUnless { it == VaultDestinations.NEW_NOTE }
+            NoteEditorScreen(noteId = noteId, onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.EXPLORE_NOTIFICATION) {
+            HideNotificationScreen(onBack = { navController.popBackStack() })
+        }
+
+        composable(VaultDestinations.EXPLORE_FAKE_PASSWORD) {
+            ExploreFakePasswordScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
