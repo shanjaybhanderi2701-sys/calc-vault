@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault.vault
 
+import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.VaultCategory
@@ -135,6 +136,10 @@ class InMemoryVaultContentRepository(
     }
 
     private fun seedSampleContent() {
+        // Predefined default folders (xlock / Figma parity, APP-206) — mirrors what the
+        // device repository seeds into a fresh vault's encrypted index on first init.
+        foldersState.value = DefaultVaultFolders.forFreshVault()
+
         val day = 24L * 60L * 60L * 1000L
         val base = 100L * day // fixed epoch base so sample dates are deterministic
 

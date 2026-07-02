@@ -5,6 +5,7 @@ import android.net.Uri
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.media.MediaSink
+import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.VaultCategory
@@ -322,7 +323,18 @@ class EncryptedVaultContentRepository(
     private fun loadIndex() {
         val cipher = crypto ?: return
         val file = VaultStorage.indexFile(appContext)
-        if (!file.exists()) return
+        if (!file.exists()) {
+            // First unlock of this vault namespace — no index yet. Seed the predefined folders
+            // (xlock / Figma parity, APP-206) and persist so the vault opens with default
+            // folders instead of an empty shell. Each namespace (real vault + every decoy)
+            // seeds into its OWN index.enc under its own .CalcVault/ sub-directory, so a
+            // decoy's seeded folders never leak into the real vault. Runs once: on the next
+            // unlock the index exists and is loaded verbatim, so folders the user deletes stay
+            // deleted.
+            foldersState.value = DefaultVaultFolders.forFreshVault()
+            persist()
+            return
+        }
         runCatching {
             val out = ByteArrayOutputStream()
             file.inputStream().use { source -> cipher.decrypt(source, out) }
