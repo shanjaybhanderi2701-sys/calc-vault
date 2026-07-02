@@ -19,9 +19,13 @@ import com.appblish.calculatorvault.vault.CategoryViewModel
 import com.appblish.calculatorvault.vault.HideImportScreen
 import com.appblish.calculatorvault.vault.HideImportViewModel
 import com.appblish.calculatorvault.vault.RecycleBinScreen
+import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.VaultSession
 import com.appblish.calculatorvault.vault.VaultShellScreen
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
+import com.appblish.calculatorvault.vault.storage.StoragePermissions
+import com.appblish.calculatorvault.vault.storage.ui.StoragePermissionScreen
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
@@ -35,6 +39,19 @@ import com.appblish.calculatorvault.vault.viewer.ViewerViewModel
 @Composable
 fun VaultNavHost() {
     val navController = rememberNavController()
+    val context = LocalContext.current.applicationContext
+
+    // Open the encrypted public-storage vault and land on the shell, dropping the disguise
+    // spine so back returns to the calculator. unlock() derives the data key from the
+    // session passphrase and loads the .CalcVault/ index; it is a safe no-op if either the
+    // passphrase or All Files Access is still missing.
+    fun enterVault() {
+        VaultGraph.contentRepository.unlock()
+        navController.navigate(VaultDestinations.VAULT_SHELL) {
+            popUpTo(VaultDestinations.CALCULATOR)
+            launchSingleTop = true
+        }
+    }
 
     NavHost(
         navController = navController,
@@ -42,19 +59,38 @@ fun VaultNavHost() {
     ) {
         composable(VaultDestinations.CALCULATOR) {
             CalculatorScreen(
-                onUnlock = { navController.navigate(VaultDestinations.PIN) },
+                // The matched secret code is the vault passphrase: record it for the session
+                // so the storage layer can derive the data key that unwraps .CalcVault/.
+                onUnlock = { code ->
+                    VaultSession.begin(code)
+                    navController.navigate(VaultDestinations.PIN)
+                },
             )
         }
 
         composable(VaultDestinations.PIN) {
             PinEntryScreen(
                 onAuthenticated = {
-                    navController.navigate(VaultDestinations.VAULT_SHELL) {
-                        // Drop the PIN screen so back from the vault returns to the calculator.
-                        popUpTo(VaultDestinations.CALCULATOR)
+                    // Point-of-need gate: the vault content lives in the public .CalcVault/
+                    // folder, so opening it needs All Files Access. Show the primer first
+                    // if it isn't granted yet; otherwise unlock and enter directly.
+                    if (StoragePermissions.hasAllFilesAccess(context)) {
+                        enterVault()
+                    } else {
+                        navController.navigate(VaultDestinations.STORAGE_PRIMER) {
+                            // Drop the PIN screen so back from the primer returns to the calculator.
+                            popUpTo(VaultDestinations.CALCULATOR)
+                        }
                     }
                 },
                 onDismiss = { navController.popBackStack() },
+            )
+        }
+
+        composable(VaultDestinations.STORAGE_PRIMER) {
+            StoragePermissionScreen(
+                onGranted = { enterVault() },
+                onBack = { navController.popBackStack() },
             )
         }
 

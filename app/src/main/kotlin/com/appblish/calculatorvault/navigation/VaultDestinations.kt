@@ -11,6 +11,9 @@ internal object VaultDestinations {
     const val CALCULATOR = "calculator"
     const val PIN = "pin"
 
+    /** Point-of-need All Files Access primer, gating entry to the public-storage vault. */
+    const val STORAGE_PRIMER = "storage_primer"
+
     /** Post-auth landing: the Vault/AppLock/Explore shell. */
     const val VAULT_SHELL = "vault_shell"
 
