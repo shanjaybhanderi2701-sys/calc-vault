@@ -1,7 +1,6 @@
 package com.appblish.calculatorvault.vault
 
 import android.Manifest
-import android.content.pm.PackageManager
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -36,7 +35,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,18 +43,15 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.appblish.calculatorvault.applock.AppLockGraph
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
-import kotlinx.coroutines.launch
 
 /**
  * The vault-home "CalcVault" dashboard (Vault tab). Large-title header with the
@@ -149,15 +144,15 @@ private fun HomeHeader(
 
 /**
  * The "Your device is at risk" security banner (APP-207 — xlock parity). Unlike a standing
- * promo, this appears **only when a required permission is actually missing**: it re-checks
- * the live grant state on every resume via [VaultSecurityBanner] and renders nothing once
- * the full applicable set (All Files Access, plus camera when Intruder Selfie is on) is
- * granted. Tapping routes to the exact grant surface for the specific missing permission.
+ * promo, this appears **only when All Files Access is missing** — the sole mandatory vault
+ * permission (board scope refinement). It re-checks the live grant state on every resume via
+ * [VaultSecurityBanner] and renders nothing once the permission is granted. Tapping routes to
+ * the grant surface for All Files Access. Camera stays an opt-in app-lock permission for
+ * Intruder Selfie and is intentionally not part of this banner.
  */
 @Composable
 private fun SecurityBanner() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var state by
         remember {
@@ -169,24 +164,10 @@ private fun SecurityBanner() {
         }
 
     fun refresh() {
-        scope.launch {
-            val intruderOn =
-                runCatching { AppLockGraph.appLockStore.settings().intruderEnabled }.getOrDefault(false)
-            state =
-                VaultSecurityBanner.State(
-                    hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
-                    // Camera is only "required" — and so only a reason to warn — once the
-                    // opt-in Intruder Selfie feature is enabled. Otherwise it stays null
-                    // (not applicable) and never surfaces the banner.
-                    hasCamera =
-                        if (intruderOn) {
-                            ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                                PackageManager.PERMISSION_GRANTED
-                        } else {
-                            null
-                        },
-                )
-        }
+        state =
+            VaultSecurityBanner.State(
+                hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
+            )
     }
 
     // Re-evaluate whenever the user returns from a system settings / permission round-trip.
@@ -195,8 +176,6 @@ private fun SecurityBanner() {
         onPauseOrDispose { }
     }
 
-    val cameraLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
     val storageLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
 
@@ -212,8 +191,6 @@ private fun SecurityBanner() {
                         runCatching { context.startActivity(intent) }
                     }
                 }
-            VaultSecurityBanner.Permission.CAMERA ->
-                cameraLauncher.launch(Manifest.permission.CAMERA)
         }
     }
 
