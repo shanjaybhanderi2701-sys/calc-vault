@@ -58,6 +58,41 @@ data class VaultFolder(
 )
 
 /**
+ * The predefined folders seeded into every fresh vault the first time it is initialized —
+ * parity with the reference app (xlock) and the board Figma, which ship default category
+ * folders so the vault is never an empty shell (APP-206). Seeding happens once per vault
+ * *namespace*: the real vault and each decoy slot (`decoy_<slot>/`) seed into their own
+ * encrypted index, so a decoy's folders can never leak into the real vault.
+ *
+ * Each default folder carries a **stable, derived id** (`seed_<category>_<slug>`) so seeding
+ * is idempotent and a folder the user later renames or deletes is never resurrected. Contacts
+ * hold no folders (the home tile shows a plain count), so no Contacts folder is seeded.
+ */
+object DefaultVaultFolders {
+    /** (category, display name) pairs seeded into a fresh vault, in display order. */
+    private val CATALOG: List<Pair<VaultCategory, String>> =
+        listOf(
+            VaultCategory.PHOTOS to "Camera",
+            VaultCategory.PHOTOS to "Screenshots",
+            VaultCategory.VIDEOS to "Videos",
+            VaultCategory.AUDIOS to "Music",
+            VaultCategory.FILES to "Documents",
+        )
+
+    /** The default folders for a brand-new vault namespace, with stable ids. */
+    fun forFreshVault(): List<VaultFolder> =
+        CATALOG.map { (category, name) ->
+            VaultFolder(id = seedId(category, name), category = category, name = name)
+        }
+
+    /** Stable id for a seeded folder — deterministic so re-seeding never duplicates it. */
+    private fun seedId(
+        category: VaultCategory,
+        name: String,
+    ): String = "seed_${category.name.lowercase()}_${name.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
+}
+
+/**
  * An item currently in the recycle bin. [deletedAt] starts the auto-delete countdown;
  * once it exceeds [RecycleBin.AUTO_DELETE_WINDOW_DAYS] the entry is purged for good.
  */
