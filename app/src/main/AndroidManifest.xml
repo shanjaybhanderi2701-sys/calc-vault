@@ -3,19 +3,19 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      Media read access for the hide/import pipeline. On API 33+ the granular READ_MEDIA_*
-      permissions apply; on API 32 and below READ_EXTERNAL_STORAGE covers
-      photos/videos/audio/files. Media originals are removed via MediaStore delete
-      requests (user-consented on API 30+). Contacts permissions are intentionally NOT
-      declared: per board scope refinement (APP-207) All Files Access is the only mandatory
-      vault permission and contacts access is not required.
+      Media read access for the hide/import pipeline. All Files Access
+      (MANAGE_EXTERNAL_STORAGE, declared below) is the SOLE mandatory vault permission: on
+      API 30+ it already grants full read/write to every shared media category
+      (photos/videos/audio/files), so the granular READ_MEDIA_* runtime permissions are
+      redundant and off-parity with the reference app xlock — they are intentionally NOT
+      declared (board directive APP-219 / APP-203). Only the legacy READ_EXTERNAL_STORAGE
+      fallback (API ≤32) remains for pre-scoped-storage devices that lack All Files Access.
+      Media originals are removed via MediaStore delete requests (user-consented on API 30+).
+      Contacts permissions are also intentionally NOT declared (APP-207 scope refinement).
     -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
 
     <!--
       All Files Access — the vault-technique directive (§1–2, APP-142): encrypted blobs

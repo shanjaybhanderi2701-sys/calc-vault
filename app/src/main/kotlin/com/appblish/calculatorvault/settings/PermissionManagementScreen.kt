@@ -4,11 +4,9 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.provider.Settings
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Text
@@ -21,6 +19,7 @@ import com.appblish.calculatorvault.ui.components.ListRow
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.components.RowTrailing
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.storage.StoragePermissions
 
 /**
  * Settings → Permission management (deck epic G, native-trust framing). Shows each access
@@ -50,15 +49,12 @@ fun PermissionManagementScreen(
         )
 
         rows.forEach { row ->
-            val granted =
-                row.permission == null ||
-                    ContextCompat.checkSelfPermission(context, row.permission) == PackageManager.PERMISSION_GRANTED
             ListRow(
                 title = row.label,
                 subtitle = row.description,
                 leadingIcon = row.icon,
-                leadingChipColor = if (granted) colors.accent else colors.textSecondary,
-                trailing = RowTrailing.Badge(if (granted) "Granted" else "Off"),
+                leadingChipColor = if (row.granted) colors.accent else colors.textSecondary,
+                trailing = RowTrailing.Badge(if (row.granted) "Granted" else "Off"),
             )
         }
 
@@ -80,51 +76,32 @@ fun PermissionManagementScreen(
 private data class PermissionRow(
     val label: String,
     val description: String,
-    val permission: String?,
+    val granted: Boolean,
     val icon: ImageVector,
 )
 
-@Suppress("DEPRECATION")
 @Composable
 private fun rememberPermissionRows(): List<PermissionRow> {
-    val photoPermission =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-    val videoPermission =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_VIDEO
-        } else {
-            null
-        }
-    val audioPermission =
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_AUDIO
-        } else {
-            null
-        }
+    val context = LocalContext.current
     return buildList {
+        // All Files Access is the SOLE storage permission the vault uses (board directive
+        // APP-219 / APP-203): on API 30+ it already grants read/write to every media category,
+        // so no granular READ_MEDIA_* rows are surfaced — Settings shows the one permission the
+        // vault actually depends on, matching xlock.
         add(
             PermissionRow(
-                "Photos & videos",
-                "Import pictures and clips into the vault",
-                photoPermission,
+                "All files access",
+                "Import photos, videos, audio and files into the vault and restore them",
+                StoragePermissions.hasAllFilesAccess(context),
                 Icons.Filled.Lock,
             ),
         )
-        if (videoPermission != null) {
-            add(PermissionRow("Videos", "Import and play protected videos", videoPermission, Icons.Filled.Lock))
-        }
-        if (audioPermission != null) {
-            add(PermissionRow("Audio", "Hide music and voice recordings", audioPermission, Icons.Filled.Info))
-        }
         add(
             PermissionRow(
                 "Camera (break-in selfie)",
                 "Captures who tried a wrong PIN, only when enabled",
-                Manifest.permission.CAMERA,
+                ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
+                    PackageManager.PERMISSION_GRANTED,
                 Icons.Filled.Warning,
             ),
         )

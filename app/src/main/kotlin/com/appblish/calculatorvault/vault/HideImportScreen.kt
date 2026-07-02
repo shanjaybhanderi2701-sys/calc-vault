@@ -366,24 +366,14 @@ private fun requiredPermissions(category: VaultCategory): Array<String> =
         // is the only mandatory vault permission, so the Contacts category requests nothing
         // and its source query returns empty.
         VaultCategory.CONTACTS -> emptyArray()
-        VaultCategory.PHOTOS ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                arrayOf(Manifest.permission.READ_MEDIA_IMAGES)
-            } else {
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
-        VaultCategory.VIDEOS ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                arrayOf(Manifest.permission.READ_MEDIA_VIDEO)
-            } else {
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
-        VaultCategory.AUDIOS ->
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                arrayOf(Manifest.permission.READ_MEDIA_AUDIO)
-            } else {
-                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-            }
+        // Photos/Videos/Audios/Files all enumerate shared-storage originals under All Files
+        // Access (MANAGE_EXTERNAL_STORAGE) on API 30+, which already grants full read to every
+        // media category — so on TIRAMISU+ no granular READ_MEDIA_* runtime permission is
+        // requested (board directive APP-219 / APP-203, xlock parity). Only pre-Tiramisu
+        // devices without All Files Access fall back to READ_EXTERNAL_STORAGE.
+        VaultCategory.PHOTOS,
+        VaultCategory.VIDEOS,
+        VaultCategory.AUDIOS,
         VaultCategory.FILES ->
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 emptyArray()
