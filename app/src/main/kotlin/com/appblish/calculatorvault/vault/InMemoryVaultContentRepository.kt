@@ -92,6 +92,15 @@ class InMemoryVaultContentRepository(
             itemsState.value.map { if (it.id in itemIds) it.copy(folderId = folderId) else it }
     }
 
+    override suspend fun unhide(itemIds: Set<String>): Int =
+        mutex.withLock {
+            // No real device write-back off-device: drop the un-hidden items from the vault
+            // list (the device impl publishes the decrypted bytes to public storage first).
+            val (restored, kept) = itemsState.value.partition { it.id in itemIds }
+            itemsState.value = kept
+            restored.size
+        }
+
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
         mutex.withLock {
             val (moved, kept) = itemsState.value.partition { it.id in itemIds }

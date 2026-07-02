@@ -42,6 +42,11 @@ data class VaultItem(
     // MIME type of the original (e.g. "image/jpeg", "video/mp4"), used by viewers to
     // decode the decrypted blob. Null for legacy/sample items.
     val mimeType: String? = null,
+    // Public-storage RELATIVE_PATH the original lived in at hide time (e.g. "DCIM/Camera/"),
+    // captured from MediaStore so un-hide can write the decrypted bytes back to the same
+    // gallery album. Persisted. Null when unknown → un-hide falls back to a per-category
+    // default public folder (see MediaSink.defaultRelativePath).
+    val relativePath: String? = null,
 )
 
 /** A user-created folder within a category (Create Folder from the FAB menu). */

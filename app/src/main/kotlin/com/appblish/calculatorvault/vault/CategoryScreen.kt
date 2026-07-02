@@ -16,6 +16,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedTextField
@@ -78,6 +79,10 @@ fun CategoryScreen(
                     actions =
                         listOf(
                             SelectionAction(Icons.Filled.Share, "Share") { /* share intent — hardening phase */ },
+                            // Un-hide: decrypt back to public storage so it returns to the gallery.
+                            SelectionAction(Icons.Filled.Refresh, "Unhide") {
+                                viewModel.unhideSelected()
+                            },
                             SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
                                 viewModel.recycleSelected()
                             },

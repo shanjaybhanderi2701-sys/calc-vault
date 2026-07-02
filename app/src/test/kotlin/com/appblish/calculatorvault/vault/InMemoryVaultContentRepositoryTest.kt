@@ -65,6 +65,46 @@ class InMemoryVaultContentRepositoryTest {
         }
 
     @Test
+    fun `unhide removes items from the vault and reports the count`() =
+        runTest {
+            val repo = repo()
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("a", VaultCategory.PHOTOS, 3),
+                        staged("b", VaultCategory.PHOTOS, 2),
+                    ),
+                )
+            val ids = stored.map { it.id }.toSet()
+
+            val count = repo.unhide(ids)
+
+            assertThat(count).isEqualTo(2)
+            assertThat(repo.items(VaultCategory.PHOTOS).first()).isEmpty()
+            // Un-hide is a restore-to-gallery, not a soft-delete: nothing lands in the bin.
+            assertThat(repo.recycleBin().first()).isEmpty()
+        }
+
+    @Test
+    fun `unhide leaves un-selected items in place`() =
+        runTest {
+            val repo = repo()
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("keep", VaultCategory.FILES, 3),
+                        staged("go", VaultCategory.FILES, 2),
+                    ),
+                )
+            val goId = stored.first { it.originalName == "go.bin" }.id
+
+            val count = repo.unhide(setOf(goId))
+
+            assertThat(count).isEqualTo(1)
+            assertThat(repo.items(VaultCategory.FILES).first().map { it.originalName }).containsExactly("keep.bin")
+        }
+
+    @Test
     fun `delete forever removes from the bin permanently`() =
         runTest {
             val repo = repo()

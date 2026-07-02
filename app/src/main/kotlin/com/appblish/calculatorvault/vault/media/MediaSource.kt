@@ -94,6 +94,7 @@ class MediaSource(
                     albumName = row.bucketName,
                     contentUri = row.uri.toString(),
                     mimeType = row.mime,
+                    relativePath = row.relativePath,
                 )
         }
         return out.sortedByDescending { it.sortKey }
@@ -106,6 +107,7 @@ class MediaSource(
         val bucketId: String,
         val bucketName: String,
         val mime: String?,
+        val relativePath: String,
     )
 
     private inline fun queryMedia(
@@ -119,7 +121,12 @@ class MediaSource(
         val mimeCol = MediaStore.MediaColumns.MIME_TYPE
         val bucketIdCol = MediaStore.MediaColumns.BUCKET_ID
         val bucketNameCol = MediaStore.MediaColumns.BUCKET_DISPLAY_NAME
-        val projection = arrayOf(idCol, nameCol, dateCol, mimeCol, bucketIdCol, bucketNameCol)
+        // RELATIVE_PATH (the "DCIM/Camera/" style album path) only exists on API 29+.
+        val relPathCol =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) MediaStore.MediaColumns.RELATIVE_PATH else null
+        val projection =
+            arrayOf(idCol, nameCol, dateCol, mimeCol, bucketIdCol, bucketNameCol) +
+                (relPathCol?.let { arrayOf(it) } ?: emptyArray())
         val selection = if (bucketId != null) "$bucketIdCol = ?" else null
         val args = if (bucketId != null) arrayOf(bucketId) else null
         resolver.query(collection(category), projection, selection, args, "$dateCol DESC")?.use { c ->
@@ -129,11 +136,14 @@ class MediaSource(
             val mimeIdx = c.getColumnIndexOrThrow(mimeCol)
             val bIdIdx = c.getColumnIndex(bucketIdCol)
             val bNameIdx = c.getColumnIndex(bucketNameCol)
+            val relPathIdx = if (relPathCol != null) c.getColumnIndex(relPathCol) else -1
             while (c.moveToNext()) {
                 val id = c.getLong(idIdx)
                 val bId = if (bIdIdx >= 0 && !c.isNull(bIdIdx)) c.getString(bIdIdx) else "all"
                 val bName =
                     if (bNameIdx >= 0 && !c.isNull(bNameIdx)) c.getString(bNameIdx) else "All"
+                val relPath =
+                    if (relPathIdx >= 0 && !c.isNull(relPathIdx)) c.getString(relPathIdx) else ""
                 onRow(
                     MediaRow(
                         uri = ContentUris.withAppendedId(collection(category), id),
@@ -142,6 +152,7 @@ class MediaSource(
                         bucketId = bId,
                         bucketName = bName,
                         mime = if (c.isNull(mimeIdx)) null else c.getString(mimeIdx),
+                        relativePath = relPath,
                     ),
                 )
             }

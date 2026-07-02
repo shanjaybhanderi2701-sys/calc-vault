@@ -92,7 +92,8 @@ dependencies {
 
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     // Instrumented-test runner + JUnit4 hooks for the on-device survive-uninstall /
-    // PIN-recovery test that proves the public .CalcVault/ storage gate (APP-169).
+    // PIN-recovery test that proves the public .CalcVault/ storage gate (APP-169) and the
+    // un-hide / restore-to-gallery write-back (APP-170).
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")

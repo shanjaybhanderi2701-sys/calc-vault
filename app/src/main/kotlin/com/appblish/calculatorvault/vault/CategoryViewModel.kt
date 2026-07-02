@@ -95,6 +95,9 @@ class CategoryViewModel(
 
     fun recycleSelected() = mutateSelection { repository.moveToRecycleBin(it) }
 
+    /** Un-hide the selection: decrypt back to public storage so it returns to the gallery. */
+    fun unhideSelected() = mutateSelection { repository.unhide(it) }
+
     fun moveSelectedToFolder(folderId: String?) = mutateSelection { repository.moveToFolder(it, folderId) }
 
     fun createFolder(name: String) {
