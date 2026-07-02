@@ -3,16 +3,21 @@ package com.appblish.calculatorvault.vault
 import android.content.Context
 import android.net.Uri
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
-import com.appblish.calculatorvault.vault.crypto.VaultKeyStore
+import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.storage.StoragePermissions
+import com.appblish.calculatorvault.vault.storage.VaultStorage
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -23,42 +28,70 @@ import java.io.File
 import java.util.UUID
 
 /**
- * Device [VaultContentRepository] that realizes the "encrypt + remove from public
- * storage" pipeline the Phase 2 seam described. It streams each picked original through
- * [VaultCrypto] into an app-private, AES-256-GCM blob under `filesDir/vault/blobs`,
- * records lightweight metadata in an on-disk JSON index, and serves decrypted bytes back
- * to the viewers. The vault data key is keystore-backed via [VaultKeyStore].
+ * Device [VaultContentRepository] that realizes the board's survive-uninstall vault
+ * technique (vault-technique §1–2, APP-142). It streams each picked original through
+ * [VaultCrypto] into an AES-256-GCM blob in the **hidden public** `.CalcVault/` dot-folder
+ * ([VaultStorage]) — UUID file name, extension stripped — records metadata in an
+ * **encrypted** index (`index.enc`) in the same folder, and serves decrypted bytes back to
+ * the viewers.
  *
- * Removal of the *public* original is completed by the hide/import UI via a
- * MediaStore delete-request (which needs user consent on API 30+, so it cannot run from
- * a repository without an Activity). [hide] therefore returns the stored items still
- * carrying their [VaultItem.sourceUri] so the caller can issue the delete request; the
- * persisted copies never retain the source Uri.
+ * Because the whole vault lives on shared storage, it **survives app uninstall/reinstall**:
+ * the OS wipes `filesDir` but leaves the public dot-folder. The data key that unlocks it
+ * survives too — it is wrapped under a passphrase-derived key in `.vaultkey`
+ * ([VaultKeyFile]), so re-entering the PIN after a reinstall re-derives the key and the
+ * vault reads again. This replaces Phase 2's keystore-resident key (which the OS wiped on
+ * uninstall) and its plaintext app-private index.
  *
- * All flows mirror an in-memory snapshot that is loaded from and written back to the
- * index file, so navigation across home, categories, viewers, and the recycle bin
- * observes one consistent state, and the vault survives process death.
+ * [unlock] must run before content is readable: it needs both All Files Access
+ * ([StoragePermissions]) and the session passphrase ([VaultSession]). It is a no-op until
+ * both are present, so callers can invoke it eagerly and re-invoke it once the primer grants
+ * access. All mutating flows mirror an in-memory snapshot persisted back to `index.enc`.
+ *
+ * Removal of the *public* original is completed by the hide/import UI via a MediaStore
+ * delete-request (user-consented on API 30+), so [hide] returns the stored items still
+ * carrying their [VaultItem.sourceUri]; the persisted copies never retain it.
  */
 class EncryptedVaultContentRepository(
     context: Context,
 ) : VaultContentRepository {
     private val appContext = context.applicationContext
     private val resolver get() = appContext.contentResolver
-    private val keyStore = VaultKeyStore(appContext)
-    private val crypto by lazy { VaultCrypto(keyStore.secretKey()) }
 
-    private val baseDir = File(appContext.filesDir, "vault").apply { mkdirs() }
-    private val blobsDir = File(baseDir, "blobs").apply { mkdirs() }
-    private val indexFile = File(baseDir, "index.json")
+    // The data key, available only after a successful [unlock]. Null == vault locked.
+    @Volatile
+    private var crypto: VaultCrypto? = null
 
+    private val unlockScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
 
     private val itemsState = MutableStateFlow<List<VaultItem>>(emptyList())
     private val foldersState = MutableStateFlow<List<VaultFolder>>(emptyList())
     private val binState = MutableStateFlow<List<RecycleBinEntry>>(emptyList())
 
-    init {
-        loadIndex()
+    /** True once [unlock] has derived the data key and loaded the index (test/UI probe). */
+    fun isUnlocked(): Boolean = crypto != null
+
+    override fun unlock() {
+        if (crypto != null) return
+        val passphrase = VaultSession.passphrase ?: return
+        // The key file + index live in public storage; without All Files Access we cannot
+        // even read them. Stay locked (empty vault) until the primer grants access.
+        if (!StoragePermissions.hasAllFilesAccess(appContext)) return
+        unlockScope.launch {
+            mutex.withLock {
+                if (crypto != null) return@withLock
+                val dataKey =
+                    try {
+                        VaultKeyFile(VaultStorage.keyFile(appContext)).unlockOrCreate(passphrase)
+                    } catch (e: Exception) {
+                        // Wrong passphrase / unreadable key file: leave the vault locked.
+                        android.util.Log.w("VaultUnlock", "unlock failed: ${e.javaClass.simpleName}: ${e.message}")
+                        return@withLock
+                    }
+                crypto = VaultCrypto(dataKey)
+                loadIndex()
+            }
+        }
     }
 
     override fun items(category: VaultCategory): Flow<List<VaultItem>> =
@@ -82,8 +115,10 @@ class EncryptedVaultContentRepository(
         withContext(Dispatchers.IO) {
             val stored = mutableListOf<VaultItem>()
             for (staged in items) {
-                val id = "v${UUID.randomUUID()}"
-                val blob = File(blobsDir, "$id.enc")
+                // UUID file name, extension stripped: nothing about the original leaks from
+                // the blob's name. Stored as a bare name so the vault dir stays relocatable.
+                val blobName = UUID.randomUUID().toString()
+                val blob = VaultStorage.blobFile(appContext, blobName)
                 val encryptedBytes =
                     try {
                         encryptSource(staged, blob)
@@ -95,8 +130,8 @@ class EncryptedVaultContentRepository(
                     }
                 val item =
                     staged.copy(
-                        id = id,
-                        encryptedPath = blob.absolutePath,
+                        id = "v$blobName",
+                        encryptedPath = blobName,
                         sizeBytes = encryptedBytes,
                         sourceUri = null,
                     )
@@ -115,6 +150,7 @@ class EncryptedVaultContentRepository(
         staged: VaultItem,
         blob: File,
     ): Long {
+        val cipher = requireCrypto()
         val uri = staged.sourceUri
         val input =
             if (uri != null) {
@@ -126,7 +162,7 @@ class EncryptedVaultContentRepository(
                 staged.originalName.toByteArray().inputStream()
             }
         input.use { source ->
-            blob.outputStream().use { sink -> crypto.encrypt(source, sink) }
+            blob.outputStream().use { sink -> cipher.encrypt(source, sink) }
         }
         return blob.length()
     }
@@ -170,7 +206,7 @@ class EncryptedVaultContentRepository(
     override suspend fun deleteForever(itemIds: Set<String>) =
         mutex.withLock {
             val (removed, kept) = binState.value.partition { it.item.id in itemIds }
-            removed.forEach { it.item.encryptedPath?.let { path -> File(path).delete() } }
+            removed.forEach { it.item.encryptedPath?.let { path -> resolveBlob(path).delete() } }
             binState.value = kept
             persist()
         }
@@ -178,7 +214,7 @@ class EncryptedVaultContentRepository(
     override suspend fun purgeExpired(now: Long): Int =
         mutex.withLock {
             val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
-            expired.forEach { it.item.encryptedPath?.let { path -> File(path).delete() } }
+            expired.forEach { it.item.encryptedPath?.let { path -> resolveBlob(path).delete() } }
             binState.value = kept
             persist()
             expired.size
@@ -186,21 +222,34 @@ class EncryptedVaultContentRepository(
 
     override suspend fun openDecrypted(itemId: String): ByteArray? =
         withContext(Dispatchers.IO) {
+            val cipher = crypto ?: return@withContext null
             val item =
                 itemsState.value.firstOrNull { it.id == itemId }
                     ?: binState.value.firstOrNull { it.item.id == itemId }?.item
                     ?: return@withContext null
-            val path = item.encryptedPath ?: return@withContext null
-            val blob = File(path)
+            val blob = item.encryptedPath?.let(::resolveBlob) ?: return@withContext null
             if (!blob.exists()) return@withContext null
             val out = ByteArrayOutputStream()
-            blob.inputStream().use { source -> crypto.decrypt(source, out) }
+            blob.inputStream().use { source -> cipher.decrypt(source, out) }
             out.toByteArray()
         }
 
-    // --- Persistence (org.json; app-private, plaintext metadata over encrypted blobs) ---
+    // --- Storage helpers ------------------------------------------------------------
+
+    private fun requireCrypto(): VaultCrypto = crypto ?: error("Vault is locked; call unlock() first")
+
+    /**
+     * Resolve a stored blob reference to a file. New items store a bare UUID name resolved
+     * against the current public vault dir; a legacy absolute path (older installs) is used
+     * as-is so pre-existing blobs still open.
+     */
+    private fun resolveBlob(encryptedPath: String): File =
+        if (encryptedPath.contains('/')) File(encryptedPath) else VaultStorage.blobFile(appContext, encryptedPath)
+
+    // --- Persistence: AES-256-GCM encrypted index in the public .CalcVault/ folder ---
 
     private fun persist() {
+        val cipher = crypto ?: return
         val root =
             JSONObject().apply {
                 put("items", itemsState.value.toJsonArray { it.toJson() })
@@ -215,13 +264,21 @@ class EncryptedVaultContentRepository(
                     },
                 )
             }
-        indexFile.writeText(root.toString())
+        val encrypted = ByteArrayOutputStream()
+        root.toString().toByteArray(Charsets.UTF_8).inputStream().use { source ->
+            cipher.encrypt(source, encrypted)
+        }
+        VaultStorage.indexFile(appContext).writeBytes(encrypted.toByteArray())
     }
 
     private fun loadIndex() {
-        if (!indexFile.exists()) return
+        val cipher = crypto ?: return
+        val file = VaultStorage.indexFile(appContext)
+        if (!file.exists()) return
         runCatching {
-            val root = JSONObject(indexFile.readText())
+            val out = ByteArrayOutputStream()
+            file.inputStream().use { source -> cipher.decrypt(source, out) }
+            val root = JSONObject(String(out.toByteArray(), Charsets.UTF_8))
             itemsState.value = root.optJSONArray("items").mapObjects { it.toVaultItem() }
             foldersState.value = root.optJSONArray("folders").mapObjects { it.toVaultFolder() }
             binState.value =

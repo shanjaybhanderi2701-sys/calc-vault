@@ -1,8 +1,13 @@
 package com.appblish.calculatorvault.navigation
 
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -19,9 +24,13 @@ import com.appblish.calculatorvault.vault.CategoryViewModel
 import com.appblish.calculatorvault.vault.HideImportScreen
 import com.appblish.calculatorvault.vault.HideImportViewModel
 import com.appblish.calculatorvault.vault.RecycleBinScreen
+import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.VaultSession
 import com.appblish.calculatorvault.vault.VaultShellScreen
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
+import com.appblish.calculatorvault.vault.storage.StoragePermissions
+import com.appblish.calculatorvault.vault.storage.ui.StoragePermissionScreen
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
@@ -42,7 +51,12 @@ fun VaultNavHost() {
     ) {
         composable(VaultDestinations.CALCULATOR) {
             CalculatorScreen(
-                onUnlock = { navController.navigate(VaultDestinations.PIN) },
+                onUnlock = { code ->
+                    // Capture the entry code as this session's vault passphrase; the shell
+                    // gate below uses it to unlock the PIN-wrapped data key.
+                    VaultSession.begin(code)
+                    navController.navigate(VaultDestinations.PIN)
+                },
             )
         }
 
@@ -59,12 +73,31 @@ fun VaultNavHost() {
         }
 
         composable(VaultDestinations.VAULT_SHELL) {
-            VaultShellScreen(
-                onCategoryClick = { navController.navigate(VaultDestinations.category(it)) },
-                onRecentClick = { navController.navigate(VaultDestinations.viewer(it.id)) },
-                onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
-                onSettingsClick = { /* Settings — Phase 5 */ },
-            )
+            // Point-of-need gate: the vault lives in the hidden public .CalcVault/ folder,
+            // so it cannot be read or written without All Files Access. Show the primer
+            // until granted; once granted, unlock the data key and load the encrypted index.
+            val context = LocalContext.current
+            var storageGranted by remember { mutableStateOf(StoragePermissions.hasAllFilesAccess(context)) }
+            LifecycleResumeEffect(Unit) {
+                storageGranted = StoragePermissions.hasAllFilesAccess(context)
+                onPauseOrDispose { }
+            }
+            LaunchedEffect(storageGranted) {
+                if (storageGranted) VaultGraph.contentRepository.unlock()
+            }
+            if (storageGranted) {
+                VaultShellScreen(
+                    onCategoryClick = { navController.navigate(VaultDestinations.category(it)) },
+                    onRecentClick = { navController.navigate(VaultDestinations.viewer(it.id)) },
+                    onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
+                    onSettingsClick = { /* Settings — Phase 5 */ },
+                )
+            } else {
+                StoragePermissionScreen(
+                    onGranted = { storageGranted = true },
+                    onBack = { navController.popBackStack() },
+                )
+            }
         }
 
         composable(

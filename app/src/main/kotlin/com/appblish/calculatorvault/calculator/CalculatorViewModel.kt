@@ -11,6 +11,9 @@ data class CalculatorUiState(
     val input: String = "",
     val result: String = "",
     val unlockRequested: Boolean = false,
+    // The code that triggered the unlock — used as the vault passphrase to derive the data
+    // key (see VaultKeyFile). Captured at the moment '=' matches the secret.
+    val unlockCode: String = "",
 )
 
 /**
@@ -42,7 +45,7 @@ class CalculatorViewModel(
     fun onEquals() {
         val current = _uiState.value.input
         if (secretDetector.isUnlockTrigger(current)) {
-            _uiState.value = _uiState.value.copy(unlockRequested = true)
+            _uiState.value = _uiState.value.copy(unlockRequested = true, unlockCode = current.trim())
             return
         }
         val value = engine.evaluate(current)

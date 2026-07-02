@@ -27,18 +27,20 @@ import androidx.lifecycle.viewmodel.compose.viewModel
  */
 @Composable
 fun CalculatorScreen(
-    onUnlock: () -> Unit,
+    onUnlock: (code: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: CalculatorViewModel = viewModel(),
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
 
     // Navigate exactly once per unlock request; do it as an effect, not during
-    // composition, so recomposition can't fire the callback multiple times.
+    // composition, so recomposition can't fire the callback multiple times. The code that
+    // matched the secret is forwarded as the vault passphrase.
     LaunchedEffect(state.unlockRequested) {
         if (state.unlockRequested) {
+            val code = state.unlockCode
             viewModel.onUnlockHandled()
-            onUnlock()
+            onUnlock(code)
         }
     }
 
