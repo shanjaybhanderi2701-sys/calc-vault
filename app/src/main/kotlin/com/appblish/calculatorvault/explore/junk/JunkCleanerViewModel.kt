@@ -2,11 +2,13 @@ package com.appblish.calculatorvault.explore.junk
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** One reclaimable bucket the scan surfaces. Sizes are in bytes. */
 data class JunkCategory(
@@ -40,6 +42,10 @@ data class JunkCleanerState(
 class JunkCleanerViewModel(
     private val scanner: () -> List<JunkCategory> = ::defaultBuckets,
 ) : ViewModel() {
+    // Zero-arg constructor for the default Compose `viewModel()` factory (which reflectively
+    // needs a no-arg constructor); the primary ctor stays open for tests / a real scanner.
+    constructor() : this(::defaultBuckets)
+
     private val _state = MutableStateFlow(JunkCleanerState())
     val state: StateFlow<JunkCleanerState> = _state.asStateFlow()
 
@@ -48,7 +54,10 @@ class JunkCleanerViewModel(
         _state.value = JunkCleanerState(phase = JunkPhase.SCANNING)
         viewModelScope.launch {
             delay(SCAN_MILLIS)
-            _state.value = JunkCleanerState(phase = JunkPhase.RESULTS, categories = scanner())
+            // The scan sweeps cache/scratch dirs off disk; keep it off the main thread so the
+            // real `cacheDir`/`externalCacheDir` traversal never blocks the UI (was an ANR).
+            val buckets = withContext(Dispatchers.IO) { scanner() }
+            _state.value = JunkCleanerState(phase = JunkPhase.RESULTS, categories = buckets)
         }
     }
 
