@@ -47,8 +47,7 @@ class VaultKeyFile(
      * Unwrap the DEK with [passphrase], or create+persist a fresh DEK on first setup.
      * Idempotent for a given passphrase: the same PIN always yields the same DEK.
      */
-    fun unlockOrCreate(passphrase: String): SecretKey =
-        if (file.exists()) unlock(passphrase) else create(passphrase)
+    fun unlockOrCreate(passphrase: String): SecretKey = if (file.exists()) unlock(passphrase) else create(passphrase)
 
     /** Unwrap the DEK for an existing key file. Throws [WrongPassphraseException] on a bad PIN. */
     fun unlock(passphrase: String): SecretKey {

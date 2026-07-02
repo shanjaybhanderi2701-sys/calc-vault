@@ -47,62 +47,63 @@ class PublicStorageSurviveUninstallTest {
     }
 
     @Test
-    fun hiddenContentSurvivesReinstallAndOpensWithPinOnly() = runBlocking {
-        // --- Install #1: set up the vault and hide one item -----------------------------
-        VaultSession.begin(pin)
-        val first = EncryptedVaultContentRepository(context)
-        first.unlock()
-        awaitUnlock(first)
+    fun hiddenContentSurvivesReinstallAndOpensWithPinOnly() =
+        runBlocking {
+            // --- Install #1: set up the vault and hide one item -----------------------------
+            VaultSession.begin(pin)
+            val first = EncryptedVaultContentRepository(context)
+            first.unlock()
+            awaitUnlock(first)
 
-        // sourceUri = null → the repository encrypts these bytes directly into a blob.
-        val staged =
-            VaultItem(
-                id = "staged",
-                category = VaultCategory.FILES,
-                originalName = String(payload),
-                dateLabel = "today",
-                sortKey = 1_000L,
-            )
-        val stored = first.hide(listOf(staged))
-        val storedId = stored.single().id
+            // sourceUri = null → the repository encrypts these bytes directly into a blob.
+            val staged =
+                VaultItem(
+                    id = "staged",
+                    category = VaultCategory.FILES,
+                    originalName = String(payload),
+                    dateLabel = "today",
+                    sortKey = 1_000L,
+                )
+            val stored = first.hide(listOf(staged))
+            val storedId = stored.single().id
 
-        // Everything lives in the hidden PUBLIC folder, with a .nomedia marker.
-        val vaultDir = VaultStorage.vaultDir(context)
-        assertThat(vaultDir.absolutePath).contains("/.CalcVault")
-        assertThat(File(vaultDir, ".nomedia").exists()).isTrue()
-        assertThat(VaultStorage.keyFile(context).exists()).isTrue()
-        assertThat(VaultStorage.indexFile(context).exists()).isTrue()
-        // A blob with a bare UUID name (no extension).
-        val blobs = vaultDir.listFiles { f -> f.isFile && f.name.matches(UUID_REGEX) }.orEmpty()
-        assertThat(blobs).hasLength(1)
-        // The index is ENCRYPTED — the original name must not be readable on disk.
-        val indexBytes = VaultStorage.indexFile(context).readBytes()
-        assertThat(String(indexBytes)).doesNotContain("survive-uninstall proof")
+            // Everything lives in the hidden PUBLIC folder, with a .nomedia marker.
+            val vaultDir = VaultStorage.vaultDir(context)
+            assertThat(vaultDir.absolutePath).contains("/.CalcVault")
+            assertThat(File(vaultDir, ".nomedia").exists()).isTrue()
+            assertThat(VaultStorage.keyFile(context).exists()).isTrue()
+            assertThat(VaultStorage.indexFile(context).exists()).isTrue()
+            // A blob with a bare UUID name (no extension).
+            val blobs = vaultDir.listFiles { f -> f.isFile && f.name.matches(UUID_REGEX) }.orEmpty()
+            assertThat(blobs).hasLength(1)
+            // The index is ENCRYPTED — the original name must not be readable on disk.
+            val indexBytes = VaultStorage.indexFile(context).readBytes()
+            assertThat(String(indexBytes)).doesNotContain("survive-uninstall proof")
 
-        // --- "Reinstall": a fresh repository over the same shared-storage folder ---------
-        // A new instance starts with empty in-memory state and no keystore material — the
-        // only way it can read anything is the public key file + encrypted index.
-        VaultSession.begin(pin)
-        val reinstalled = EncryptedVaultContentRepository(context)
-        reinstalled.unlock()
-        awaitUnlock(reinstalled)
+            // --- "Reinstall": a fresh repository over the same shared-storage folder ---------
+            // A new instance starts with empty in-memory state and no keystore material — the
+            // only way it can read anything is the public key file + encrypted index.
+            VaultSession.begin(pin)
+            val reinstalled = EncryptedVaultContentRepository(context)
+            reinstalled.unlock()
+            awaitUnlock(reinstalled)
 
-        val recovered = reinstalled.allItems().first()
-        assertThat(recovered.map { it.id }).contains(storedId)
-        val bytes = reinstalled.openDecrypted(storedId)
-        assertThat(bytes).isEqualTo(payload)
+            val recovered = reinstalled.allItems().first()
+            assertThat(recovered.map { it.id }).contains(storedId)
+            val bytes = reinstalled.openDecrypted(storedId)
+            assertThat(bytes).isEqualTo(payload)
 
-        // --- Wrong PIN cannot open the same folder --------------------------------------
-        VaultSession.begin(wrongPin)
-        val attacker = EncryptedVaultContentRepository(context)
-        attacker.unlock()
-        // Let the attempt fully run (PBKDF2 derive + GCM verify); it must fail and stay locked.
-        Thread.sleep(4_000)
-        assertThat(attacker.isUnlocked()).isFalse()
-        assertThat(attacker.allItems().first()).isEmpty()
+            // --- Wrong PIN cannot open the same folder --------------------------------------
+            VaultSession.begin(wrongPin)
+            val attacker = EncryptedVaultContentRepository(context)
+            attacker.unlock()
+            // Let the attempt fully run (PBKDF2 derive + GCM verify); it must fail and stay locked.
+            Thread.sleep(4_000)
+            assertThat(attacker.isUnlocked()).isFalse()
+            assertThat(attacker.allItems().first()).isEmpty()
 
-        VaultSession.begin(pin)
-    }
+            VaultSession.begin(pin)
+        }
 
     private fun awaitUnlock(repo: EncryptedVaultContentRepository) {
         // Generous: first-run key creation runs 120k-iteration PBKDF2, slow on a cold emulator.

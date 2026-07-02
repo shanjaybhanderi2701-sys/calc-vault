@@ -1,4 +1,9 @@
 <resources>
     <!-- Disguise name shown on the launcher and task switcher. -->
     <string name="app_name">Calculator</string>
+
+    <!-- AppLock accessibility service (Phase 3). The label/description are what the user sees
+         in Android's Accessibility settings; kept plain and honest, matching the disguise. -->
+    <string name="applock_service_label">Calculator App Lock</string>
+    <string name="applock_service_description">Lets Calculator show its lock screen when a protected app is opened. Runs on your device only; nothing is uploaded.</string>
 </resources>

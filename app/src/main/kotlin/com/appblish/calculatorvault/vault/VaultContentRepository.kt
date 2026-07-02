@@ -54,8 +54,7 @@ interface VaultContentRepository {
      * ("300 Photos / 8 Folders"). Defaults to zeros so preview/test fakes need not
      * implement it; the real repositories derive it from their folder index.
      */
-    fun folderCounts(): Flow<Map<VaultCategory, Int>> =
-        flowOf(VaultCategory.entries.associateWith { 0 })
+    fun folderCounts(): Flow<Map<VaultCategory, Int>> = flowOf(VaultCategory.entries.associateWith { 0 })
 
     /** The most recently hidden items across all categories (home "Recent" strip). */
     fun recent(limit: Int = 12): Flow<List<VaultItem>>

@@ -43,16 +43,18 @@ class VaultKeyFileTest {
         // Install #1: encrypt a blob with the DEK.
         val dek1 = VaultKeyFile(file).unlockOrCreate("1234")
         val blob =
-            ByteArrayOutputStream().also { out ->
-                VaultCrypto(dek1).encrypt(ByteArrayInputStream(secret), out)
-            }.toByteArray()
+            ByteArrayOutputStream()
+                .also { out ->
+                    VaultCrypto(dek1).encrypt(ByteArrayInputStream(secret), out)
+                }.toByteArray()
 
         // Reinstall: recover the DEK from the PIN + key file, decrypt the same blob.
         val dek2 = VaultKeyFile(file).unlock("1234")
         val recovered =
-            ByteArrayOutputStream().also { out ->
-                VaultCrypto(dek2).decrypt(ByteArrayInputStream(blob), out)
-            }.toByteArray()
+            ByteArrayOutputStream()
+                .also { out ->
+                    VaultCrypto(dek2).decrypt(ByteArrayInputStream(blob), out)
+                }.toByteArray()
 
         assertThat(recovered).isEqualTo(secret)
     }
