@@ -5,7 +5,6 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
@@ -28,7 +27,9 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             setRecentsScreenshotEnabled(false)
         }
-        enableEdgeToEdge()
+        // Full-screen immersive edge-to-edge (APP-204): hide the system bars so no surface is
+        // clipped by the system navigation bar. Supersedes the earlier enableEdgeToEdge() call.
+        applyImmersiveEdgeToEdge()
         setContent {
             CalculatorVaultTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
