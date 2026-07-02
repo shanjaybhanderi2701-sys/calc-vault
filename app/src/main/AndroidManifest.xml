@@ -68,20 +68,60 @@
         android:theme="@style/Theme.CalculatorVault">
 
         <!--
-          Single launcher entry point = the calculator disguise. The vault is
-          reached only via the secret code detected inside the calculator; it is
-          intentionally NOT a separately launchable component.
+          The calculator disguise activity. It is NOT itself a launcher (exported=false):
+          the two activity-aliases below are the launcher entry points so Settings →
+          Disguise can swap the visible icon/name at runtime by enabling exactly one. The
+          vault is reached only via the secret code typed inside the calculator.
         -->
         <activity
             android:name=".MainActivity"
+            android:exported="false"
+            android:theme="@style/Theme.CalculatorVault" />
+
+        <!-- Default disguise: "Calculator" tile. Enabled at install. -->
+        <activity-alias
+            android:name=".CalculatorDefaultAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="true"
             android:exported="true"
-            android:label="@string/app_name"
-            android:theme="@style/Theme.CalculatorVault">
+            android:icon="@mipmap/ic_launcher"
+            android:label="@string/app_name">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
+
+        <!-- Alternate disguise: plain "Calc" tile. Disabled until chosen in Settings. -->
+        <activity-alias
+            android:name=".CalculatorAltAlias"
+            android:targetActivity=".MainActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:icon="@mipmap/ic_launcher_alt"
+            android:label="@string/app_name_alt">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <!--
+          Device-admin receiver behind the Prevent-uninstall switch. An active admin cannot
+          be uninstalled until deactivated (only reachable from inside the unlocked vault).
+        -->
+        <receiver
+            android:name=".security.VaultDeviceAdminReceiver"
+            android:description="@string/device_admin_description"
+            android:exported="false"
+            android:permission="android.permission.BIND_DEVICE_ADMIN">
+            <meta-data
+                android:name="android.app.device_admin"
+                android:resource="@xml/device_admin" />
+            <intent-filter>
+                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
+            </intent-filter>
+        </receiver>
 
         <!--
           The AppLock challenge, raised over a locked app by the accessibility service.

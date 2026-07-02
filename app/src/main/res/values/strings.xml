@@ -6,4 +6,9 @@
          in Android's Accessibility settings; kept plain and honest, matching the disguise. -->
     <string name="applock_service_label">Calculator App Lock</string>
     <string name="applock_service_description">Lets Calculator show its lock screen when a protected app is opened. Runs on your device only; nothing is uploaded.</string>
+
+    <!-- Alternate disguise label, selectable from Settings → Disguise icon &amp; name. -->
+    <string name="app_name_alt">Calc</string>
+    <!-- Shown on the system device-admin consent screen for the Prevent-uninstall switch. -->
+    <string name="device_admin_description">Keeps the calculator from being uninstalled without your PIN.</string>
 </resources>

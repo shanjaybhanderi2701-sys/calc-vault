@@ -25,6 +25,13 @@ internal object VaultDestinations {
     const val FORGOT_PASSWORD = "forgot_password"
     const val FAKE_PASSWORD = "fake_password"
 
+    // --- Settings (Phase 5) ---
+    const val SETTINGS = "settings"
+    const val SETTINGS_THEME = "settings/theme"
+    const val SETTINGS_CHANGE_PIN = "settings/change_pin"
+    const val SETTINGS_PERMISSIONS = "settings/permissions"
+    const val SETTINGS_BACKUP = "settings/backup"
+
     // --- Vault spine (Phase 2) ---
 
     /** Point-of-need All Files Access primer, gating entry to the public-storage vault. */
