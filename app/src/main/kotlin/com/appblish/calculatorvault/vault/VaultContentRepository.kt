@@ -18,6 +18,15 @@ import kotlinx.coroutines.flow.Flow
  * bin ([moveToRecycleBin]); only [deleteForever]/auto-purge destroys the blob.
  */
 interface VaultContentRepository {
+    /**
+     * Derive the data key from the session passphrase ([VaultSession]) and load the
+     * encrypted index from the public `.CalcVault/` folder, making content readable. A
+     * no-op until All Files Access is granted and a passphrase is set, so it is safe to call
+     * eagerly on vault entry and again once the storage primer grants access. Default no-op
+     * for in-memory/preview implementations that hold no on-disk key.
+     */
+    fun unlock() {}
+
     /** All hidden items in [category], newest first (drives the date-grouped grid). */
     fun items(category: VaultCategory): Flow<List<VaultItem>>
 
