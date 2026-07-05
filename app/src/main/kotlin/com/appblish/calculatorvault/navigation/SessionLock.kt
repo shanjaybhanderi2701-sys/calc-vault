@@ -12,28 +12,44 @@ import com.appblish.calculatorvault.vault.VaultSession
  *
  * The wiring lives in [VaultNavHost], driven by `ProcessLifecycleOwner`'s `ON_STOP`
  * (whole-app background — it does not fire for in-app permission / delete-consent dialogs,
- * which only pause the activity, nor for configuration changes). This object holds the two
+ * which only pause the activity, nor for configuration changes). This object holds the
  * decisions that are pure and therefore unit-testable in isolation from Compose/lifecycle.
  */
 internal object SessionLock {
     /**
-     * Routes that are *in front of* the unlocked vault — the disguise/auth spine and the
-     * point-of-need storage primer. Backgrounding on any of these must NOT clear the session
-     * or navigate:
-     *  - the calculator / gate / onboarding / forgot-password expose no vault content; and
-     *  - the storage primer sends the user to full-screen system Settings to grant All Files
-     *    Access and finishes the unlock on return via its resume re-check — clearing the
-     *    session here would strand that grant (see [VaultNavHost] `enterVault`).
-     * Every other route is behind the unlocked vault and must be re-locked.
+     * Routes that are *in front of* the unlocked vault — the disguise/auth spine. They
+     * expose no vault content, so backgrounding on them must NOT clear the session or
+     * navigate. Every other route is behind the unlocked vault and must be re-locked.
      */
     private val PRE_VAULT_SURFACES =
         setOf(
             VaultDestinations.GATE,
             VaultDestinations.ONBOARDING,
             VaultDestinations.CALCULATOR,
-            VaultDestinations.FORGOT_PASSWORD,
-            VaultDestinations.STORAGE_PRIMER,
         )
+
+    /**
+     * One-shot suppression for the All-Files-Access grant round-trip (spec §5, design call
+     * D-2 on APP-224): the primer bottom sheet sends the user to full-screen **system
+     * Settings** to flip the grant, which backgrounds the app and would otherwise re-lock
+     * the vault and strand the "return straight into the tapped category" flow. The primer
+     * arms this immediately before launching the system intent; the very next ON_STOP
+     * consumes it instead of re-locking. It never survives more than one background event.
+     */
+    @Volatile
+    private var suppressNextRelock: Boolean = false
+
+    /** Arm the one-shot re-lock suppression for a permission grant round-trip. */
+    fun beginGrantRoundTrip() {
+        suppressNextRelock = true
+    }
+
+    /** Consume the one-shot suppression; true means "skip this re-lock". */
+    fun consumeGrantRoundTrip(): Boolean {
+        val suppressed = suppressNextRelock
+        suppressNextRelock = false
+        return suppressed
+    }
 
     /**
      * True when [route] is behind the unlocked vault and so must be re-locked on background.
@@ -44,7 +60,7 @@ internal object SessionLock {
     /**
      * Forget the in-memory session and drop the data key + cached content so a backgrounded
      * vault cannot be resumed. Safe to call repeatedly. Callers gate this on
-     * [isVaultSurface] so the storage-primer grant round-trip is never disturbed.
+     * [isVaultSurface].
      */
     fun relock() {
         VaultSession.clear()

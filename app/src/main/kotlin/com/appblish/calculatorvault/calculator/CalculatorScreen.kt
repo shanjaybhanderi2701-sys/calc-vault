@@ -12,13 +12,13 @@ import com.appblish.calculatorvault.auth.VaultKind
  * The disguise — a fully functional calculator that is the app's front door. Non-secret
  * input behaves exactly like a pocket calculator; typing a configured 4-digit code and
  * pressing `=` raises [onUnlock] with the vault that code opens (real or a decoy) and the
- * code itself (the vault passphrase). A long-press on the display is the hidden
- * [onForgotPin] recovery gesture. Nothing on this screen hints at the vault.
+ * code itself (the vault passphrase). Nothing on this screen hints at the vault. There is
+ * no recovery gesture in Phase 1 — all forgotten-PIN recovery is deferred (spec §0,
+ * APP-225).
  */
 @Composable
 fun CalculatorScreen(
     onUnlock: (kind: VaultKind, code: String) -> Unit,
-    onForgotPin: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: CalculatorViewModel = viewModel(),
 ) {
@@ -39,7 +39,6 @@ fun CalculatorScreen(
     CalculatorKeypad(
         display = state.display.ifEmpty { "0" },
         onKey = viewModel::onToken,
-        onDisplayLongPress = onForgotPin,
         modifier = modifier,
     )
 }

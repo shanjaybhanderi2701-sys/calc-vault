@@ -71,10 +71,15 @@
           Disguise can swap the visible icon/name at runtime by enabling exactly one. The
           vault is reached only via the secret code typed inside the calculator.
         -->
+        <!--
+          NOT excluded from recents by default (spec §10, APP-225): a calculator that
+          vanishes from the app switcher is more suspicious than one whose preview is
+          blanked. FLAG_SECURE (set in code) blanks the recents thumbnail; fully hiding the
+          task is an opt-in Settings toggle applied at runtime via setExcludeFromRecents.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="false"
-            android:excludeFromRecents="true"
             android:theme="@style/Theme.CalculatorVault" />
 
         <!-- Default disguise: "Calculator" tile. Enabled at install. -->

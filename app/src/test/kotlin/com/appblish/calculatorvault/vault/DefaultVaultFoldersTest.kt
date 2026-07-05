@@ -6,25 +6,24 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Guards the predefined default-folder catalog (APP-206): a fresh vault must seed the same
- * xlock / Figma-parity folders with stable ids so seeding is idempotent, and Contacts must
- * stay folderless to match the home tile's plain count.
+ * Guards the predefined default-folder catalog (build spec §4, APP-225 — board-ruled on
+ * APP-220): a fresh vault seeds each Phase-1 category (Photos, Videos, Audio) with exactly
+ * one empty "Download" folder, with stable ids so seeding is idempotent. The out-of-phase
+ * categories (Files, Contacts) seed nothing.
  */
 class DefaultVaultFoldersTest {
     @Test
-    fun `seeds default folders for the media categories`() {
+    fun `seeds one Download folder per Phase-1 category`() {
         val byCategory = DefaultVaultFolders.forFreshVault().groupBy { it.category }
-        assertThat(byCategory[VaultCategory.PHOTOS]?.map { it.name })
-            .containsExactly("Camera", "Screenshots")
-        assertThat(byCategory[VaultCategory.VIDEOS]?.map { it.name }).containsExactly("Videos")
-        assertThat(byCategory[VaultCategory.AUDIOS]?.map { it.name }).containsExactly("Music")
-        assertThat(byCategory[VaultCategory.FILES]?.map { it.name }).containsExactly("Documents")
+        VaultCategory.PHASE1.forEach { category ->
+            assertThat(byCategory[category]?.map { it.name }).containsExactly("Download")
+        }
     }
 
     @Test
-    fun `does not seed a Contacts folder`() {
+    fun `seeds nothing outside the Phase-1 categories`() {
         val categories = DefaultVaultFolders.forFreshVault().map { it.category }
-        assertThat(categories).doesNotContain(VaultCategory.CONTACTS)
+        assertThat(categories).containsNoneOf(VaultCategory.FILES, VaultCategory.CONTACTS)
     }
 
     @Test
@@ -36,6 +35,6 @@ class DefaultVaultFoldersTest {
         // …and each folder has a distinct id.
         assertThat(first.toSet()).hasSize(first.size)
         // Derived from the seed convention, not random UUIDs.
-        assertThat(first).contains("seed_photos_camera")
+        assertThat(first).contains("seed_photos_download")
     }
 }

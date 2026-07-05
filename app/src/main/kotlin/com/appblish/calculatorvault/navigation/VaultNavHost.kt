@@ -1,12 +1,19 @@
 package com.appblish.calculatorvault.navigation
 
+import android.Manifest
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.lifecycle.viewmodel.initializer
@@ -17,19 +24,11 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.appblish.calculatorvault.calculator.CalculatorScreen
-import com.appblish.calculatorvault.explore.blocker.WebsiteBlockerScreen
-import com.appblish.calculatorvault.explore.browser.PrivateBrowserScreen
-import com.appblish.calculatorvault.explore.junk.JunkCleanerScreen
-import com.appblish.calculatorvault.explore.notes.NoteEditorScreen
-import com.appblish.calculatorvault.explore.notes.NotesScreen
-import com.appblish.calculatorvault.explore.notification.HideNotificationScreen
-import com.appblish.calculatorvault.fakepassword.FakePasswordScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
-import com.appblish.calculatorvault.recovery.ForgotPasswordRoute
-import com.appblish.calculatorvault.settings.BackupScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.SettingsGraph
+import com.appblish.calculatorvault.settings.SettingsLanguageScreen
 import com.appblish.calculatorvault.settings.SettingsScreen
 import com.appblish.calculatorvault.settings.ThemeScreen
 import com.appblish.calculatorvault.vault.CategoryScreen
@@ -38,26 +37,28 @@ import com.appblish.calculatorvault.vault.HideImportScreen
 import com.appblish.calculatorvault.vault.HideImportViewModel
 import com.appblish.calculatorvault.vault.RecycleBinScreen
 import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.VaultHomeScreen
+import com.appblish.calculatorvault.vault.VaultSearchScreen
 import com.appblish.calculatorvault.vault.VaultSession
-import com.appblish.calculatorvault.vault.VaultShellScreen
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
-import com.appblish.calculatorvault.vault.storage.ui.StoragePermissionScreen
+import com.appblish.calculatorvault.vault.storage.ui.AllFilesPrimerSheet
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
 import com.appblish.calculatorvault.vault.viewer.ViewerViewModel
-import com.appblish.calculatorvault.explore.fakepassword.FakePasswordScreen as ExploreFakePasswordScreen
 
 /**
- * The unified app spine (Phase 6). Starts on the [VaultDestinations.GATE] splash, which
- * routes to onboarding on first run or straight to the calculator disguise for a returning
- * user. The disguise is the only thing an onlooker sees; typing a configured code on the
- * calculator resolves the vault it opens (real or a decoy) and its passphrase, and — after
- * the point-of-need All Files Access primer if needed — lands on the Phase-2 vault shell.
- * Inside the vault the shell pushes category → hide/import, viewers, folder slideshow, and
- * the recycle bin. The hidden long-press recovery gesture opens forgot-password.
+ * The app spine, re-scoped to the Phase-1 build spec (APP-225). Starts on the
+ * [VaultDestinations.GATE] splash, which routes to onboarding on first run or straight to
+ * the calculator disguise for a returning user. The disguise is the only thing an onlooker
+ * sees; typing a configured code on the calculator resolves the vault it opens (real or a
+ * decoy) and its passphrase, landing directly on the vault home — no tab shell (design
+ * call D-1), no upfront permission wall. All Files Access is primed contextually by the
+ * D-2 bottom sheet on the first tap into a content surface (spec §5). Inside the vault the
+ * home pushes category → hide/import, viewers, folder slideshow, search, the recycle bin,
+ * and minimal Settings. There is no recovery surface anywhere (spec §0).
  */
 @Composable
 fun VaultNavHost() {
@@ -65,12 +66,12 @@ fun VaultNavHost() {
     val context = LocalContext.current.applicationContext
 
     // Open the encrypted public-storage vault for the current session and land on the
-    // shell, dropping the disguise spine so back returns to the calculator. unlock() derives
+    // home, dropping the disguise spine so back returns to the calculator. unlock() derives
     // the data key from the session passphrase and loads the namespaced .CalcVault/ index;
     // it is a safe no-op if either the passphrase or All Files Access is still missing.
     fun enterVault() {
         VaultGraph.contentRepository.unlock()
-        navController.navigate(VaultDestinations.VAULT_SHELL) {
+        navController.navigate(VaultDestinations.VAULT_HOME) {
             popUpTo(VaultDestinations.CALCULATOR)
             launchSingleTop = true
         }
@@ -81,15 +82,18 @@ fun VaultNavHost() {
     // background (not on rotation and not for in-app permission / delete-consent dialogs,
     // which merely pause the activity). When it fires while the user is inside the unlocked
     // vault we forget the session + data key and reset the back stack to the calculator, so
-    // the next foreground shows the disguise and demands the PIN again. Resetting here (while
-    // hidden) rather than on the next resume means no vault content ever flashes on return.
+    // the next foreground shows the disguise and demands the PIN again. The single
+    // exception is the primer's grant round-trip through system Settings, which arms a
+    // one-shot suppression (see SessionLock.beginGrantRoundTrip) so the granted permission
+    // can continue straight into the tapped category (design call D-2).
     DisposableEffect(navController) {
         val processLifecycle = ProcessLifecycleOwner.get().lifecycle
         val observer =
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_STOP &&
-                    SettingsGraph.relockOnBackgroundEnabled &&
-                    SessionLock.isVaultSurface(navController.currentDestination?.route)
+                    SessionLock.isVaultSurface(navController.currentDestination?.route) &&
+                    !SessionLock.consumeGrantRoundTrip() &&
+                    SettingsGraph.relockOnBackgroundEnabled
                 ) {
                     SessionLock.relock()
                     navController.navigate(VaultDestinations.CALCULATOR) {
@@ -136,88 +140,99 @@ fun VaultNavHost() {
                 // A matched code both identifies the vault (real/decoy → storage namespace)
                 // and is the passphrase that derives its data key. Re-key the shared
                 // repository for this session first so a previous session's content can
-                // never leak across the calculator boundary (decoy isolation), then open the
-                // vault directly if All Files Access is granted, else show the primer.
+                // never leak across the calculator boundary (decoy isolation). The vault
+                // opens immediately; All Files Access is primed contextually inside (§5).
                 onUnlock = { kind, code ->
                     VaultGraph.contentRepository.lock()
                     VaultSession.begin(code, VaultDestinations.storageId(kind))
-                    if (StoragePermissions.hasAllFilesAccess(context)) {
-                        enterVault()
-                    } else {
-                        navController.navigate(VaultDestinations.STORAGE_PRIMER) {
-                            // Drop the calculator so back from the primer stays on the calculator.
-                            popUpTo(VaultDestinations.CALCULATOR)
-                        }
-                    }
+                    enterVault()
                 },
-                onForgotPin = { navController.navigate(VaultDestinations.FORGOT_PASSWORD) },
             )
         }
 
-        composable(VaultDestinations.FORGOT_PASSWORD) {
-            ForgotPasswordRoute(
-                onReset = { navController.popBackStack(VaultDestinations.CALCULATOR, inclusive = false) },
-                onBack = { navController.popBackStack() },
-            )
-        }
+        composable(VaultDestinations.VAULT_HOME) {
+            val activityContext = LocalContext.current
 
-        composable(VaultDestinations.STORAGE_PRIMER) {
-            StoragePermissionScreen(
-                onGranted = { enterVault() },
-                onBack = { navController.popBackStack() },
-            )
-        }
+            // Contextual All-Files-Access gate (spec §5, design call D-2): content surfaces
+            // prompt via the primer bottom sheet on first tap; the tapped destination is
+            // parked and resumed the moment the grant round-trip returns successfully.
+            var pendingRoute by rememberSaveable { mutableStateOf<String?>(null) }
+            var showPrimer by rememberSaveable { mutableStateOf(false) }
 
-        composable(VaultDestinations.VAULT_SHELL) {
-            VaultShellScreen(
-                onCategoryClick = { navController.navigate(VaultDestinations.category(it)) },
-                onRecentClick = { navController.navigate(VaultDestinations.viewer(it.id)) },
-                onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
-                onDisguiseClick = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
+            fun openContent(route: String) {
+                if (StoragePermissions.hasAllFilesAccess(activityContext)) {
+                    VaultGraph.contentRepository.unlock()
+                    navController.navigate(route)
+                } else {
+                    pendingRoute = route
+                    showPrimer = true
+                }
+            }
+
+            // Legacy (< API 30) grant path: a plain runtime dialog, no settings round-trip.
+            val legacyLauncher =
+                rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                    val pending = pendingRoute
+                    if (granted && pending != null) {
+                        pendingRoute = null
+                        VaultGraph.contentRepository.unlock()
+                        navController.navigate(pending)
+                    }
+                }
+
+            // Returning from the system All-Files-Access screen with the grant → continue
+            // straight into the parked destination (docx: "automatically redirected").
+            LifecycleResumeEffect(Unit) {
+                val pending = pendingRoute
+                if (pending != null && StoragePermissions.hasAllFilesAccess(activityContext)) {
+                    pendingRoute = null
+                    showPrimer = false
+                    VaultGraph.contentRepository.unlock()
+                    navController.navigate(pending)
+                }
+                onPauseOrDispose { }
+            }
+
+            VaultHomeScreen(
+                onCategoryClick = { openContent(VaultDestinations.category(it)) },
+                onRecentClick = { openContent(VaultDestinations.viewer(it.id)) },
+                onRecycleBinClick = { openContent(VaultDestinations.RECYCLE_BIN) },
+                onSearchClick = { navController.navigate(VaultDestinations.SEARCH) },
+                onThemeClick = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                 onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
-                onExploreToolClick = { navController.navigate(VaultDestinations.exploreRoute(it)) },
             )
-            // xlock parity (APP-212): offer the recovery security question only after the
-            // first real vault operation, never during onboarding. Real vault only.
-            DeferredRecoveryPrompt()
+
+            if (showPrimer) {
+                AllFilesPrimerSheet(
+                    onAllow = {
+                        showPrimer = false
+                        if (StoragePermissions.usesRuntimeWritePermission()) {
+                            legacyLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                        } else {
+                            StoragePermissions.allFilesAccessIntent(activityContext)?.let { intent ->
+                                // The system Settings trip backgrounds the app; keep this
+                                // one unlock session alive so the grant lands back inside
+                                // the vault instead of behind the calculator.
+                                SessionLock.beginGrantRoundTrip()
+                                runCatching { activityContext.startActivity(intent) }
+                            }
+                        }
+                    },
+                    onDismiss = {
+                        // Cancel / scrim tap: remain on the vault home; the surface stays
+                        // gated until the next attempt (spec §5 denial behavior).
+                        showPrimer = false
+                        pendingRoute = null
+                    },
+                )
+            }
         }
 
-        // --- Explore / Quick Tools (Phase 4) ------------------------------
-        composable(VaultDestinations.EXPLORE_JUNK) {
-            JunkCleanerScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.EXPLORE_BROWSER) {
-            PrivateBrowserScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.EXPLORE_BLOCKER) {
-            WebsiteBlockerScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.EXPLORE_NOTES) {
-            NotesScreen(
+        composable(VaultDestinations.SEARCH) {
+            VaultSearchScreen(
                 onBack = { navController.popBackStack() },
-                onOpenNote = { navController.navigate(VaultDestinations.noteEditor(it)) },
-                onNewNote = { navController.navigate(VaultDestinations.noteEditor(VaultDestinations.NEW_NOTE)) },
+                onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id)) },
             )
-        }
-
-        composable(
-            route = VaultDestinations.NOTE_EDITOR,
-            arguments = listOf(navArgument(VaultDestinations.ARG_NOTE_ID) { type = NavType.StringType }),
-        ) { entry ->
-            val raw = entry.arguments?.getString(VaultDestinations.ARG_NOTE_ID)
-            val noteId = raw?.takeUnless { it == VaultDestinations.NEW_NOTE }
-            NoteEditorScreen(noteId = noteId, onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.EXPLORE_NOTIFICATION) {
-            HideNotificationScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.EXPLORE_FAKE_PASSWORD) {
-            ExploreFakePasswordScreen(onBack = { navController.popBackStack() })
         }
 
         composable(
@@ -306,20 +321,15 @@ fun VaultNavHost() {
             RecycleBinScreen(onBack = { navController.popBackStack() })
         }
 
-        composable(VaultDestinations.FAKE_PASSWORD) {
-            FakePasswordScreen(onBack = { navController.popBackStack() })
-        }
-
-        // Settings surface (real vault only). The gear opens the root; each row navigates
-        // to a dedicated sub-screen. Phase 5.
+        // Minimal Phase-1 Settings (S22): language, change password, switch app icon,
+        // theme, All Files Access status, hide-from-recents, about.
         composable(VaultDestinations.SETTINGS) {
             SettingsScreen(
                 onBack = { navController.popBackStack() },
                 onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
-                onManageFakePasswords = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
                 onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                 onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
-                onBackup = { navController.navigate(VaultDestinations.SETTINGS_BACKUP) },
+                onLanguage = { navController.navigate(VaultDestinations.SETTINGS_LANGUAGE) },
             )
         }
 
@@ -338,8 +348,8 @@ fun VaultNavHost() {
             PermissionManagementScreen(onBack = { navController.popBackStack() })
         }
 
-        composable(VaultDestinations.SETTINGS_BACKUP) {
-            BackupScreen(onBack = { navController.popBackStack() })
+        composable(VaultDestinations.SETTINGS_LANGUAGE) {
+            SettingsLanguageScreen(onBack = { navController.popBackStack() })
         }
     }
 }

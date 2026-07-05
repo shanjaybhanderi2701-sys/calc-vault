@@ -5,8 +5,9 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Proves the vault re-lock policy (APP-205): every route behind the unlocked vault re-locks
- * on background, while the disguise / auth spine and the storage primer do not, and
+ * Proves the vault re-lock policy (APP-205, re-scoped for Phase 1 by APP-225): every route
+ * behind the unlocked vault re-locks on background, while the disguise / auth spine does
+ * not; the primer's grant round-trip arms a strictly one-shot suppression; and
  * [SessionLock.relock] forgets the in-memory session so a backgrounded vault cannot resume.
  */
 class SessionLockTest {
@@ -16,8 +17,6 @@ class SessionLockTest {
             VaultDestinations.GATE,
             VaultDestinations.ONBOARDING,
             VaultDestinations.CALCULATOR,
-            VaultDestinations.FORGOT_PASSWORD,
-            VaultDestinations.STORAGE_PRIMER,
         ).forEach { route ->
             assertThat(SessionLock.isVaultSurface(route)).isFalse()
         }
@@ -31,17 +30,27 @@ class SessionLockTest {
     @Test
     fun `vault surfaces re-lock on background`() {
         listOf(
-            VaultDestinations.VAULT_SHELL,
+            VaultDestinations.VAULT_HOME,
             VaultDestinations.RECYCLE_BIN,
+            VaultDestinations.SEARCH,
             VaultDestinations.SETTINGS,
             VaultDestinations.SETTINGS_CHANGE_PIN,
-            VaultDestinations.FAKE_PASSWORD,
-            VaultDestinations.EXPLORE_NOTES,
             VaultDestinations.category(com.appblish.calculatorvault.vault.model.VaultCategory.PHOTOS),
             VaultDestinations.viewer("item-1"),
         ).forEach { route ->
             assertThat(SessionLock.isVaultSurface(route)).isTrue()
         }
+    }
+
+    @Test
+    fun `grant round-trip suppression is one-shot`() {
+        // Not armed: nothing suppressed.
+        assertThat(SessionLock.consumeGrantRoundTrip()).isFalse()
+
+        // Armed: exactly the next consume is suppressed, then the flag is spent.
+        SessionLock.beginGrantRoundTrip()
+        assertThat(SessionLock.consumeGrantRoundTrip()).isTrue()
+        assertThat(SessionLock.consumeGrantRoundTrip()).isFalse()
     }
 
     @Test

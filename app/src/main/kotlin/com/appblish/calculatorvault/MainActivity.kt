@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault
 
+import android.app.ActivityManager
 import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
@@ -8,8 +9,11 @@ import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.navigation.VaultNavHost
+import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
+import kotlinx.coroutines.launch
 
 /**
  * Single-activity host. Owns nothing but the Compose tree; navigation between the
@@ -18,15 +22,17 @@ import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Privacy hardening (APP-205, match reference app xlock): mark the window secure so no
-        // screenshot / screen-record can capture vault content and the Recents thumbnail is
-        // blanked, and disable the recents snapshot outright on API 33+. Paired with
-        // excludeFromRecents in the manifest and the ProcessLifecycleOwner re-lock in
-        // VaultNavHost, an unlocked vault can never be observed from outside the live session.
+        // Privacy hardening (APP-205 / spec §10): mark the window secure so no screenshot /
+        // screen-record can capture vault content and the recents thumbnail is blanked, and
+        // disable the recents snapshot outright on API 33+. FLAG_SECURE is the PRIMARY
+        // privacy layer; hiding the task from recents entirely is an opt-in setting applied
+        // below (OFF by default — a calculator that vanishes from recents is more
+        // suspicious, spec §10 / APP-225).
         window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             setRecentsScreenshotEnabled(false)
         }
+        applyPersistedHideFromRecents()
         // Full-screen immersive edge-to-edge (APP-204): hide the system bars so no surface is
         // clipped by the system navigation bar. Supersedes the earlier enableEdgeToEdge() call.
         applyImmersiveEdgeToEdge()
@@ -36,6 +42,15 @@ class MainActivity : ComponentActivity() {
                     VaultNavHost()
                 }
             }
+        }
+    }
+
+    /** Re-apply the opt-in "hide from recents" setting to this task on every launch. */
+    private fun applyPersistedHideFromRecents() {
+        lifecycleScope.launch {
+            val enabled = runCatching { SettingsGraph.settingsStore.load().hideFromRecentsEnabled }.getOrDefault(false)
+            val activityManager = getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+            activityManager?.appTasks?.firstOrNull()?.setExcludeFromRecents(enabled)
         }
     }
 }

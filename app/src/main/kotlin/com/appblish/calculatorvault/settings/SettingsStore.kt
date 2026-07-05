@@ -48,6 +48,8 @@ abstract class BaseSettingsStore : SettingsStore {
             relockOnBackgroundEnabled = getBool(KEY_RELOCK, default = true),
             shufflePinPadEnabled = getBool(KEY_SHUFFLE, default = false),
             incorrectVibrationEnabled = getBool(KEY_VIBRATION, default = true),
+            hideFromRecentsEnabled = getBool(KEY_HIDE_FROM_RECENTS, default = false),
+            appLanguage = getValue(KEY_LANGUAGE) ?: "Default",
         )
 
     override suspend fun save(settings: VaultSettings) {
@@ -60,6 +62,8 @@ abstract class BaseSettingsStore : SettingsStore {
         setValue(KEY_RELOCK, settings.relockOnBackgroundEnabled.toString())
         setValue(KEY_SHUFFLE, settings.shufflePinPadEnabled.toString())
         setValue(KEY_VIBRATION, settings.incorrectVibrationEnabled.toString())
+        setValue(KEY_HIDE_FROM_RECENTS, settings.hideFromRecentsEnabled.toString())
+        setValue(KEY_LANGUAGE, settings.appLanguage)
     }
 
     override suspend fun exportRaw(): Map<String, String> = allValues()
@@ -81,6 +85,8 @@ abstract class BaseSettingsStore : SettingsStore {
         const val KEY_RELOCK = "relock_on_background"
         const val KEY_SHUFFLE = "shuffle_pin_pad"
         const val KEY_VIBRATION = "incorrect_vibration"
+        const val KEY_HIDE_FROM_RECENTS = "hide_from_recents"
+        const val KEY_LANGUAGE = "app_language"
 
         val KNOWN_KEYS =
             setOf(
@@ -93,6 +99,8 @@ abstract class BaseSettingsStore : SettingsStore {
                 KEY_RELOCK,
                 KEY_SHUFFLE,
                 KEY_VIBRATION,
+                KEY_HIDE_FROM_RECENTS,
+                KEY_LANGUAGE,
             )
     }
 }

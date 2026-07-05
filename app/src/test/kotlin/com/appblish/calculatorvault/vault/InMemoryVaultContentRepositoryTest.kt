@@ -55,14 +55,14 @@ class InMemoryVaultContentRepositoryTest {
             // The production/preview instance seeds sample content AND the default folders.
             val repo = InMemoryVaultContentRepository(seed = true)
             val counts = repo.folderCounts().first()
-            // Matches DefaultVaultFolders: Photos x2, Videos/Audios/Files x1, Contacts none.
-            assertThat(counts[VaultCategory.PHOTOS]).isEqualTo(2)
+            // Matches DefaultVaultFolders (spec §4): one "Download" per Phase-1 category.
+            assertThat(counts[VaultCategory.PHOTOS]).isEqualTo(1)
             assertThat(counts[VaultCategory.VIDEOS]).isEqualTo(1)
             assertThat(counts[VaultCategory.AUDIOS]).isEqualTo(1)
-            assertThat(counts[VaultCategory.FILES]).isEqualTo(1)
+            assertThat(counts[VaultCategory.FILES]).isEqualTo(0)
             assertThat(counts[VaultCategory.CONTACTS]).isEqualTo(0)
             assertThat(repo.folders(VaultCategory.PHOTOS).first().map { it.name })
-                .containsExactly("Camera", "Screenshots")
+                .containsExactly("Download")
         }
 
     @Test

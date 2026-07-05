@@ -127,13 +127,8 @@ class LockScreenActivity : FragmentActivity() {
         lifecycleScope.launch { appIcon = inventory.icon(targetPackage) }
     }
 
-    /** Verify against the vault secret; a debug build with no PIN set accepts [DEBUG_PIN]. */
-    private suspend fun verify(entered: String): Boolean {
-        val store = AuthGraph.credentialStore
-        if (store.resolve(entered) != null) return true
-        val debuggable = (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
-        return debuggable && !store.isOnboarded() && entered == DEBUG_PIN
-    }
+    /** Verify against the vault secret. No debug fallback (spec §11, APP-225). */
+    private suspend fun verify(entered: String): Boolean = AuthGraph.credentialStore.resolve(entered) != null
 
     private fun onUnlocked() {
         val now = System.currentTimeMillis()
@@ -182,6 +177,5 @@ class LockScreenActivity : FragmentActivity() {
     companion object {
         const val EXTRA_PACKAGE = "extra_locked_package"
         private const val PIN_LENGTH = 4
-        private const val DEBUG_PIN = "1234"
     }
 }

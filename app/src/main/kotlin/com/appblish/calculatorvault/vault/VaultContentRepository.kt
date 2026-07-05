@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.vault
 
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.RestoreSummary
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -86,6 +87,18 @@ interface VaultContentRepository {
      * the gallery" beat — the inverse of [hide].
      */
     suspend fun unhide(itemIds: Set<String>): Int
+
+    /**
+     * [unhide] with the full per-operation outcome (spec §8 / design call D-3): how many
+     * items returned to their original location, how many fell back to a visible
+     * "Restored" folder (and where), and how many could not be written at all (left in the
+     * vault). Screens use this to surface the mandatory restore-fallback notice. The
+     * default wraps the legacy count so fakes keep working; real implementations override.
+     */
+    suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary {
+        val restored = unhide(itemIds)
+        return RestoreSummary(restoredToOriginal = restored, failed = itemIds.size - restored)
+    }
 
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)

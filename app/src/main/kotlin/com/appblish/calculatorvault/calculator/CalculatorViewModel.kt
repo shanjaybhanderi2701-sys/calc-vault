@@ -2,7 +2,6 @@ package com.appblish.calculatorvault.calculator
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.appblish.calculatorvault.BuildConfig
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.auth.VaultKind
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,9 +31,8 @@ data class CalculatorUiState(
  * is only ever a calculator.
  *
  * [resolvePin] is injected (defaults to the app's [AuthGraph] credential store) so the
- * resolution rule is unit-testable without Android. Debug/dev builds also accept the fixed
- * code `1234` so the vault is reachable on an emulator before onboarding has persisted a
- * real PIN; release builds have no such backdoor.
+ * resolution rule is unit-testable without Android. There is no debug backdoor: only a
+ * code persisted by onboarding/settings resolves to a vault (spec §11, APP-225).
  */
 class CalculatorViewModel(
     private val engine: CalculatorEngine = CalculatorEngine,
@@ -59,7 +57,7 @@ class CalculatorViewModel(
         val current = _uiState.value.display
         viewModelScope.launch {
             if (current.isPinCandidate()) {
-                val kind = resolvePin(current) ?: debugFallback(current)
+                val kind = resolvePin(current)
                 if (kind != null) {
                     _uiState.update { it.copy(unlock = kind, unlockCode = current) }
                     return@launch
@@ -76,14 +74,6 @@ class CalculatorViewModel(
 
     private fun String.isPinCandidate(): Boolean = length == PIN_LENGTH && all(Char::isDigit)
 
-    /** Debug-only backdoor: `1234` opens the real vault before onboarding persists a PIN. */
-    private fun debugFallback(code: String): VaultKind? =
-        if (BuildConfig.DEBUG && code == DEBUG_SECRET) VaultKind.Real else null
-
     private fun formatResult(value: Double): String =
         if (value % 1.0 == 0.0) value.toLong().toString() else value.toString()
-
-    private companion object {
-        const val DEBUG_SECRET = "1234"
-    }
 }

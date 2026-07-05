@@ -1,8 +1,5 @@
 package com.appblish.calculatorvault.vault
 
-import android.Manifest
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -23,52 +20,45 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
-import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 
 /**
- * The vault-home "CalcVault" dashboard (Vault tab). Large-title header with the
- * app-disguise (icon-switch) action + settings, a permission-gated "device is at risk"
- * security banner (APP-207 — shown only when a required permission is actually missing),
- * the media categories laid out as a **2-column tile grid** with dual counts
- * ("300 Photos / 8 Folders") plus a **Bin tile**, and a cross-category Recent strip. On
- * first run (empty vault) a "Hide Photos Here" coach-mark points at the Photos tile.
- * Matches the deck's `Home_Screen_Hint_and_Flow.pdf`; the AppLock/Explore tabs are
- * siblings in [VaultShellScreen].
+ * The vault-home "CalcVault" dashboard — the root vault screen in Phase 1 (design call
+ * D-1 on APP-224: no bottom-nav shell, no App Lock / Explore tabs). Large-title header
+ * with the docx image27 icon trio **Search · Themes · Settings**, the three Phase-1 media
+ * categories laid out as a **2×2 tile grid** (Photos · Videos / Audios · Bin) with dual
+ * counts ("300 Photos / 8 Folders"), and a cross-category Recent strip. On first run
+ * (empty vault) a "Hide Photos Here" coach-mark points at the Photos tile. There is no
+ * security banner: All Files Access is primed contextually via the D-2 bottom sheet.
  */
 @Composable
 fun VaultHomeScreen(
     onCategoryClick: (VaultCategory) -> Unit,
     onRecentClick: (VaultItem) -> Unit,
     onRecycleBinClick: () -> Unit,
-    onDisguiseClick: () -> Unit,
+    onSearchClick: () -> Unit,
+    onThemeClick: () -> Unit,
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = viewModel(),
@@ -85,9 +75,7 @@ fun VaultHomeScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = spacing.xxl),
     ) {
-        HomeHeader(onDisguise = onDisguiseClick, onSettings = onSettingsClick)
-
-        SecurityBanner()
+        HomeHeader(onSearch = onSearchClick, onTheme = onThemeClick, onSettings = onSettingsClick)
 
         CategoryGrid(
             state = state,
@@ -113,7 +101,8 @@ fun VaultHomeScreen(
 
 @Composable
 private fun HomeHeader(
-    onDisguise: () -> Unit,
+    onSearch: () -> Unit,
+    onTheme: () -> Unit,
     onSettings: () -> Unit,
 ) {
     val colors = VaultTheme.colors
@@ -131,10 +120,12 @@ private fun HomeHeader(
             color = colors.textPrimary,
             modifier = Modifier.weight(1f),
         )
-        // App-disguise: switch the launcher icon so the vault looks like a different app.
-        // Real customization UI lands with Settings (Phase 5); this is its entry point.
-        IconButton(onClick = onDisguise) {
-            Icon(Icons.Filled.Refresh, contentDescription = "Switch app icon", tint = colors.textPrimary)
+        // Docx image27 header trio. The icon-switch action moved into Settings (S22).
+        IconButton(onClick = onSearch) {
+            Icon(Icons.Filled.Search, contentDescription = "Search", tint = colors.textPrimary)
+        }
+        IconButton(onClick = onTheme) {
+            Icon(Icons.Filled.Star, contentDescription = "Themes", tint = colors.textPrimary)
         }
         IconButton(onClick = onSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = colors.textPrimary)
@@ -143,120 +134,11 @@ private fun HomeHeader(
 }
 
 /**
- * The "Your device is at risk" security banner (APP-207 — xlock parity). Unlike a standing
- * promo, this appears **only when All Files Access is missing** — the sole mandatory vault
- * permission (board scope refinement). It re-checks the live grant state on every resume via
- * [VaultSecurityBanner] and renders nothing once the permission is granted. Tapping routes to
- * the grant surface for All Files Access. Camera stays an opt-in app-lock permission for
- * Intruder Selfie and is intentionally not part of this banner.
- */
-@Composable
-private fun SecurityBanner() {
-    val context = LocalContext.current
-
-    var state by
-        remember {
-            mutableStateOf(
-                VaultSecurityBanner.State(
-                    hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
-                ),
-            )
-        }
-
-    fun refresh() {
-        state =
-            VaultSecurityBanner.State(
-                hasAllFilesAccess = StoragePermissions.hasAllFilesAccess(context),
-            )
-    }
-
-    // Re-evaluate whenever the user returns from a system settings / permission round-trip.
-    LifecycleResumeEffect(Unit) {
-        refresh()
-        onPauseOrDispose { }
-    }
-
-    val storageLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { refresh() }
-
-    val warning = VaultSecurityBanner.firstMissing(state) ?: return
-
-    fun onGrant() {
-        when (warning.permission) {
-            VaultSecurityBanner.Permission.ALL_FILES_ACCESS ->
-                if (StoragePermissions.usesRuntimeWritePermission()) {
-                    storageLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                } else {
-                    StoragePermissions.allFilesAccessIntent(context)?.let { intent ->
-                        runCatching { context.startActivity(intent) }
-                    }
-                }
-        }
-    }
-
-    val colors = VaultTheme.colors
-    val spacing = VaultTheme.spacing
-    Surface(
-        color = colors.surface,
-        shape = VaultTheme.shapes.card,
-        modifier =
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = spacing.lg)
-                .clip(VaultTheme.shapes.card)
-                .clickable(onClick = ::onGrant),
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            modifier = Modifier.padding(spacing.md),
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier =
-                    Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.destructive.copy(alpha = 0.16f)),
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Warning,
-                    contentDescription = null,
-                    tint = colors.destructive,
-                    modifier = Modifier.size(22.dp),
-                )
-            }
-            Column(
-                modifier =
-                    Modifier
-                        .weight(1f)
-                        .padding(horizontal = spacing.md),
-            ) {
-                Text(
-                    text = warning.title,
-                    style = VaultTheme.typography.titleMedium,
-                    color = colors.textPrimary,
-                )
-                Text(
-                    text = warning.message,
-                    style = VaultTheme.typography.labelMedium,
-                    color = colors.textSecondary,
-                    modifier = Modifier.padding(top = spacing.xs),
-                )
-            }
-            Icon(
-                imageVector = Icons.Filled.KeyboardArrowRight,
-                contentDescription = null,
-                tint = colors.textSecondary,
-            )
-        }
-    }
-}
-
-/**
- * The five media categories + the recycle Bin, laid out as a 2-column grid of large
- * rounded tiles (Photos·Videos / Audios·Files / Contacts·Bin) — every tile visible
- * without horizontal scroll, each with a dual item/folder count subtitle. Built from
- * plain Rows so it composes inside the home's vertical scroll (no nested lazy grid).
+ * The three Phase-1 media categories + the recycle Bin, laid out as a 2×2 grid of large
+ * rounded tiles (Photos·Videos / Audios·Bin) — every tile visible without horizontal
+ * scroll, each with a dual item/folder count subtitle. Built from plain Rows so it
+ * composes inside the home's vertical scroll (no nested lazy grid). Documents and
+ * Contacts are omitted entirely — not teased (spec §0, design call D-1).
  */
 @Composable
 private fun CategoryGrid(
@@ -269,7 +151,7 @@ private fun CategoryGrid(
 
     val tiles =
         buildList {
-            VaultCategory.entries.forEach { category ->
+            VaultCategory.PHASE1.forEach { category ->
                 add(
                     HomeTile(
                         label = category.label,
@@ -368,17 +250,15 @@ private fun CategoryTile(
     }
 }
 
-/** Deck copy: "300 Photos / 8 Folders", "478 Contacts" (Contacts hold no folders). */
+/**
+ * Deck copy: "300 Photos / 8 Folders". Always the category's own noun — docx image27's
+ * Videos tile subtitle reading "Photos" is a docx-internal typo we do not copy (S8).
+ */
 private fun categorySubtitle(
     category: VaultCategory,
     items: Int,
     folders: Int,
-): String =
-    if (category == VaultCategory.CONTACTS) {
-        "$items ${category.label}"
-    } else {
-        "$items ${category.label} / $folders Folders"
-    }
+): String = "$items ${category.label} / $folders Folders"
 
 private fun pluralItems(count: Int): String = if (count == 1) "1 item" else "$count items"
 

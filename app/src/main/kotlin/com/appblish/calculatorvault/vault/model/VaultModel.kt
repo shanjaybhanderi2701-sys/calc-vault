@@ -14,6 +14,16 @@ enum class VaultCategory(
     AUDIOS("Audios", 0xFFF59E0B),
     FILES("Files", 0xFF14B8A6),
     CONTACTS("Contacts", 0xFFEC4899),
+    ;
+
+    companion object {
+        /**
+         * The Phase-1 media vault scope (build spec §0/§3, APP-225): Photos, Videos, Audio
+         * only. FILES and CONTACTS stay in the enum so persisted indexes keep decoding, but
+         * no Phase-1 surface offers them.
+         */
+        val PHASE1: List<VaultCategory> = listOf(PHOTOS, VIDEOS, AUDIOS)
+    }
 }
 
 /**
@@ -58,26 +68,20 @@ data class VaultFolder(
 )
 
 /**
- * The predefined folders seeded into every fresh vault the first time it is initialized —
- * parity with the reference app (xlock) and the board Figma, which ship default category
- * folders so the vault is never an empty shell (APP-206). Seeding happens once per vault
- * *namespace*: the real vault and each decoy slot (`decoy_<slot>/`) seed into their own
- * encrypted index, so a decoy's folders can never leak into the real vault.
+ * The predefined folders seeded into every fresh vault the first time it is initialized.
+ * Build spec §4 (APP-225, board-ruled on APP-220): each of the three Phase-1 categories —
+ * Photos, Videos, Audio — is created on first use, even when empty, containing exactly one
+ * default empty **"Download"** folder. Seeding happens once per vault *namespace*: the real
+ * vault and each decoy slot (`decoy_<slot>/`) seed into their own encrypted index, so a
+ * decoy's folders can never leak into the real vault.
  *
  * Each default folder carries a **stable, derived id** (`seed_<category>_<slug>`) so seeding
- * is idempotent and a folder the user later renames or deletes is never resurrected. Contacts
- * hold no folders (the home tile shows a plain count), so no Contacts folder is seeded.
+ * is idempotent and a folder the user later renames or deletes is never resurrected.
  */
 object DefaultVaultFolders {
     /** (category, display name) pairs seeded into a fresh vault, in display order. */
     private val CATALOG: List<Pair<VaultCategory, String>> =
-        listOf(
-            VaultCategory.PHOTOS to "Camera",
-            VaultCategory.PHOTOS to "Screenshots",
-            VaultCategory.VIDEOS to "Videos",
-            VaultCategory.AUDIOS to "Music",
-            VaultCategory.FILES to "Documents",
-        )
+        VaultCategory.PHASE1.map { it to "Download" }
 
     /** The default folders for a brand-new vault namespace, with stable ids. */
     fun forFreshVault(): List<VaultFolder> =
@@ -90,6 +94,24 @@ object DefaultVaultFolders {
         category: VaultCategory,
         name: String,
     ): String = "seed_${category.name.lowercase()}_${name.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
+}
+
+/**
+ * The user-facing outcome of a restore (un-hide) operation — spec §8 + design call D-3 on
+ * APP-224. Restore never fails silently: every item either returned to its original public
+ * location, landed in a visible fallback folder ("DCIM/Restored", "Music/Restored"…)
+ * because the original path was missing/unwritable/name-collided, or stayed safely in the
+ * vault ([failed] — nothing writable at all). The category/viewer screens turn this into
+ * the single per-operation snackbar.
+ */
+data class RestoreSummary(
+    val restoredToOriginal: Int = 0,
+    val restoredToFallback: Int = 0,
+    /** Visible fallback folder (e.g. "DCIM/Restored") when [restoredToFallback] > 0. */
+    val fallbackDestination: String? = null,
+    val failed: Int = 0,
+) {
+    val restored: Int get() = restoredToOriginal + restoredToFallback
 }
 
 /**
