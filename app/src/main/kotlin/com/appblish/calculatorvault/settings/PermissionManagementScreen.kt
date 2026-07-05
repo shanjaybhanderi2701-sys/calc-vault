@@ -1,20 +1,16 @@
 package com.appblish.calculatorvault.settings
 
-import android.Manifest
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.core.content.ContextCompat
 import com.appblish.calculatorvault.ui.components.ListRow
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.components.RowTrailing
@@ -88,21 +84,14 @@ private fun rememberPermissionRows(): List<PermissionRow> {
         // APP-219 / APP-203): on API 30+ it already grants read/write to every media category,
         // so no granular READ_MEDIA_* rows are surfaced — Settings shows the one permission the
         // vault actually depends on, matching xlock.
+        // Camera (break-in selfie) belongs to App Lock / Intruder Selfie — Phase 3. Its row
+        // returns together with the CAMERA permission (Phase-1 scope guard, APP-227).
         add(
             PermissionRow(
                 "All files access",
                 "Import photos, videos, audio and files into the vault and restore them",
                 StoragePermissions.hasAllFilesAccess(context),
                 Icons.Filled.Lock,
-            ),
-        )
-        add(
-            PermissionRow(
-                "Camera (break-in selfie)",
-                "Captures who tried a wrong PIN, only when enabled",
-                ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
-                    PackageManager.PERMISSION_GRANTED,
-                Icons.Filled.Warning,
             ),
         )
     }
