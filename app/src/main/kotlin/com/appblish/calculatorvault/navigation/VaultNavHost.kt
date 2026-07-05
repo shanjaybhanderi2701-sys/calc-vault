@@ -23,6 +23,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.appblish.calculatorvault.auth.VaultKind
 import com.appblish.calculatorvault.calculator.CalculatorScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.settings.ChangePinScreen
@@ -127,9 +128,19 @@ fun VaultNavHost() {
 
         composable(VaultDestinations.ONBOARDING) {
             OnboardingRoute(
-                onComplete = {
+                // Spec §1.5: the last intro card lands on Home (Vault tab), not back on the
+                // calculator. The calculator is still planted beneath so back / re-lock from
+                // the home always reveals the disguise. The just-created PIN opens the real
+                // vault; a blank PIN (defensive — should not happen) falls back to the
+                // calculator alone.
+                onComplete = { pin ->
                     navController.navigate(VaultDestinations.CALCULATOR) {
                         popUpTo(VaultDestinations.ONBOARDING) { inclusive = true }
+                    }
+                    if (pin.isNotEmpty()) {
+                        VaultGraph.contentRepository.lock()
+                        VaultSession.begin(pin, VaultDestinations.storageId(VaultKind.Real))
+                        enterVault()
                     }
                 },
             )
@@ -279,24 +290,31 @@ fun VaultNavHost() {
             arguments = listOf(navArgument(VaultDestinations.ARG_ITEM_ID) { type = NavType.StringType }),
         ) { entry ->
             val itemId = entry.arguments?.getString(VaultDestinations.ARG_ITEM_ID).orEmpty()
+            val viewerContext = LocalContext.current.applicationContext
             val vm: ViewerViewModel =
                 viewModel(
                     key = "viewer-$itemId",
-                    factory = viewModelFactory { initializer { ViewerViewModel(itemId) } },
+                    factory = viewModelFactory { initializer { ViewerViewModel(itemId, viewerContext) } },
                 )
             val item by vm.item.collectAsStateWithLifecycle()
             val bytes by vm.decrypted.collectAsStateWithLifecycle()
+            val mediaFile by vm.mediaFile.collectAsStateWithLifecycle()
             item?.let { current ->
                 ItemViewerScreen(
                     item = current,
                     bytes = bytes,
+                    mediaFile = mediaFile,
                     onBack = { navController.popBackStack() },
-                    onDelete = {
-                        vm.delete()
+                    onRestore = {
+                        vm.restore()
                         navController.popBackStack()
                     },
-                    onUnhide = {
-                        vm.unhide()
+                    onMoveToRecycleBin = {
+                        vm.moveToRecycleBin()
+                        navController.popBackStack()
+                    },
+                    onDeletePermanently = {
+                        vm.deletePermanently()
                         navController.popBackStack()
                     },
                 )

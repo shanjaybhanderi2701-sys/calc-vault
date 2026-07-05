@@ -90,6 +90,11 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.biometric)
 
+    // Media3/ExoPlayer — plays decrypted vault video/audio from a private cache temp file
+    // (spec §7; decrypted bytes never touch public storage in cleartext).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)

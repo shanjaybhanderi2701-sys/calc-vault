@@ -10,6 +10,7 @@ import android.provider.MediaStore
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import java.io.File
+import java.io.OutputStream
 
 /**
  * The un-hide (restore-to-gallery) counterpart of [MediaSource]: writes a vault item's
@@ -30,8 +31,12 @@ import java.io.File
  *    the relative path, then hand it to [MediaScannerConnection.scanFile] so the gallery
  *    picks it up. Needs `WRITE_EXTERNAL_STORAGE` (declared `maxSdkVersion=28`).
  *
- * [writeBack] returns the published content/file Uri on success, or null on failure so
- * the caller keeps the encrypted blob (never lose the only copy on a failed restore).
+ * [writeBack] returns a [WriteBackResult] naming WHICH destination was used (original vs
+ * visible fallback folder) so the repository can build the spec §8 [RestoreSummary
+ * classification][com.appblish.calculatorvault.vault.model.RestoreSummary], or null on
+ * failure so the caller keeps the encrypted blob (never lose the only copy on a failed
+ * restore). Plaintext arrives via a writer lambda, not a ByteArray, so the repository can
+ * stream blob → cipher → public storage without materializing a large video in memory.
  */
 class MediaSink(
     context: Context,
@@ -40,18 +45,72 @@ class MediaSink(
     private val resolver get() = appContext.contentResolver
 
     /**
-     * Publish [bytes] back to public storage as [item]'s original file. Returns the new
-     * public Uri, or null if the write failed (caller should then keep the vault copy).
+     * Where a successful write-back landed — the repository folds this into the spec §8
+     * restore classification. A failed write returns null instead of a result.
+     */
+    sealed interface WriteBackResult {
+        /** The published public content/file Uri. */
+        val uri: Uri
+
+        /** Landed at the item's original [VaultItem.relativePath]. */
+        data class Original(
+            override val uri: Uri,
+        ) : WriteBackResult
+
+        /** Landed in the visible per-category fallback folder [destination] (e.g. "DCIM/Restored"). */
+        data class Fallback(
+            override val uri: Uri,
+            val destination: String,
+        ) : WriteBackResult
+    }
+
+    /**
+     * Publish a vault item back to public storage, streaming the plaintext from [writer]
+     * (typically blob → VaultCrypto.decrypt → this output stream).
+     *
+     * Destination policy (spec §8): the item's original [VaultItem.relativePath] is tried
+     * first; when it is unknown or unwritable the visible per-category "Restored" folder
+     * is tried instead. Name collisions never clobber and never force the fallback —
+     * MediaStore auto-uniquifies DISPLAY_NAME on API 29+ and [uniqueFile] suffixes on
+     * legacy — so a collision resolves *in place* with a "(1)"-style name. Returns null
+     * only when nothing was writable (or [writer] itself failed, e.g. a bad GCM tag): the
+     * caller must then keep the encrypted blob — never lose the only copy, never silent.
+     */
+    fun writeBack(
+        item: VaultItem,
+        writer: (OutputStream) -> Unit,
+    ): WriteBackResult? {
+        item.relativePath?.takeIf { it.isNotBlank() }?.let { originalPath ->
+            writeTo(item, originalPath, writer)?.let { return WriteBackResult.Original(it) }
+        }
+        // Original path unknown or unwritable. NOTE: a writer failure (decrypt error) also
+        // lands here and fails again below — acceptable double cost on a rare path, and it
+        // keeps "unwritable original" and "unreadable blob" on the same safe null exit.
+        val fallbackPath = defaultRelativePath(item.category)
+        val uri = writeTo(item, fallbackPath, writer) ?: return null
+        return WriteBackResult.Fallback(uri, fallbackPath.trimEnd('/'))
+    }
+
+    /**
+     * Byte-array convenience for small payloads and tests: wraps the streaming
+     * [writeBack] and reports only the published Uri (null on failure).
      */
     fun writeBack(
         item: VaultItem,
         bytes: ByteArray,
+    ): Uri? = writeBack(item) { out -> out.write(bytes) }?.uri
+
+    /** One write attempt at [relativePath] via the API-appropriate path; null on any failure. */
+    private fun writeTo(
+        item: VaultItem,
+        relativePath: String,
+        writer: (OutputStream) -> Unit,
     ): Uri? =
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                writeViaMediaStore(item, bytes)
+                writeViaMediaStore(item, relativePath, writer)
             } else {
-                writeViaLegacyFile(item, bytes)
+                writeViaLegacyFile(item, relativePath, writer)
             }
         } catch (e: Exception) {
             null
@@ -61,10 +120,10 @@ class MediaSink(
 
     private fun writeViaMediaStore(
         item: VaultItem,
-        bytes: ByteArray,
+        relPath: String,
+        writer: (OutputStream) -> Unit,
     ): Uri? {
         val collection = collection(item.category)
-        val relPath = item.relativePath?.takeIf { it.isNotBlank() } ?: defaultRelativePath(item.category)
         val values =
             ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, item.originalName)
@@ -74,12 +133,13 @@ class MediaSink(
             }
         val uri = resolver.insert(collection, values) ?: return null
         return try {
-            resolver.openOutputStream(uri)?.use { it.write(bytes) } ?: error("no output stream for $uri")
+            resolver.openOutputStream(uri)?.use(writer) ?: error("no output stream for $uri")
             val clear = ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }
             resolver.update(uri, clear, null, null)
             uri
         } catch (e: Exception) {
-            // Roll back the half-written pending row so we don't leave an orphan entry.
+            // Roll back the half-written pending row so we don't leave an orphan entry
+            // (also discards partial plaintext from a mid-stream decrypt failure).
             runCatching { resolver.delete(uri, null, null) }
             null
         }
@@ -89,12 +149,18 @@ class MediaSink(
 
     private fun writeViaLegacyFile(
         item: VaultItem,
-        bytes: ByteArray,
+        relPath: String,
+        writer: (OutputStream) -> Unit,
     ): Uri? {
-        val relPath = item.relativePath?.takeIf { it.isNotBlank() } ?: defaultRelativePath(item.category)
         val dir = File(Environment.getExternalStorageDirectory(), relPath).apply { mkdirs() }
         val target = uniqueFile(dir, item.originalName)
-        target.outputStream().use { it.write(bytes) }
+        try {
+            target.outputStream().use(writer)
+        } catch (e: Exception) {
+            // Discard the partial file (unauthenticated plaintext) before propagating.
+            target.delete()
+            throw e
+        }
         val mimeTypes = item.mimeType?.let { arrayOf(it) }
         MediaScannerConnection.scanFile(appContext, arrayOf(target.absolutePath), mimeTypes, null)
         return Uri.fromFile(target)

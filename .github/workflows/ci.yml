@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-163-phase6-integration]
+    branches: [main, app-163-phase6-integration, app-225-phase1-wave1]
   pull_request:
   workflow_dispatch:
 
@@ -61,5 +61,62 @@ jobs:
           path: |
             **/build/reports/tests/
             **/build/reports/lint-results-*.html
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # Instrumented Definition-of-Done matrix (APP-225, build spec §11/§12, board hard
+  # rule #2): proves hide/restore/recycle-bin/FLAG_SECURE with in-process MediaStore
+  # content-query + file-inspection assertions — never manual emulator screenshots.
+  # Each matrix leg boots a FRESH, dedicated AVD on a dedicated runner, satisfying the
+  # no-shared-emulator rule. The tests self-grant MANAGE_EXTERNAL_STORAGE in @Before via
+  # UiAutomation appops (see DoDTestSupport), so no adb pre-step is required here.
+  instrumented:
+    name: Instrumented DoD (API ${{ matrix.api-level }})
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        api-level: [30, 34]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ubuntu-latest runners expose /dev/kvm but restrict it; open it up so the
+      # emulator gets hardware acceleration (standard emulator-runner enablement step).
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Run instrumented DoD tests
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api-level }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
+
+      - name: Upload connected test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connected-reports-api-${{ matrix.api-level }}
+          path: |
+            **/build/reports/androidTests/
+            **/build/outputs/androidTest-results/
           if-no-files-found: ignore
           retention-days: 7

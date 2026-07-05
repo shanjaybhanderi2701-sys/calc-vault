@@ -54,6 +54,17 @@
     <!-- Explore · Private Browser (Phase 4): the in-app incognito WebView loads pages. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!--
+      Bulk hide/restore hardening (build spec §11, APP-225): batch encrypt/restore runs
+      under a dataSync foreground service (BulkOpService) with a "Processing N of M"
+      notification so the OS does not kill a half-finished batch. POST_NOTIFICATIONS is
+      never gated on — if denied on API 33+ the operation still runs, just without the
+      visible progress notification.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".CalculatorVaultApp"
         android:allowBackup="false"
@@ -157,6 +168,16 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/applock_accessibility_config" />
         </service>
+
+        <!--
+          Foreground service that keeps bulk hide/restore alive with a progress
+          notification (build spec §11). Started by the vault repository around each
+          batch; observes BulkOpProgress and stops itself when the batch completes.
+        -->
+        <service
+            android:name=".vault.media.BulkOpService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

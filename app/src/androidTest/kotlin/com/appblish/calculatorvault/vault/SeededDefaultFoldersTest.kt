@@ -4,21 +4,24 @@ import android.os.Environment
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.appblish.calculatorvault.vault.model.VaultCategory
-import com.appblish.calculatorvault.vault.storage.StoragePermissions
+import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 
 /**
- * On-device proof of APP-206: a fresh vault seeds the predefined default folders (xlock /
- * Figma parity) into its encrypted index on first init, the seed happens **once** (re-opening
- * does not duplicate), and each vault namespace seeds independently so a decoy's folders never
- * leak into the real vault and vice-versa.
+ * On-device proof of the Phase-1 seed contract (build spec §4, APP-225, board-ruled on
+ * APP-220): a fresh vault seeds exactly **one empty "Download" folder** into each Phase-1
+ * category (Photos / Videos / Audios) with the stable id `seed_<category>_download`,
+ * FILES and CONTACTS seed **nothing**, the seed happens **once** (re-opening does not
+ * duplicate or resurrect), and each vault namespace seeds independently so a decoy's
+ * folders never leak into the real vault and vice-versa.
  */
 @RunWith(AndroidJUnit4::class)
 class SeededDefaultFoldersTest {
@@ -29,29 +32,39 @@ class SeededDefaultFoldersTest {
 
     @Before
     fun grantAllFilesAccessAndClean() {
-        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand(
-            "appops set ${context.packageName} MANAGE_EXTERNAL_STORAGE allow",
-        )
-        repeat(40) { if (StoragePermissions.hasAllFilesAccess(context)) return@repeat else Thread.sleep(50) }
-        assertThat(StoragePermissions.hasAllFilesAccess(context)).isTrue()
+        DoDTestSupport.grantAllFilesAccess(context)
+        // This test exercises the ROOT namespace's first-init seed, so it needs a truly
+        // fresh .CalcVault/ tree (safe: CI runs on a dedicated, disposable emulator).
         File(Environment.getExternalStorageDirectory(), VaultStorage.DIR_NAME).deleteRecursively()
     }
 
+    @After
+    fun clearSession() {
+        VaultSession.clear()
+    }
+
     @Test
-    fun freshVaultSeedsDefaultFoldersOnceAndDecoysStayIsolated() =
+    fun freshVaultSeedsOneDownloadFolderPerPhase1CategoryOnceAndDecoysStayIsolated() =
         runBlocking {
-            // --- Real vault: first unlock seeds the defaults --------------------------------
+            // --- Real vault: first unlock seeds the Phase-1 defaults ------------------------
             VaultSession.begin(realPin, namespace = "")
             val real = EncryptedVaultContentRepository(context)
             real.unlock()
-            awaitUnlock(real)
+            DoDTestSupport.awaitUnlock(real)
 
-            // Seeded folders load into the index a beat after the key is derived; wait for them.
-            val realPhotoFolders = awaitPhotoFolders(real, expected = 2)
-            assertThat(realPhotoFolders).containsExactly("Camera", "Screenshots")
-            assertThat(real.folderCounts().first()[VaultCategory.FILES]).isEqualTo(1)
-            // Contacts stay folderless (home tile shows a plain count).
-            assertThat(real.folderCounts().first()[VaultCategory.CONTACTS]).isEqualTo(0)
+            // Each Phase-1 category (Photos / Videos / Audios) gets exactly one empty
+            // "Download" folder with the stable derived id.
+            for (category in VaultCategory.PHASE1) {
+                val seeded = awaitFolders(real, category, expected = 1)
+                assertThat(seeded.map { it.name }).containsExactly("Download")
+                val download = seeded.single()
+                assertThat(download.id).isEqualTo("seed_${category.name.lowercase()}_download")
+                assertThat(download.itemCount).isEqualTo(0)
+            }
+            // FILES and CONTACTS are out of Phase-1 scope: no folders seeded at all.
+            val folderCounts = real.folderCounts().first()
+            assertThat(folderCounts[VaultCategory.FILES]).isEqualTo(0)
+            assertThat(folderCounts[VaultCategory.CONTACTS]).isEqualTo(0)
 
             // A user-created folder in the real vault, to prove isolation below.
             real.createFolder(VaultCategory.PHOTOS, "RealSecrets")
@@ -60,20 +73,20 @@ class SeededDefaultFoldersTest {
             VaultSession.begin(realPin, namespace = "")
             val realReopened = EncryptedVaultContentRepository(context)
             realReopened.unlock()
-            awaitUnlock(realReopened)
-            // Camera + Screenshots (seed) + RealSecrets (user) = 3, no duplicated seed folders.
-            assertThat(awaitPhotoFolders(realReopened, expected = 3))
-                .containsExactly("Camera", "Screenshots", "RealSecrets")
+            DoDTestSupport.awaitUnlock(realReopened)
+            // Download (seed) + RealSecrets (user) = 2 — no duplicated seed folder.
+            assertThat(awaitFolders(realReopened, VaultCategory.PHOTOS, expected = 2).map { it.name })
+                .containsExactly("Download", "RealSecrets")
 
             // --- Decoy vault: its own independent seed, no real-vault leakage ---------------
             VaultSession.begin(decoyPin, namespace = decoyNamespace)
             val decoy = EncryptedVaultContentRepository(context)
             decoy.unlock()
-            awaitUnlock(decoy)
+            DoDTestSupport.awaitUnlock(decoy)
 
-            val decoyPhotoFolders = awaitPhotoFolders(decoy, expected = 2)
-            // Seeded defaults present…
-            assertThat(decoyPhotoFolders).containsExactly("Camera", "Screenshots")
+            val decoyPhotoFolders = awaitFolders(decoy, VaultCategory.PHOTOS, expected = 1).map { it.name }
+            // Seeded default present…
+            assertThat(decoyPhotoFolders).containsExactly("Download")
             // …but the real vault's user folder is absent — spaces are isolated by directory.
             assertThat(decoyPhotoFolders).doesNotContain("RealSecrets")
 
@@ -83,27 +96,23 @@ class SeededDefaultFoldersTest {
             VaultSession.begin(realPin, namespace = "")
         }
 
-    private fun awaitUnlock(repo: EncryptedVaultContentRepository) {
-        repeat(200) { if (repo.isUnlocked()) return else Thread.sleep(100) }
-        assertThat(repo.isUnlocked()).isTrue()
-    }
-
     /**
-     * Poll the Photos folder flow until it reaches [expected] entries. [isUnlocked] flips true
-     * the moment the data key is derived, but the index (and thus the folder state) is loaded a
-     * beat later; production observes the StateFlow, so this only bridges the test's imperative
-     * read.
+     * Poll [category]'s folder flow until it reaches [expected] entries. `isUnlocked` flips
+     * true the moment the data key is derived, but the index (and thus the folder state) is
+     * loaded a beat later; production observes the StateFlow, so this only bridges the test's
+     * imperative read.
      */
-    private fun awaitPhotoFolders(
+    private fun awaitFolders(
         repo: EncryptedVaultContentRepository,
+        category: VaultCategory,
         expected: Int,
-    ): List<String> =
+    ): List<VaultFolder> =
         runBlocking {
             repeat(150) {
-                val names = repo.folders(VaultCategory.PHOTOS).first().map { it.name }
-                if (names.size >= expected) return@runBlocking names
+                val folders = repo.folders(category).first()
+                if (folders.size >= expected) return@runBlocking folders
                 Thread.sleep(100)
             }
-            repo.folders(VaultCategory.PHOTOS).first().map { it.name }
+            repo.folders(category).first()
         }
 }

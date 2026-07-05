@@ -7,6 +7,7 @@ import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import java.io.File
 
 /**
  * Read/write boundary for hidden vault *content* (media, files, folders, recycle bin) —
@@ -117,4 +118,20 @@ interface VaultContentRepository {
 
     /** Read a decrypted blob for a viewer. Null if the item or blob is missing. */
     suspend fun openDecrypted(itemId: String): ByteArray?
+
+    /**
+     * Decrypt [itemId]'s blob straight into [dest] — the large-media seam for viewers that
+     * must not hold a whole video in memory (bulk-op hardening, spec §11). The device
+     * implementation streams blob → cipher → file and returns false (leaving no partial
+     * [dest]) when the item/blob/key is missing or the GCM tag fails. This default
+     * materializes [openDecrypted] so in-memory fakes work unchanged.
+     */
+    suspend fun decryptToFile(
+        itemId: String,
+        dest: File,
+    ): Boolean {
+        val bytes = openDecrypted(itemId) ?: return false
+        dest.outputStream().use { it.write(bytes) }
+        return true
+    }
 }

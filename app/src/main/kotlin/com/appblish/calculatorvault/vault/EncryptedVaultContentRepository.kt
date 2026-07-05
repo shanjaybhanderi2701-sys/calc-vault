@@ -4,10 +4,13 @@ import android.content.Context
 import android.net.Uri
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
+import com.appblish.calculatorvault.vault.media.BulkOpProgress
+import com.appblish.calculatorvault.vault.media.BulkOpService
 import com.appblish.calculatorvault.vault.media.MediaSink
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.RestoreSummary
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -130,36 +133,40 @@ class EncryptedVaultContentRepository(
 
     override suspend fun hide(items: List<VaultItem>): List<VaultItem> =
         withContext(Dispatchers.IO) {
-            val stored = mutableListOf<VaultItem>()
-            for (staged in items) {
-                // UUID file name, extension stripped: nothing about the original leaks from
-                // the blob's name. Stored as a bare name so the vault dir stays relocatable.
-                val blobName = UUID.randomUUID().toString()
-                val blob = VaultStorage.blobFile(appContext, blobName)
-                val encryptedBytes =
-                    try {
-                        encryptSource(staged, blob)
-                    } catch (e: Exception) {
-                        // Skip an unreadable source rather than aborting the whole batch;
-                        // the original is left in place (nothing to un-hide).
-                        blob.delete()
-                        continue
+            withBulkOp("Hiding files", items.size) {
+                val stored = mutableListOf<VaultItem>()
+                for ((index, staged) in items.withIndex()) {
+                    // UUID file name, extension stripped: nothing about the original leaks from
+                    // the blob's name. Stored as a bare name so the vault dir stays relocatable.
+                    val blobName = UUID.randomUUID().toString()
+                    val blob = VaultStorage.blobFile(appContext, blobName)
+                    val encryptedBytes =
+                        try {
+                            encryptSource(staged, blob)
+                        } catch (e: Exception) {
+                            // Skip an unreadable source rather than aborting the whole batch;
+                            // the original is left in place (nothing to un-hide).
+                            blob.delete()
+                            BulkOpProgress.update(index + 1)
+                            continue
+                        }
+                    val item =
+                        staged.copy(
+                            id = "v$blobName",
+                            encryptedPath = blobName,
+                            sizeBytes = encryptedBytes,
+                            sourceUri = null,
+                        )
+                    mutex.withLock {
+                        itemsState.value = itemsState.value + item
+                        persist()
                     }
-                val item =
-                    staged.copy(
-                        id = "v$blobName",
-                        encryptedPath = blobName,
-                        sizeBytes = encryptedBytes,
-                        sourceUri = null,
-                    )
-                mutex.withLock {
-                    itemsState.value = itemsState.value + item
-                    persist()
+                    // Return value keeps the source Uri so the UI can delete the public copy.
+                    stored += item.copy(sourceUri = staged.sourceUri)
+                    BulkOpProgress.update(index + 1)
                 }
-                // Return value keeps the source Uri so the UI can delete the public copy.
-                stored += item.copy(sourceUri = staged.sourceUri)
+                stored
             }
-            stored
         }
 
     /** Stream the staged original through [VaultCrypto] into [blob]; returns blob size. */
@@ -203,36 +210,68 @@ class EncryptedVaultContentRepository(
         persist()
     }
 
-    override suspend fun unhide(itemIds: Set<String>): Int =
+    override suspend fun unhide(itemIds: Set<String>): Int = unhideDetailed(itemIds).restored
+
+    override suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary =
         withContext(Dispatchers.IO) {
-            val cipher = crypto ?: return@withContext 0
+            // Locked vault: nothing is writable — every requested item stays put (spec §8:
+            // never lose the only copy, never silent; the summary reports the failure).
+            val cipher = crypto ?: return@withContext RestoreSummary(failed = itemIds.size)
             val targets = itemsState.value.filter { it.id in itemIds }
-            var restored = 0
-            for (item in targets) {
-                // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
-                // resolveBlob handles both those and any legacy absolute paths.
-                val blob = item.encryptedPath?.let(::resolveBlob) ?: continue
-                if (!blob.exists()) continue
-                // Decrypt the blob back to cleartext bytes, then publish them to public
-                // storage. Only on a confirmed write-back do we drop the vault copy — a
-                // failed restore leaves the encrypted original in place.
-                val plain =
-                    try {
-                        ByteArrayOutputStream()
-                            .also { out -> blob.inputStream().use { source -> cipher.decrypt(source, out) } }
-                            .toByteArray()
-                    } catch (e: Exception) {
+            var toOriginal = 0
+            var toFallback = 0
+            var fallbackDestination: String? = null
+            // Ids that no longer resolve to a vault item count as failed, matching the
+            // interface default's arithmetic.
+            var failed = itemIds.size - targets.size
+            withBulkOp("Restoring files", targets.size) {
+                for ((index, item) in targets.withIndex()) {
+                    // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
+                    // resolveBlob handles both those and any legacy absolute paths.
+                    val blob = item.encryptedPath?.let(::resolveBlob)
+                    if (blob == null || !blob.exists()) {
+                        failed++
+                        BulkOpProgress.update(index + 1)
                         continue
                     }
-                mediaSink.writeBack(item, plain) ?: continue
-                blob.delete()
-                mutex.withLock {
-                    itemsState.value = itemsState.value.filterNot { it.id == item.id }
-                    persist()
+                    // Stream blob → cipher → public output: MediaSink opens the destination
+                    // and we pump the decrypted bytes straight into it, so a large video
+                    // never materializes as a full ByteArray. MediaSink classifies the
+                    // landing spot (original album vs visible "Restored" fallback) and rolls
+                    // back its own partial writes on failure.
+                    val outcome =
+                        mediaSink.writeBack(item) { out ->
+                            blob.inputStream().use { source -> cipher.decrypt(source, out) }
+                        }
+                    if (outcome == null) {
+                        // Neither the original path nor the fallback folder was writable (or
+                        // the blob failed its GCM tag): the item stays in the vault untouched.
+                        failed++
+                        BulkOpProgress.update(index + 1)
+                        continue
+                    }
+                    when (outcome) {
+                        is MediaSink.WriteBackResult.Original -> toOriginal++
+                        is MediaSink.WriteBackResult.Fallback -> {
+                            toFallback++
+                            fallbackDestination = outcome.destination
+                        }
+                    }
+                    // Only on a confirmed write-back do we drop the vault copy.
+                    blob.delete()
+                    mutex.withLock {
+                        itemsState.value = itemsState.value.filterNot { it.id == item.id }
+                        persist()
+                    }
+                    BulkOpProgress.update(index + 1)
                 }
-                restored++
             }
-            restored
+            RestoreSummary(
+                restoredToOriginal = toOriginal,
+                restoredToFallback = toFallback,
+                fallbackDestination = fallbackDestination,
+                failed = failed,
+            )
         }
 
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
@@ -283,9 +322,57 @@ class EncryptedVaultContentRepository(
             out.toByteArray()
         }
 
+    override suspend fun decryptToFile(
+        itemId: String,
+        dest: File,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            val cipher = crypto ?: return@withContext false
+            val item =
+                itemsState.value.firstOrNull { it.id == itemId }
+                    ?: binState.value.firstOrNull { it.item.id == itemId }?.item
+                    ?: return@withContext false
+            val blob = item.encryptedPath?.let(::resolveBlob) ?: return@withContext false
+            if (!blob.exists()) return@withContext false
+            try {
+                dest.outputStream().use { out ->
+                    blob.inputStream().use { source -> cipher.decrypt(source, out) }
+                }
+                true
+            } catch (e: Exception) {
+                // GCM tag failure / IO error: drop the partial file so a caller never
+                // renders unauthenticated plaintext.
+                dest.delete()
+                false
+            }
+        }
+
     // --- Storage helpers ------------------------------------------------------------
 
     private fun requireCrypto(): VaultCrypto = crypto ?: error("Vault is locked; call unlock() first")
+
+    /**
+     * Run [block] as a tracked bulk operation (spec §11): publish per-item progress to
+     * [BulkOpProgress] and keep the process alive under [BulkOpService]'s foreground
+     * "Processing N of M" notification so the OS never kills a half-finished batch. The
+     * service is best-effort — if it cannot start (background restrictions, denied
+     * POST_NOTIFICATIONS) the batch still runs to completion here on Dispatchers.IO; only
+     * the progress UI is lost. `finally` guarantees the tracker (and thus the service)
+     * shuts down even when the batch throws.
+     */
+    private inline fun <T> withBulkOp(
+        label: String,
+        total: Int,
+        block: () -> T,
+    ): T {
+        BulkOpProgress.start(label, total)
+        BulkOpService.start(appContext)
+        return try {
+            block()
+        } finally {
+            BulkOpProgress.finish()
+        }
+    }
 
     /**
      * Resolve a stored blob reference to a file. New items store a bare UUID name resolved

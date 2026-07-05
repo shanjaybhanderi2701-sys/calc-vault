@@ -121,6 +121,32 @@ class InMemoryVaultContentRepositoryTest {
         }
 
     @Test
+    fun `unhideDetailed classifies known items as restored-to-original and unknown ids as failed`() =
+        runTest {
+            val repo = repo()
+            val ids =
+                repo
+                    .hide(
+                        listOf(
+                            staged("a", VaultCategory.PHOTOS, 3),
+                            staged("b", VaultCategory.PHOTOS, 2),
+                        ),
+                    ).map { it.id }
+                    .toSet()
+
+            val summary = repo.unhideDetailed(ids + "missing-id")
+
+            // Off-device fake: everything known lands at its original spot, nothing falls
+            // back, and the unknown id is reported failed — the never-silent contract.
+            assertThat(summary.restoredToOriginal).isEqualTo(2)
+            assertThat(summary.restoredToFallback).isEqualTo(0)
+            assertThat(summary.fallbackDestination).isNull()
+            assertThat(summary.failed).isEqualTo(1)
+            assertThat(summary.restored).isEqualTo(2)
+            assertThat(repo.items(VaultCategory.PHOTOS).first()).isEmpty()
+        }
+
+    @Test
     fun `delete forever removes from the bin permanently`() =
         runTest {
             val repo = repo()

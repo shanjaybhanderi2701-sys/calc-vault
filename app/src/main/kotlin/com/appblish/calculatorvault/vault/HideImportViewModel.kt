@@ -9,6 +9,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,13 +72,20 @@ enum class PickerSort(
     }
 }
 
-/** Hide/import flow state: folder picker → date-grouped multi-select → Hide Now. */
+/** Hide/import flow state: folder picker (S14) → date-grouped multi-select (S15) → Hide Now. */
 data class HideImportState(
     val category: VaultCategory,
     val albums: List<SourceAlbum> = emptyList(),
     val selectedAlbumId: String? = null,
     val sources: List<SourceItem> = emptyList(),
     val selectedIds: Set<String> = emptySet(),
+    // S14 folder-level multi-select: whole device folders staged for hiding directly from
+    // the folder grid, without opening each one. Holds album ids (never the Recent
+    // aggregate — see [selectableFolderIds]).
+    val selectedFolderIds: Set<String> = emptySet(),
+    // S15 expand affordance: the item currently shown in the full-screen pre-hide preview
+    // (null = no preview open). Kept in state so rotation/tests see the same overlay.
+    val previewItemId: String? = null,
     val hiding: Boolean = false,
     val done: Boolean = false,
     // Active sort for the item grid (xlock parity sort menu).
@@ -89,10 +97,39 @@ data class HideImportState(
     // [onOriginalsRemoved]. Empty when hiding sample data or when nothing needs consent.
     val pendingDeleteUris: List<String> = emptyList(),
 ) {
-    val hideEnabled: Boolean get() = selectedIds.isNotEmpty() && !hiding
+    /** Hide Now is armed by folder selection on S14 and by item selection on S15. */
+    val hideEnabled: Boolean get() =
+        !hiding && if (selectedAlbumId == null) selectedFolderIds.isNotEmpty() else selectedIds.isNotEmpty()
 
     /** The currently-open album, if any (used for the item-grid header subtitle). */
     val selectedAlbum: SourceAlbum? get() = albums.firstOrNull { it.id == selectedAlbumId }
+
+    /**
+     * Top-bar title per the S15 redline: inside a folder the title is the **live** selected
+     * count ("Selected - N", including 0 so the count is always visible); the folder grid
+     * keeps the category title.
+     */
+    val pickerTitle: String get() =
+        if (selectedAlbumId == null) "Hide ${category.label.lowercase()}" else "Selected - ${selectedIds.size}"
+
+    /**
+     * Folder ids the S14 "All" toggle and per-tile circles operate on. The synthetic
+     * "Recent" aggregate is excluded: it *is* every bucket, so selecting it alongside real
+     * folders would double-count — "all real folders" already means everything.
+     */
+    val selectableFolderIds: Set<String> get() =
+        albums.mapNotNull { album -> album.id.takeUnless { it == SourceAlbum.RECENT_ID } }.toSet()
+
+    /** True when every selectable device folder is staged (drives the S14 "All" check). */
+    val allFoldersSelected: Boolean get() =
+        selectableFolderIds.isNotEmpty() && selectedFolderIds.containsAll(selectableFolderIds)
+
+    /** True when every visible item is selected (drives the S15 "All" check). */
+    val allItemsSelected: Boolean get() =
+        sources.isNotEmpty() && selectedIds.containsAll(sources.map { it.id })
+
+    /** The source behind the open full-screen preview, if any. */
+    val previewItem: SourceItem? get() = sources.firstOrNull { it.id == previewItemId }
 }
 
 /**
@@ -118,14 +155,17 @@ data class SourceAlbum(
 }
 
 /**
- * Drives the hide/import flow shared by all five categories. On device it loads the real
+ * Drives the hide/import flow shared by all categories. On device it loads the real
  * public-storage candidates from [MediaSource] (MediaStore / ContactsContract) once the
  * runtime permission is granted; without a [MediaSource] (Compose preview / tests) it
- * shows deterministic sample data. The user picks a folder (or the "Recent"/All-Files
- * aggregate), multi-selects date-grouped items, and on **Hide Now** the chosen items are
+ * shows deterministic sample data. The user either multi-selects whole device folders on
+ * the S14 grid, or opens one and multi-selects date-grouped items (per-section select-all,
+ * live "Selected - N" title, pre-hide preview). On **Hide Now** the chosen items are
  * handed to [VaultContentRepository.hide], which streams each original through
- * `VaultCrypto` into an encrypted blob. The public originals are then removed via the
- * screen's delete request (see [pendingDeleteUris]).
+ * `VaultCrypto` into an encrypted blob; per the S16 redline each item lands in a vault
+ * folder named after its source device bucket (found or created on the fly), so the
+ * category screen's folder tiles mirror the source albums. The public originals are then
+ * removed via the screen's delete request (see [HideImportState.pendingDeleteUris]).
  */
 class HideImportViewModel(
     val category: VaultCategory,
@@ -155,7 +195,9 @@ class HideImportViewModel(
                 } else {
                     sampleSources(category, albumId)
                 }
-            _state.update { it.copy(selectedAlbumId = albumId, sources = sources, selectedIds = emptySet()) }
+            _state.update {
+                it.copy(selectedAlbumId = albumId, sources = sources, selectedIds = emptySet(), previewItemId = null)
+            }
         }
     }
 
@@ -166,12 +208,62 @@ class HideImportViewModel(
         }
     }
 
-    /** Select-all / clear for the visible album (the header "pinch-all" affordance). */
+    /** S15 "All" toggle: select every visible item, or clear when all are already selected. */
     fun toggleAll() {
         _state.update { current ->
             val all = current.sources.map { it.id }.toSet()
             current.copy(selectedIds = if (current.selectedIds.containsAll(all)) emptySet() else all)
         }
+    }
+
+    /**
+     * S15 per-section select-all circle: select every item of the section, or deselect the
+     * whole section when all of its items are already selected. Other sections' selections
+     * are untouched.
+     */
+    fun toggleSection(itemIds: Collection<String>) {
+        if (itemIds.isEmpty()) return
+        _state.update { current ->
+            val ids = itemIds.toSet()
+            val selected =
+                if (current.selectedIds.containsAll(ids)) current.selectedIds - ids else current.selectedIds + ids
+            current.copy(selectedIds = selected)
+        }
+    }
+
+    /** S14 per-tile selection circle: stage/unstage one device folder for a bulk hide. */
+    fun toggleFolder(albumId: String) {
+        if (albumId == SourceAlbum.RECENT_ID) return // aggregate pseudo-folder is not selectable
+        _state.update { current ->
+            val ids =
+                if (albumId in current.selectedFolderIds) {
+                    current.selectedFolderIds - albumId
+                } else {
+                    current.selectedFolderIds + albumId
+                }
+            current.copy(selectedFolderIds = ids)
+        }
+    }
+
+    /**
+     * S14 "All" toggle: stage every real device folder (the Recent aggregate is excluded —
+     * see [HideImportState.selectableFolderIds]), or clear when all are already staged.
+     */
+    fun toggleAllFolders() {
+        _state.update { current ->
+            val all = current.selectableFolderIds
+            current.copy(selectedFolderIds = if (current.selectedFolderIds.containsAll(all)) emptySet() else all)
+        }
+    }
+
+    /** Open the full-screen pre-hide preview for [itemId] (S15 expand affordance). */
+    fun openPreview(itemId: String) {
+        _state.update { it.copy(previewItemId = itemId) }
+    }
+
+    /** Dismiss the full-screen preview (tap / system back). */
+    fun closePreview() {
+        _state.update { it.copy(previewItemId = null) }
     }
 
     /** Change the item-grid sort order (xlock parity sort menu). */
@@ -181,31 +273,58 @@ class HideImportViewModel(
 
     /** Step back from the item grid to the folder picker (in-picker back navigation). */
     fun clearAlbum() {
-        _state.update { it.copy(selectedAlbumId = null, sources = emptyList(), selectedIds = emptySet()) }
+        _state.update {
+            it.copy(selectedAlbumId = null, sources = emptyList(), selectedIds = emptySet(), previewItemId = null)
+        }
     }
 
     fun hideNow() {
         val current = _state.value
         if (!current.hideEnabled) return
-        val chosen = current.sources.filter { it.id in current.selectedIds }
         _state.update { it.copy(hiding = true) }
         viewModelScope.launch {
-            repository.hide(chosen.map { src -> src.toVaultItem(category) })
+            val chosen =
+                if (current.selectedAlbumId == null) {
+                    folderSelectionSources(current)
+                } else {
+                    current.sources.filter { it.id in current.selectedIds }
+                }
+            if (chosen.isEmpty()) {
+                // Every staged folder turned out empty — nothing to hide, just disarm.
+                _state.update { it.copy(hiding = false, selectedFolderIds = emptySet()) }
+                return@launch
+            }
+            // S16: each item lands in a vault folder named after its source device bucket
+            // (Camera → "Camera"…), found or created per distinct bucket, so the category
+            // screen's folder tiles mirror the source albums. Items browsed via the Recent
+            // aggregate carry their *real* bucket name (MediaSource keeps it per row).
+            val folderIdByBucket =
+                folderIdsForBuckets(chosen.mapNotNull { src -> src.albumName.takeIf { it.isNotBlank() } }.toSet())
+            repository.hide(chosen.map { src -> src.toVaultItem(category, folderIdByBucket[src.albumName]) })
             val deletable = chosen.mapNotNull { it.contentUri.takeIf { uri -> uri.isNotBlank() } }
             when {
                 deletable.isEmpty() ->
-                    _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }
+                    _state.update {
+                        it.copy(hiding = false, done = true, selectedIds = emptySet(), selectedFolderIds = emptySet())
+                    }
                 // Contacts have no MediaStore delete-consent dialog. Contacts access was
                 // dropped per board scope refinement (APP-207), so deleteContacts is now a
                 // no-op (returns 0) — kept for shape until the Contacts category is retired.
                 category == VaultCategory.CONTACTS -> {
                     withContext(Dispatchers.IO) { mediaSource?.deleteContacts(deletable) }
-                    _state.update { it.copy(hiding = false, done = true, selectedIds = emptySet()) }
+                    _state.update {
+                        it.copy(hiding = false, done = true, selectedIds = emptySet(), selectedFolderIds = emptySet())
+                    }
                 }
                 // Media: hand the originals to the screen's MediaStore delete-request.
                 else ->
                     _state.update {
-                        it.copy(hiding = false, selectedIds = emptySet(), pendingDeleteUris = deletable)
+                        it.copy(
+                            hiding = false,
+                            selectedIds = emptySet(),
+                            selectedFolderIds = emptySet(),
+                            pendingDeleteUris = deletable,
+                        )
                     }
             }
         }
@@ -216,13 +335,51 @@ class HideImportViewModel(
         _state.update { it.copy(pendingDeleteUris = emptyList(), done = true) }
     }
 
-    private fun SourceItem.toVaultItem(category: VaultCategory): VaultItem =
+    /**
+     * Enumerate the items behind every folder staged on S14, deduped by id — the same
+     * original can surface through several selected folders, and hiding it twice would
+     * double-encrypt and double-delete.
+     */
+    private suspend fun folderSelectionSources(current: HideImportState): List<SourceItem> {
+        val stagedIds = current.albums.map { it.id }.filter { it in current.selectedFolderIds }
+        val all =
+            stagedIds.flatMap { albumId ->
+                if (mediaSource != null && current.permissionGranted) {
+                    withContext(Dispatchers.IO) { mediaSource.sources(category, albumId) }
+                } else {
+                    sampleSources(category, albumId)
+                }
+            }
+        return all.distinctBy { it.id }
+    }
+
+    /**
+     * Resolve each distinct source-bucket name to a vault folder id in this category:
+     * reuse an existing folder with the same name (case-insensitive, so the seeded
+     * "Download" folder absorbs MediaStore's "Download" bucket) or create it.
+     */
+    private suspend fun folderIdsForBuckets(bucketNames: Set<String>): Map<String, String> {
+        if (bucketNames.isEmpty()) return emptyMap()
+        val existing = repository.folders(category).first()
+        val out = mutableMapOf<String, String>()
+        for (name in bucketNames) {
+            val match = existing.firstOrNull { it.name.equals(name, ignoreCase = true) }
+            out[name] = match?.id ?: repository.createFolder(category, name).id
+        }
+        return out
+    }
+
+    private fun SourceItem.toVaultItem(
+        category: VaultCategory,
+        folderId: String?,
+    ): VaultItem =
         VaultItem(
             id = id,
             category = category,
             originalName = name,
             dateLabel = dateLabel,
             sortKey = sortKey,
+            folderId = folderId,
             sourceUri = contentUri.takeIf { it.isNotBlank() },
             mimeType = mimeType,
             relativePath = relativePath.takeIf { it.isNotBlank() },
@@ -269,8 +426,13 @@ class HideImportViewModel(
             val day = 24L * 60L * 60L * 1000L
             val base = 100L * day
             val isRecent = albumId == SourceAlbum.RECENT_ID
-            val album = sampleAlbums(category).firstOrNull { it.id == albumId }
-            val albumName = album?.name ?: albumId
+            val albums = sampleAlbums(category)
+            val album = albums.firstOrNull { it.id == albumId }
+            // The Recent aggregate mixes every real bucket, so its sample items cycle
+            // through the real buckets — mirroring MediaSource, which keeps each row's
+            // true bucket even in the unfiltered query (the S16 folder mapping relies
+            // on that: Recent picks land in their real bucket's vault folder).
+            val realBuckets = albums.filterNot { it.id == SourceAlbum.RECENT_ID }
             val ext =
                 when (category) {
                     VaultCategory.PHOTOS -> "jpg"
@@ -287,15 +449,17 @@ class HideImportViewModel(
                         1L -> "Yesterday"
                         else -> "${12 - ageDays} Jun 2026"
                     }
-                val prefix = (if (isRecent) "IMG" else albumName.take(3)).uppercase()
+                val bucket = if (isRecent && realBuckets.isNotEmpty()) realBuckets[i % realBuckets.size] else album
+                val bucketName = bucket?.name ?: albumId
+                val prefix = (if (isRecent) "IMG" else bucketName.take(3)).uppercase()
                 val name = if (ext.isEmpty()) "Contact ${i + 1}" else "${prefix}_${1000 + i}.$ext"
                 SourceItem(
                     id = "$albumId-$i",
                     name = name,
                     dateLabel = label,
                     sortKey = base - ageDays * day - i,
-                    albumId = albumId,
-                    albumName = albumName,
+                    albumId = bucket?.id ?: albumId,
+                    albumName = bucketName,
                     sizeBytes = (i + 1) * 512L * 1024L,
                     dateModified = base - i * 3_600_000L,
                 )

@@ -1,9 +1,12 @@
 package com.appblish.calculatorvault.vault.crypto
 
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.security.GeneralSecurityException
 import java.security.SecureRandom
 import javax.crypto.Cipher
+import javax.crypto.CipherInputStream
 import javax.crypto.CipherOutputStream
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
@@ -40,9 +43,20 @@ class VaultCrypto(
     }
 
     /**
-     * Decrypt a blob produced by [encrypt] into [sink]. Reads the leading IV, then
-     * streams the remaining ciphertext through the cipher. Throws if the GCM tag fails
-     * (tamper / wrong key), so a corrupted blob is never silently served.
+     * Decrypt a blob produced by [encrypt] into [sink]. Reads the leading IV, then streams
+     * the remaining ciphertext through a [CipherInputStream] in [BUFFER] chunks — the wire
+     * format ([IV_LENGTH]-byte IV ‖ ciphertext+tag) is unchanged, only the whole-blob
+     * `doFinal` load was replaced, so every pre-existing blob on disk still decrypts and a
+     * multi-GB video never materializes as one ByteArray (bulk-op hardening, spec §11).
+     *
+     * Throws [java.security.GeneralSecurityException] if the GCM tag fails (tamper / wrong
+     * key), so a corrupted blob is never silently served. [CipherInputStream] wraps the
+     * AEADBadTagException in an IOException on the final read; it is unwrapped here so
+     * callers keep the same wrong-passphrase contract as the pre-streaming one-shot cipher
+     * (decoy isolation relies on it). NOTE: because GCM only authenticates at the end of
+     * the stream, [sink] may have received partial unauthenticated plaintext before the
+     * throw; callers must discard their output on any exception (the repository deletes
+     * partial files / rolls back pending MediaStore rows).
      */
     fun decrypt(
         source: InputStream,
@@ -57,8 +71,13 @@ class VaultCrypto(
         }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
-        val plain = cipher.doFinal(source.readBytes())
-        sink.write(plain)
+        try {
+            CipherInputStream(source, cipher).use { cipherIn ->
+                cipherIn.copyTo(sink, BUFFER)
+            }
+        } catch (e: IOException) {
+            throw (e.cause as? GeneralSecurityException) ?: e
+        }
     }
 
     companion object {

@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault.onboarding
 
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Star
@@ -15,33 +16,42 @@ import com.appblish.calculatorvault.calculator.createPinHint
 
 /**
  * Hosts the whole first-run wizard, rendering the screen for the current
- * [OnboardingViewModel] step and calling [onComplete] once onboarding is flagged done.
+ * [OnboardingViewModel] step and calling [onComplete] once onboarding is flagged done —
+ * passing the freshly created PIN so the host can open the vault directly (spec §1.5: the
+ * last intro card's Done lands on **Home (Vault tab)**, not back on the calculator).
  *
- * xlock parity (APP-212): the wizard is a clean calculator/PIN setup — language → create PIN
+ * Phase 1 (build spec §1): the wizard is a clean calculator/PIN setup — language → create PIN
  * → confirm PIN → two intro cards. There is deliberately **no** upfront All Files Access
- * wall and **no** security-question step: permissions are primed in context at first use and
- * the recovery question is deferred until after the first real vault operation.
+ * wall and **no** recovery step of any kind: permissions are primed in context at first use,
+ * and PIN recovery does not exist in Phase 1 at all (build spec §0 — deferred to a later
+ * phase, accepted risk).
  */
 @Composable
 fun OnboardingRoute(
-    onComplete: () -> Unit,
+    onComplete: (pin: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: OnboardingViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(state.finished) {
-        if (state.finished) onComplete()
+        if (state.finished) onComplete(state.pinDraft)
     }
 
     when (state.step) {
         OnboardingStep.LANGUAGE ->
-            LanguageSelectScreen(
-                selected = state.language,
-                onSelect = viewModel::selectLanguage,
-                onDone = viewModel::onLanguageDone,
-                modifier = modifier,
-            )
+            Box(modifier = modifier) {
+                LanguageSelectScreen(
+                    selected = state.language,
+                    onSelect = viewModel::selectLanguage,
+                    onDone = viewModel::onLanguageDone,
+                )
+                // S3: "Setting Up Language" modal over the dimmed list while the ViewModel
+                // holds the minimum loader dwell, then it advances to CREATE_PIN itself.
+                if (state.applyingLanguage) {
+                    LanguageApplyingOverlay()
+                }
+            }
 
         OnboardingStep.CREATE_PIN ->
             PinCalculatorScreen(
@@ -64,7 +74,8 @@ fun OnboardingRoute(
         OnboardingStep.INTRO_PRIVATE ->
             IntroCardScreen(
                 title = "Private Apps & Media Vault",
-                body = "Securely hide apps, photos, videos, audio and important files.",
+                // Design sign-off S6: body drops "apps" (the title keeps the docx wording).
+                body = "Securely hide photos, videos, audio and important files",
                 icon = Icons.Filled.Lock,
                 ctaLabel = "Next",
                 pageIndex = 0,

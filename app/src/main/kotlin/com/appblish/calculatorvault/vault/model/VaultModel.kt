@@ -112,6 +112,23 @@ data class RestoreSummary(
     val failed: Int = 0,
 ) {
     val restored: Int get() = restoredToOriginal + restoredToFallback
+
+    /**
+     * The single per-operation user notice (design call D-3 copy, verbatim rules): one
+     * summary per bulk op, never one toast per item; never silent when anything fell back
+     * or failed. Null only when nothing was attempted.
+     */
+    fun noticeText(): String? {
+        val destination = fallbackDestination ?: "Restored"
+        return when {
+            restored == 0 && failed == 0 -> null
+            failed > 0 && restored == 0 -> "Couldn't restore — check storage access"
+            restoredToFallback > 0 && restoredToOriginal > 0 ->
+                "Restored $restoredToOriginal items · $restoredToFallback saved to $destination (original folder unavailable)"
+            restoredToFallback > 0 -> "Original folder unavailable — restored to $destination"
+            else -> if (restored == 1) "Restored 1 item." else "Restored $restored items."
+        }
+    }
 }
 
 /**

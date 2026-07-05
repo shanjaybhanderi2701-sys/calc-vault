@@ -3,6 +3,7 @@ package com.appblish.calculatorvault.vault
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.RestoreSummary
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -101,6 +102,14 @@ class InMemoryVaultContentRepository(
             itemsState.value = kept
             restored.size
         }
+
+    override suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary {
+        // Off-device there is no public storage to miss or collide with: every known item
+        // "restores" to its original spot; unknown ids surface as failed (left in place),
+        // mirroring the device repository's arithmetic.
+        val restored = unhide(itemIds)
+        return RestoreSummary(restoredToOriginal = restored, failed = itemIds.size - restored)
+    }
 
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
         mutex.withLock {
