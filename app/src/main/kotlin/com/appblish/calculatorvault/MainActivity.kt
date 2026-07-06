@@ -28,9 +28,13 @@ class MainActivity : ComponentActivity() {
         // privacy layer; hiding the task from recents entirely is an opt-in setting applied
         // below (OFF by default — a calculator that vanishes from recents is more
         // suspicious, spec §10 / APP-225).
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            setRecentsScreenshotEnabled(false)
+        // Debug builds skip the secure-window flags (APP-233): screenshots must work for
+        // bug reporting during stabilization; release builds always get the protection.
+        if (!BuildConfig.DEBUG) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                setRecentsScreenshotEnabled(false)
+            }
         }
         applyPersistedHideFromRecents()
         // Full-screen immersive edge-to-edge (APP-204): hide the system bars so no surface is
