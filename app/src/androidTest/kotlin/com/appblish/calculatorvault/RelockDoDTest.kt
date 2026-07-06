@@ -1,6 +1,5 @@
 package com.appblish.calculatorvault
 
-import android.content.Intent
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -161,10 +160,16 @@ class RelockDoDTest {
         assertThat(device.currentPackageName).isNotEqualTo(ourPackage)
     }
 
-    /** Bring the backgrounded task back to the foreground (warm reopen), as a launcher tap would. */
+    /**
+     * Reopen the backgrounded app exactly as tapping the launcher icon would (APP-248).
+     * `startActivity` from our own now-background process is blocked by Android's
+     * background-activity-launch restrictions (API 29+), so drive the LAUNCHER intent from
+     * the shell via `monkey` — it runs as the shell uid and brings the disguise entry
+     * (the launcher-declared alias) to the foreground, warm-resuming the existing task.
+     */
     private fun reopenApp() {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)!!
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        context.startActivity(intent)
+        device.executeShellCommand(
+            "monkey -p ${context.packageName} -c android.intent.category.LAUNCHER 1",
+        )
     }
 }
