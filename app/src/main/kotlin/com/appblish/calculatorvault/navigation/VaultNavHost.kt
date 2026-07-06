@@ -6,6 +6,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -22,6 +23,7 @@ import androidx.lifecycle.viewmodel.viewModelFactory
 import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.appblish.calculatorvault.auth.VaultKind
@@ -104,6 +106,22 @@ fun VaultNavHost() {
             }
         processLifecycle.addObserver(observer)
         onDispose { processLifecycle.removeObserver(observer) }
+    }
+
+    // Process-death restore (APP-240): the nav back stack survives the process via saved
+    // instance state, but the in-memory session does not. If composition ever lands on a
+    // vault surface with no live session — the cold-restore signature, unreachable by any
+    // legitimate in-app navigation — reset the restored spine onto the calculator lock so
+    // the vault never reappears without the PIN being typed again.
+    val currentEntry by navController.currentBackStackEntryAsState()
+    LaunchedEffect(currentEntry) {
+        if (SessionLock.requiresLockOnColdRestore(currentEntry?.destination?.route)) {
+            SessionLock.relock()
+            navController.navigate(VaultDestinations.CALCULATOR) {
+                popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
+                launchSingleTop = true
+            }
+        }
     }
 
     NavHost(

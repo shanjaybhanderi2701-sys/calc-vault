@@ -74,6 +74,17 @@ internal object SessionLock {
     fun isVaultSurface(route: String?): Boolean = route != null && route !in PRE_VAULT_SURFACES
 
     /**
+     * True when a just-composed destination is the process-death signature and must be
+     * forced back to the calculator lock (APP-240): the nav back stack survives process
+     * death via saved instance state, but the in-memory [VaultSession] does not, so a cold
+     * restore can resurrect a vault surface with no live session. Legitimate in-app
+     * navigation can never look like this — every path onto a vault surface begins the
+     * session first, and every leave-the-vault path clears it only while navigating to a
+     * pre-vault surface — so vault surface + dead session always means "restored corpse".
+     */
+    fun requiresLockOnColdRestore(route: String?): Boolean = isVaultSurface(route) && VaultSession.passphrase == null
+
+    /**
      * Forget the in-memory session and drop the data key + cached content so the vault is
      * unreachable without the PIN. Pure state drop — it never navigates — so it is safe
      * from ANY leave-the-vault path (APP-225 board finding P1a): the `ON_STOP`

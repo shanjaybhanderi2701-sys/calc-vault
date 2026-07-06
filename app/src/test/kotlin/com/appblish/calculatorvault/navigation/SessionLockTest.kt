@@ -90,6 +90,46 @@ class SessionLockTest {
     }
 
     @Test
+    fun `cold restore onto a vault surface with a dead session forces the lock`() {
+        // APP-240: the nav back stack survives process death, the in-memory session does
+        // not — a restored vault surface with no session must land on the calculator.
+        VaultSession.clear()
+        listOf(
+            VaultDestinations.VAULT_HOME,
+            VaultDestinations.SETTINGS,
+            VaultDestinations.category(com.appblish.calculatorvault.vault.model.VaultCategory.PHOTOS),
+        ).forEach { route ->
+            assertThat(SessionLock.requiresLockOnColdRestore(route)).isTrue()
+        }
+    }
+
+    @Test
+    fun `a live session never forces the lock on restore`() {
+        // A configuration change also restores the back stack, but the process (and the
+        // session) survived — the user stays exactly where they were.
+        VaultSession.begin(code = "1234")
+        try {
+            assertThat(SessionLock.requiresLockOnColdRestore(VaultDestinations.VAULT_HOME)).isFalse()
+            assertThat(SessionLock.requiresLockOnColdRestore(VaultDestinations.SETTINGS)).isFalse()
+        } finally {
+            VaultSession.clear()
+        }
+    }
+
+    @Test
+    fun `pre-vault surfaces never force the lock on restore`() {
+        VaultSession.clear()
+        listOf(
+            VaultDestinations.GATE,
+            VaultDestinations.ONBOARDING,
+            VaultDestinations.CALCULATOR,
+            null,
+        ).forEach { route ->
+            assertThat(SessionLock.requiresLockOnColdRestore(route)).isFalse()
+        }
+    }
+
+    @Test
     fun `relock forgets the session passphrase and namespace`() {
         VaultSession.begin(code = "1234", namespace = "decoy_1")
         assertThat(VaultSession.passphrase).isEqualTo("1234")
