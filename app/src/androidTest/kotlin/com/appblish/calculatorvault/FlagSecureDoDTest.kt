@@ -13,16 +13,24 @@ import org.junit.runner.RunWith
  * screenshot / screen-record / recents thumbnail can ever capture vault content —
  * asserted directly on the live window attributes via ActivityScenario, not by eyeballing
  * a black screencap (board hard rule #2).
+ *
+ * APP-233 carved out ONE exception: debug builds skip the flag so bug-report screenshots
+ * work. The DoD assertion is therefore build-type-aware — release-shaped builds MUST carry
+ * the flag, debug builds MUST NOT (proving the gate is actually wired, not just absent).
  */
 @RunWith(AndroidJUnit4::class)
 class FlagSecureDoDTest {
     @Test
-    fun mainActivityWindowCarriesFlagSecure() {
+    fun mainActivityWindowCarriesFlagSecurePerBuildTypePolicy() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
-                val flags = activity.window.attributes.flags
-                assertThat(flags and WindowManager.LayoutParams.FLAG_SECURE)
-                    .isEqualTo(WindowManager.LayoutParams.FLAG_SECURE)
+                val secure = activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE
+                if (BuildConfig.DEBUG) {
+                    // APP-233: debug builds intentionally allow capture for bug evidence.
+                    assertThat(secure).isEqualTo(0)
+                } else {
+                    assertThat(secure).isEqualTo(WindowManager.LayoutParams.FLAG_SECURE)
+                }
             }
         }
     }

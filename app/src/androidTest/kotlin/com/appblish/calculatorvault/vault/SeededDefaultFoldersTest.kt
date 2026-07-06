@@ -113,7 +113,9 @@ class SeededDefaultFoldersTest {
      */
     @Test
     fun staleIndexFromOlderBuildGetsMissingDownloadFoldersToppedUpOnUnlock() =
-        runBlocking {
+        // <Unit> because JUnit rejects the whole class if a @Test isn't void — the trailing
+        // assertThat(...) chain would otherwise become the inferred return value.
+        runBlocking<Unit> {
             val namespace = "stale_migration"
             VaultSession.begin(realPin, namespace = namespace)
 
