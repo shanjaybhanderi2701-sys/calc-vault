@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.appblish.calculatorvault.vault.media.VaultThumbnails
+import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.SharingStarted
@@ -63,12 +63,12 @@ class HomeViewModel(
     }
 
     /**
-     * Decode a cover thumbnail for a Recent-strip [item] from its decrypted blob — the
-     * same [VaultThumbnails] path the category folder tiles use, so the home strip shows
-     * real covers instead of category glyphs (APP-234 spec §2.3).
+     * Load a cover thumbnail for a Recent-strip [item] through [VaultThumbnailPipeline]
+     * (APP-244) — the same cached path the category grids use, so the home strip shows
+     * real covers instantly on revisits without re-decrypting (APP-234 spec §2.3).
      */
     suspend fun thumbnail(
         context: Context,
         item: VaultItem,
-    ): ImageBitmap? = VaultThumbnails.forItem(context, item) { repository.openDecrypted(item.id) }
+    ): ImageBitmap? = VaultThumbnailPipeline.load(context, item, repository)
 }

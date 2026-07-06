@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.appblish.calculatorvault.vault.media.VaultThumbnails
+import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -188,8 +188,9 @@ class CategoryViewModel(
     }
 
     /**
-     * Decode a grid thumbnail for [itemId] from its decrypted blob (image bitmap / video
-     * frame; null for non-visual categories). Runs off the caller's composition on IO.
+     * Load a grid thumbnail for [itemId] through [VaultThumbnailPipeline] (APP-244):
+     * memory LRU → encrypted stored thumb → one-time backfill from the blob. Instant on
+     * revisits, never decrypts a full photo/video for a tile, always off the main thread.
      * Also backs the folder tiles' cover thumbnails (a cover is just the newest item).
      */
     suspend fun thumbnail(
@@ -197,7 +198,7 @@ class CategoryViewModel(
         itemId: String,
     ): ImageBitmap? {
         val item = state.value.items.firstOrNull { it.id == itemId } ?: return null
-        return VaultThumbnails.forItem(context, item) { repository.openDecrypted(itemId) }
+        return VaultThumbnailPipeline.load(context, item, repository)
     }
 
     /**

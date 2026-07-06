@@ -164,7 +164,10 @@ class SeededDefaultFoldersTest {
             DoDTestSupport.awaitUnlock(repo)
 
             // Photos already holds a folder → left exactly as found, NO Download added.
-            assertThat(awaitFolders(repo, VaultCategory.PHOTOS, expected = 1).map { it.name })
+            // Awaited by NAME: the folder state is pre-seeded with "Download" before the
+            // async index load swaps in the planted truth, so a count-based wait races
+            // (pre-existing flake surfaced while validating APP-244 on a loaded emulator).
+            assertThat(awaitFolderNames(repo, VaultCategory.PHOTOS, "Camera").map { it.name })
                 .containsExactly("Camera")
             // Videos and Audios had ZERO folders → each topped up with the seeded default.
             for (category in listOf(VaultCategory.VIDEOS, VaultCategory.AUDIOS)) {
@@ -181,13 +184,32 @@ class SeededDefaultFoldersTest {
             val reopened = EncryptedVaultContentRepository(context)
             reopened.unlock()
             DoDTestSupport.awaitUnlock(reopened)
-            assertThat(awaitFolders(reopened, VaultCategory.PHOTOS, expected = 1).map { it.name })
+            assertThat(awaitFolderNames(reopened, VaultCategory.PHOTOS, "Camera").map { it.name })
                 .containsExactly("Camera")
             assertThat(awaitFolders(reopened, VaultCategory.VIDEOS, expected = 1).map { it.name })
                 .containsExactly("Download")
             assertThat(awaitFolders(reopened, VaultCategory.AUDIOS, expected = 1).map { it.name })
                 .containsExactly("Download")
             assertThat(reopened.allItems().first().map { it.id }).containsExactly("legacy-file-1")
+        }
+
+    /**
+     * Poll [category]'s folder flow until its names are exactly [names]. Needed where the
+     * expected *count* equals the pre-seeded default count (e.g. one "Camera" vs the
+     * pre-load "Download"): a size-based wait would return the placeholder state.
+     */
+    private fun awaitFolderNames(
+        repo: EncryptedVaultContentRepository,
+        category: VaultCategory,
+        vararg names: String,
+    ): List<VaultFolder> =
+        runBlocking {
+            repeat(150) {
+                val folders = repo.folders(category).first()
+                if (folders.map { it.name }.sorted() == names.toList().sorted()) return@runBlocking folders
+                Thread.sleep(100)
+            }
+            repo.folders(category).first()
         }
 
     /**

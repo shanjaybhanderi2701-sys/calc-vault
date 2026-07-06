@@ -14,16 +14,21 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.InputStream
 
 /**
  * Decodes real grid/preview thumbnails for the vault, replacing the placeholder tiles.
  *
- * Two sources feed the grids:
- *  - **Hidden items** ([forItem]) — the bytes live only inside the encrypted blob, so the
- *    caller supplies a decryptor ([bytesProvider]); images are down-sampled in-memory and
- *    videos are decoded to a first frame via [MediaMetadataRetriever] over a short-lived
- *    cache copy. Audios/files/contacts have no meaningful pixel preview → null (icon tile).
+ * Three sources feed the grids:
+ *  - **Stored encrypted thumbs** — the fast path (APP-244): a ~[STORED_THUMB_PX]px JPEG
+ *    generated at hide-time ([sourceThumbJpeg]) and persisted *encrypted* next to the blob,
+ *    decoded here via [decodeStoredThumb]. Orchestrated by [VaultThumbnailPipeline].
+ *  - **Hidden items without a stored thumb** ([forItem], backfill for pre-APP-244 items) —
+ *    the bytes live only inside the encrypted blob, so the caller supplies a decryptor
+ *    ([bytesProvider]); images are down-sampled in-memory and videos are decoded to a first
+ *    frame via [MediaMetadataRetriever] over a short-lived cache copy.
  *  - **Public originals** ([forSource]) in the hide picker — decoded straight from
  *    MediaStore's own thumbnail cache (API 29+), which is cheap and never touches the blob.
  *
@@ -33,6 +38,12 @@ import java.io.File
 object VaultThumbnails {
     /** Target longest-edge for a grid tile; keeps memory bounded for large photos/videos. */
     private const val TARGET_PX = 256
+
+    /** Longest edge of the persisted encrypted thumbnail (board-mandated ~200px, APP-244). */
+    const val STORED_THUMB_PX = 200
+
+    /** JPEG quality of the persisted thumbnail — a few tens of KB per item. */
+    private const val STORED_THUMB_QUALITY = 85
 
     /** Decode a preview for a hidden [item] from its decrypted blob bytes. */
     suspend fun forItem(
@@ -75,13 +86,140 @@ object VaultThumbnails {
         }
     }
 
+    // --- Persisted encrypted thumbnails (APP-244) --------------------------------------
+
+    /**
+     * Render the small JPEG that gets encrypted into the on-disk thumbnail cache, from a
+     * *staged* item whose public original is still readable (hide-time, before the source
+     * is deleted). Images/videos only; anything else (and any decode failure) → null, so
+     * hiding never fails because a preview couldn't be made.
+     */
+    suspend fun sourceThumbJpeg(
+        context: Context,
+        staged: VaultItem,
+    ): ByteArray? {
+        val uri = staged.sourceUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: return null
+        val isImage =
+            staged.category == VaultCategory.PHOTOS || staged.mimeType?.startsWith("image/") == true
+        val isVideo =
+            staged.category == VaultCategory.VIDEOS || staged.mimeType?.startsWith("video/") == true
+        if (!isImage && !isVideo) return null
+        return withContext(Dispatchers.IO) {
+            val bitmap =
+                loadThumbnailViaResolver(context, uri)
+                    ?: if (isImage) decodeSampledImage(context, uri) else videoFrame(context, uri)
+            bitmap?.let(::toStoredJpeg)
+        }
+    }
+
+    /** Decode a decrypted stored-thumb JPEG back into a grid bitmap. */
+    fun decodeStoredThumb(jpeg: ByteArray): ImageBitmap? =
+        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)?.asImageBitmap()
+
+    /** Compress an already-decoded backfill bitmap into the stored-thumb JPEG format. */
+    fun toStoredJpeg(bitmap: Bitmap): ByteArray {
+        val scaled = scaleDown(bitmap, STORED_THUMB_PX)
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, STORED_THUMB_QUALITY, out)
+        if (scaled !== bitmap) scaled.recycle()
+        return out.toByteArray()
+    }
+
+    /** Backfill: a video frame from an already-decrypted temp file (no full-bytes array). */
+    fun videoFrameFromFile(path: String): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(path)
+            retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+                ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+        } catch (e: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    /** Backfill: sampled decode of decrypted full-image bytes (grid-tile sized). */
+    fun sampledBitmapFromBytes(bytes: ByteArray): Bitmap? = decodeSampledImage(bytes)
+
+    /** MediaStore's own thumbnail cache (API 29+) — cheapest hide-time source. */
+    private fun loadThumbnailViaResolver(
+        context: Context,
+        uri: Uri,
+    ): Bitmap? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return null
+        if (uri.scheme != "content") return null
+        return runCatching {
+            context.contentResolver.loadThumbnail(uri, Size(STORED_THUMB_PX, STORED_THUMB_PX), null)
+        }.getOrNull()
+    }
+
+    /** Two-pass sampled decode straight off the source stream (content or file scheme). */
+    private fun decodeSampledImage(
+        context: Context,
+        uri: Uri,
+    ): Bitmap? =
+        runCatching {
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
+            val opts =
+                BitmapFactory.Options().apply {
+                    inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, STORED_THUMB_PX)
+                }
+            openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+        }.getOrNull()
+
+    /** First decodable frame of a still-public video source. */
+    private fun videoFrame(
+        context: Context,
+        uri: Uri,
+    ): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        return try {
+            retriever.setDataSource(context, uri)
+            retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                ?: retriever.frameAtTime
+                ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+        } catch (e: Exception) {
+            null
+        } finally {
+            retriever.release()
+        }
+    }
+
+    private fun openStream(
+        context: Context,
+        uri: Uri,
+    ): InputStream? =
+        if (uri.scheme == "file") {
+            uri.path?.let { File(it).takeIf(File::exists)?.inputStream() }
+        } else {
+            context.contentResolver.openInputStream(uri)
+        }
+
+    private fun scaleDown(
+        bitmap: Bitmap,
+        targetPx: Int,
+    ): Bitmap {
+        val longest = maxOf(bitmap.width, bitmap.height)
+        if (longest <= targetPx) return bitmap
+        val scale = targetPx.toFloat() / longest
+        return Bitmap.createScaledBitmap(
+            bitmap,
+            (bitmap.width * scale).toInt().coerceAtLeast(1),
+            (bitmap.height * scale).toInt().coerceAtLeast(1),
+            true,
+        )
+    }
+
     /** Down-sample [bytes] to ~[TARGET_PX] on the longest edge so the full image never loads. */
     private fun decodeSampledImage(bytes: ByteArray): Bitmap? {
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
         val opts =
             BitmapFactory.Options().apply {
-                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight)
+                inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, TARGET_PX)
             }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
     }
@@ -89,12 +227,13 @@ object VaultThumbnails {
     private fun sampleSize(
         width: Int,
         height: Int,
+        targetPx: Int,
     ): Int {
         if (width <= 0 || height <= 0) return 1
         var sample = 1
         var halfW = width / 2
         var halfH = height / 2
-        while (halfW >= TARGET_PX && halfH >= TARGET_PX) {
+        while (halfW >= targetPx && halfH >= targetPx) {
             sample *= 2
             halfW /= 2
             halfH /= 2
@@ -109,20 +248,12 @@ object VaultThumbnails {
         bytes: ByteArray,
     ): Bitmap? {
         val tmp = File(context.cacheDir, "thumb_$id.mp4")
-        val retriever = MediaMetadataRetriever()
         return try {
             tmp.writeBytes(bytes)
-            retriever.setDataSource(tmp.absolutePath)
-            // Prefer the closest sync (key)frame — some encoders have no decodable frame at
-            // t=0, so getFrameAtTime(0) returns null; the representative-frame call and a
-            // 1-second sample are more robust fallbacks before giving up on a preview.
-            retriever.getFrameAtTime(0, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                ?: retriever.frameAtTime
-                ?: retriever.getFrameAtTime(1_000_000L, MediaMetadataRetriever.OPTION_CLOSEST)
+            videoFrameFromFile(tmp.absolutePath)
         } catch (e: Exception) {
             null
         } finally {
-            retriever.release()
             tmp.delete()
         }
     }

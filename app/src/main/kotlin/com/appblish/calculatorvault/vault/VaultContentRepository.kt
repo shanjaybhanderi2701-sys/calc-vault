@@ -134,4 +134,24 @@ interface VaultContentRepository {
         dest.outputStream().use { it.write(bytes) }
         return true
     }
+
+    /**
+     * Read [itemId]'s stored grid thumbnail as decrypted JPEG bytes (APP-244 encrypted
+     * on-disk thumb cache) — a few tens of KB instead of the full blob. Null when no thumb
+     * has been generated yet (pre-APP-244 items, non-visual categories) or the vault is
+     * locked; callers then backfill via [saveThumbnail]. Default null so in-memory fakes
+     * keep working (the pipeline falls back to the full-blob decode path).
+     */
+    suspend fun openThumbnail(itemId: String): ByteArray? = null
+
+    /**
+     * Persist [jpegBytes] as [itemId]'s stored grid thumbnail, **encrypted** — plaintext
+     * previews must never touch disk (APP-244 board mandate). Called at hide-time by the
+     * device implementation itself and by the pipeline's lazy backfill for items hidden
+     * before thumbs existed. Default no-op for fakes.
+     */
+    suspend fun saveThumbnail(
+        itemId: String,
+        jpegBytes: ByteArray,
+    ) {}
 }

@@ -7,6 +7,8 @@ import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.BulkOpService
 import com.appblish.calculatorvault.vault.media.MediaSink
+import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
+import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
@@ -100,8 +102,13 @@ class EncryptedVaultContentRepository(
                         android.util.Log.w("VaultUnlock", "unlock failed: ${e.javaClass.simpleName}: ${e.message}")
                         return@withLock
                     }
-                crypto = VaultCrypto(dataKey)
-                loadIndex()
+                val cipher = VaultCrypto(dataKey)
+                // Load BEFORE publishing the key: isUnlocked() promises "derived the data
+                // key AND loaded the index", and observers that gate on it (tests, UI
+                // probes) must never catch the pre-load placeholder state (APP-244 race:
+                // the IO thread is preemption-prone right after the PBKDF2 burn).
+                loadIndex(cipher)
+                crypto = cipher
             }
         }
     }
@@ -115,6 +122,9 @@ class EncryptedVaultContentRepository(
         itemsState.value = emptyList()
         foldersState.value = DefaultVaultFolders.forFreshVault()
         binState.value = emptyList()
+        // Locking must also drop every decoded thumbnail pixel from memory (APP-244):
+        // the LRU is exactly as sensitive as the decrypted content it was decoded from.
+        VaultThumbnailPipeline.clear()
     }
 
     override fun items(category: VaultCategory): Flow<List<VaultItem>> =
@@ -163,6 +173,15 @@ class EncryptedVaultContentRepository(
                             sizeBytes = encryptedBytes,
                             sourceUri = null,
                         )
+                    // Hide-time thumbnail (APP-244): render a ~200px JPEG from the still-
+                    // readable public source and persist it *encrypted* next to the blob,
+                    // so the grid never has to decrypt the full item for a tile. Strictly
+                    // best-effort — a preview failure must never fail the hide.
+                    runCatching {
+                        VaultThumbnails.sourceThumbJpeg(appContext, staged)?.let { jpeg ->
+                            writeThumb(blobName, jpeg)
+                        }
+                    }
                     mutex.withLock {
                         itemsState.value = itemsState.value + item
                         persist()
@@ -263,8 +282,10 @@ class EncryptedVaultContentRepository(
                             fallbackDestination = outcome.destination
                         }
                     }
-                    // Only on a confirmed write-back do we drop the vault copy.
+                    // Only on a confirmed write-back do we drop the vault copy (and its
+                    // cached thumbnail — the item is no longer hidden, APP-244).
                     blob.delete()
+                    dropThumb(item)
                     mutex.withLock {
                         itemsState.value = itemsState.value.filterNot { it.id == item.id }
                         persist()
@@ -300,7 +321,10 @@ class EncryptedVaultContentRepository(
     override suspend fun deleteForever(itemIds: Set<String>) =
         mutex.withLock {
             val (removed, kept) = binState.value.partition { it.item.id in itemIds }
-            removed.forEach { it.item.encryptedPath?.let { path -> resolveBlob(path).delete() } }
+            removed.forEach {
+                it.item.encryptedPath?.let { path -> resolveBlob(path).delete() }
+                dropThumb(it.item)
+            }
             binState.value = kept
             persist()
         }
@@ -308,7 +332,10 @@ class EncryptedVaultContentRepository(
     override suspend fun purgeExpired(now: Long): Int =
         mutex.withLock {
             val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
-            expired.forEach { it.item.encryptedPath?.let { path -> resolveBlob(path).delete() } }
+            expired.forEach {
+                it.item.encryptedPath?.let { path -> resolveBlob(path).delete() }
+                dropThumb(it.item)
+            }
             binState.value = kept
             persist()
             expired.size
@@ -353,6 +380,68 @@ class EncryptedVaultContentRepository(
             }
         }
 
+    // --- Encrypted stored thumbnails (APP-244) ----------------------------------------
+
+    override suspend fun openThumbnail(itemId: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val cipher = crypto ?: return@withContext null
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext null
+            val file = VaultStorage.thumbFile(appContext, blobName)
+            if (!file.exists()) return@withContext null
+            try {
+                val out = ByteArrayOutputStream()
+                file.inputStream().use { source -> cipher.decrypt(source, out) }
+                out.toByteArray()
+            } catch (e: Exception) {
+                // A thumb that fails its tag is worthless and would fail forever — drop it
+                // so the pipeline regenerates a good one from the (independently
+                // authenticated) blob.
+                file.delete()
+                null
+            }
+        }
+
+    override suspend fun saveThumbnail(
+        itemId: String,
+        jpegBytes: ByteArray,
+    ) {
+        withContext(Dispatchers.IO) {
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext
+            runCatching { writeThumb(blobName, jpegBytes) }
+        }
+    }
+
+    /** Encrypt [jpeg] into the `thumbs/` file for [blobName] — never plaintext on disk. */
+    private fun writeThumb(
+        blobName: String,
+        jpeg: ByteArray,
+    ) {
+        val cipher = crypto ?: return
+        val file = VaultStorage.thumbFile(appContext, blobName)
+        try {
+            file.outputStream().use { out -> jpeg.inputStream().use { cipher.encrypt(it, out) } }
+        } catch (e: Exception) {
+            file.delete()
+        }
+    }
+
+    /** Delete [item]'s stored thumb and evict its decoded tile (delete/restore, APP-244). */
+    private fun dropThumb(item: VaultItem) {
+        item.encryptedPath?.let { path ->
+            runCatching { VaultStorage.thumbFile(appContext, thumbNameOf(path)).delete() }
+        }
+        VaultThumbnailPipeline.evict(item.id)
+    }
+
+    private fun findItem(itemId: String): VaultItem? =
+        itemsState.value.firstOrNull { it.id == itemId }
+            ?: binState.value.firstOrNull { it.item.id == itemId }?.item
+
+    /** Thumb file name for an item: its blob's bare name (legacy absolute paths reduce). */
+    private fun thumbName(item: VaultItem): String? = item.encryptedPath?.let(::thumbNameOf)
+
+    private fun thumbNameOf(encryptedPath: String): String = encryptedPath.substringAfterLast('/')
+
     // --- Storage helpers ------------------------------------------------------------
 
     private fun requireCrypto(): VaultCrypto = crypto ?: error("Vault is locked; call unlock() first")
@@ -390,8 +479,8 @@ class EncryptedVaultContentRepository(
 
     // --- Persistence: AES-256-GCM encrypted index in the public .CalcVault/ folder ---
 
-    private fun persist() {
-        val cipher = crypto ?: return
+    private fun persist(cipher: VaultCrypto? = crypto) {
+        if (cipher == null) return
         val root =
             JSONObject().apply {
                 put("items", itemsState.value.toJsonArray { it.toJson() })
@@ -429,8 +518,7 @@ class EncryptedVaultContentRepository(
      * they are simply not shown by Phase-1 UI. Each namespace (real vault + every decoy) still
      * seeds only its OWN index.enc under its own directory, so decoy isolation is unchanged.
      */
-    private fun loadIndex() {
-        val cipher = crypto ?: return
+    private fun loadIndex(cipher: VaultCrypto) {
         val file = VaultStorage.indexFile(appContext)
         if (file.exists()) {
             val loaded =
@@ -450,12 +538,16 @@ class EncryptedVaultContentRepository(
                 }
             // An index we cannot decode is left exactly as found — never clobber it with a
             // freshly seeded one (its blobs may still be recoverable out-of-band).
-            if (loaded.isFailure) return
+            if (loaded.isFailure) {
+                val e = loaded.exceptionOrNull()
+                android.util.Log.w("VaultUnlock", "index decode failed: ${e?.javaClass?.simpleName}: ${e?.message}")
+                return
+            }
         }
         val missing = DefaultVaultFolders.missingDefaults(foldersState.value)
         if (missing.isNotEmpty()) {
             foldersState.value = foldersState.value + missing
-            persist()
+            persist(cipher)
         }
     }
 
