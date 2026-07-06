@@ -24,9 +24,10 @@ data class VaultHomeState(
     val binCount: Int = 0,
     val recent: List<VaultItem> = emptyList(),
 ) {
-    // Deliberately ignores folderCounts: every fresh vault seeds a "Download" folder per
-    // category (APP-206/APP-220), so gating on folders would suppress the first-run hint
-    // forever (APP-234 spec §1.1). "Empty" == the user has hidden nothing yet.
+    // "Empty" == the user has hidden nothing yet. Deliberately ignores folderCounts:
+    // every fresh vault seeds a "Download" folder per category (APP-206/APP-220), so an
+    // emptiness signal that counted folders would never be true. Note the first-run hint
+    // itself is NOT gated on this — it is APP-236's pref-gated tooltip overlay (APP-235).
     val isEmpty: Boolean
         get() = recent.isEmpty() && counts.values.all { it == 0 }
 }

@@ -1,26 +1,19 @@
 package com.appblish.calculatorvault.vault
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyRow
@@ -45,15 +38,12 @@ import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
-import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -70,10 +60,10 @@ import java.util.Locale
  * with the docx image27 icon trio **Search · Themes · Settings**, the three Phase-1 media
  * categories laid out as a **2×2 tile grid** (Photos · Videos / Audios · Bin) with dual
  * counts ("300 Photos / 8 Folders"), and a cross-category Recent strip showing real cover
- * thumbnails. On first run (nothing hidden yet) a coach bubble anchored to the Photos
- * tile — "Tap Photos to hide your first photo" — is the screen's single hint; the Recent
- * section is omitted entirely until content exists (APP-234 spec §1.1). There is no
- * security banner: All Files Access is primed contextually via the D-2 bottom sheet.
+ * thumbnails. The first-run hint is NOT drawn in-flow here: per APP-239 / APP-234 spec §0
+ * the hint of record is APP-236's one-time anchored tooltip overlay (pref-gated), shipped
+ * via APP-235 — one hint design only. There is no security banner: All Files Access is
+ * primed contextually via the D-2 bottom sheet.
  */
 @Composable
 fun VaultHomeScreen(
@@ -107,10 +97,10 @@ fun VaultHomeScreen(
             onRecycleBinClick = onRecycleBinClick,
         )
 
-        // While the vault is empty the coach bubble is the single first-run hint — an
-        // orphaned "Recent" header (or an empty-state card) would compete with it.
-        if (state.recent.isNotEmpty()) {
-            SectionLabel("Recent")
+        SectionLabel("Recent")
+        if (state.recent.isEmpty()) {
+            EmptyRecent()
+        } else {
             LazyRow(
                 horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                 contentPadding = PaddingValues(horizontal = spacing.lg),
@@ -206,31 +196,17 @@ private fun CategoryGrid(
             )
         }
 
-    Column(modifier = Modifier.padding(horizontal = spacing.lg)) {
-        // First-run coach bubble anchored to the Photos tile (top-left of the grid).
-        // Tapping it acts as tapping the tile itself (APP-234 spec §1.1).
-        FirstRunCoachBubble(
-            visible = state.isEmpty,
-            onClick = { onCategoryClick(VaultCategory.PHOTOS) },
-        )
-        Column(
-            verticalArrangement = Arrangement.spacedBy(spacing.md),
-            modifier =
-                Modifier.padding(
-                    // The bubble's caret supplies the 8dp gap to the Photos tile when
-                    // visible; otherwise keep the grid's usual rhythm under the header.
-                    top = if (state.isEmpty) 0.dp else spacing.md,
-                    bottom = spacing.md,
-                ),
-        ) {
-            tiles.chunked(2).forEach { rowTiles ->
-                Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
-                    rowTiles.forEach { tile ->
-                        CategoryTile(tile = tile, modifier = Modifier.weight(1f))
-                    }
-                    // Keep a lone trailing tile at half width if the count is ever odd.
-                    if (rowTiles.size == 1) Spacer(Modifier.weight(1f))
+    Column(
+        verticalArrangement = Arrangement.spacedBy(spacing.md),
+        modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.md),
+    ) {
+        tiles.chunked(2).forEach { rowTiles ->
+            Row(horizontalArrangement = Arrangement.spacedBy(spacing.md)) {
+                rowTiles.forEach { tile ->
+                    CategoryTile(tile = tile, modifier = Modifier.weight(1f))
                 }
+                // Keep a lone trailing tile at half width if the count is ever odd.
+                if (rowTiles.size == 1) Spacer(Modifier.weight(1f))
             }
         }
     }
@@ -308,77 +284,6 @@ internal fun pluralize(
     pluralLabel: String,
 ): String = "$count ${if (count == 1) pluralLabel.dropLast(1) else pluralLabel}"
 
-/** The single first-run hint's copy — also the bubble group's contentDescription. */
-private const val FIRST_RUN_HINT = "Tap Photos to hide your first photo"
-
-/** Appear/disappear duration for the first-run bubble (spec §1.1: 200ms, standard easing). */
-private const val HINT_MOTION_MS = 200
-
-/**
- * The first-run coach bubble (APP-234 spec §1.1): an accent rounded rect with a true
- * 16×8dp triangular caret flush against its bottom edge, the caret's center-x sitting on
- * the center of the Photos tile column (half of the first of two grid columns split by
- * one [VaultTheme.spacing.md] gap). Fades/slides in 8dp on appear and fades out on the
- * first hide; tapping anywhere on the group navigates to Photos.
- */
-@Composable
-private fun FirstRunCoachBubble(
-    visible: Boolean,
-    onClick: () -> Unit,
-) {
-    val colors = VaultTheme.colors
-    val spacing = VaultTheme.spacing
-    val density = LocalDensity.current
-    AnimatedVisibility(
-        visible = visible,
-        enter =
-            fadeIn(animationSpec = tween(HINT_MOTION_MS)) +
-                slideInVertically(animationSpec = tween(HINT_MOTION_MS)) {
-                    with(density) { -spacing.sm.roundToPx() }
-                },
-        exit = fadeOut(animationSpec = tween(HINT_MOTION_MS)),
-    ) {
-        BoxWithConstraints(
-            modifier = Modifier.fillMaxWidth().padding(top = spacing.xs, bottom = spacing.sm),
-        ) {
-            val caretCenterX = (maxWidth - spacing.md) / 4
-            val accent = colors.accent
-            Column(
-                modifier =
-                    Modifier
-                        .heightIn(min = 40.dp)
-                        .clickable(onClick = onClick)
-                        .semantics(mergeDescendants = true) { contentDescription = FIRST_RUN_HINT },
-            ) {
-                Surface(color = accent, shape = VaultTheme.shapes.thumbnail) {
-                    Text(
-                        text = FIRST_RUN_HINT,
-                        style = VaultTheme.typography.labelLarge,
-                        color = colors.onAccent,
-                        modifier = Modifier.padding(horizontal = spacing.lg, vertical = 10.dp),
-                    )
-                }
-                // True triangle caret (three-point path), flush to the bubble — zero gap.
-                Canvas(
-                    modifier =
-                        Modifier
-                            .padding(start = caretCenterX - 8.dp)
-                            .size(width = 16.dp, height = 8.dp),
-                ) {
-                    val caret =
-                        Path().apply {
-                            moveTo(0f, 0f)
-                            lineTo(size.width, 0f)
-                            lineTo(size.width / 2f, size.height)
-                            close()
-                        }
-                    drawPath(caret, color = accent)
-                }
-            }
-        }
-    }
-}
-
 @Composable
 private fun SectionLabel(text: String) {
     val spacing = VaultTheme.spacing
@@ -392,8 +297,9 @@ private fun SectionLabel(text: String) {
 
 /**
  * One Recent-strip tile: the item's real cover decoded from its encrypted blob — the same
- * loader path as the category folder tiles — with the §2.2 play overlay + duration badge
- * on videos. Falls back to the category glyph while loading or for non-visual types.
+ * loader path as the category folder tiles (APP-234 spec §2.3) — with the APP-236 tile
+ * spec's video treatment. Falls back to the category glyph while loading or for
+ * non-visual types.
  */
 @Composable
 private fun RecentThumbnail(
@@ -430,19 +336,36 @@ private fun RecentThumbnail(
                 imageVector = item.category.icon(),
                 contentDescription = item.originalName,
                 tint = item.category.color(),
-                modifier = Modifier.size(28.dp),
+                modifier = Modifier.size(24.dp),
             )
         }
     }
 }
 
+/** Scrim ink for video-cover overlays — the APP-236 tile spec's #0D0F12. */
+private val OverlayScrim = Color(0xFF0D0F12)
+
 /**
- * Video cover treatment (APP-234 spec §2.2): a centered white play triangle inside a
- * 40dp circular 40% black scrim, plus a duration badge bottom-right (white labelMedium
- * on 55% black, 6dp radius, 6/2dp padding, 6dp from the tile edges) when known.
+ * Video cover treatment per the APP-236 tile spec (single source of truth; mirrored in
+ * APP-234 spec §2.2): 40dp centered circular play badge (#0D0F12 @ 55%, 22dp glyph),
+ * bottom-third gradient @ 45% for chip legibility, and a duration chip inset 6dp when
+ * the duration is known.
  */
 @Composable
 private fun BoxScope.VideoCoverOverlay(durationMs: Long) {
+    Box(
+        modifier =
+            Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .fillMaxHeight(1f / 3f)
+                .background(
+                    Brush.verticalGradient(
+                        0f to Color.Transparent,
+                        1f to OverlayScrim.copy(alpha = 0.45f),
+                    ),
+                ),
+    )
     Box(
         contentAlignment = Alignment.Center,
         modifier =
@@ -450,13 +373,13 @@ private fun BoxScope.VideoCoverOverlay(durationMs: Long) {
                 .align(Alignment.Center)
                 .size(40.dp)
                 .clip(CircleShape)
-                .background(Color.Black.copy(alpha = 0.4f)),
+                .background(OverlayScrim.copy(alpha = 0.55f)),
     ) {
         Icon(
             imageVector = Icons.Filled.PlayArrow,
             contentDescription = null,
             tint = Color.White,
-            modifier = Modifier.size(20.dp),
+            modifier = Modifier.size(22.dp),
         )
     }
     if (durationMs > 0) {
@@ -469,13 +392,13 @@ private fun BoxScope.VideoCoverOverlay(durationMs: Long) {
                     .align(Alignment.BottomEnd)
                     .padding(6.dp)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(Color.Black.copy(alpha = 0.55f))
+                    .background(OverlayScrim.copy(alpha = 0.55f))
                     .padding(horizontal = 6.dp, vertical = 2.dp),
         )
     }
 }
 
-/** "m:ss" (or "h:mm:ss" past an hour) for the video duration badge. */
+/** "m:ss" (or "h:mm:ss" past an hour) for the video duration chip. */
 internal fun formatDuration(durationMs: Long): String {
     val totalSeconds = durationMs / 1000
     val hours = totalSeconds / 3600
@@ -485,5 +408,23 @@ internal fun formatDuration(durationMs: Long): String {
         String.format(Locale.ROOT, "%d:%02d:%02d", hours, minutes, seconds)
     } else {
         String.format(Locale.ROOT, "%d:%02d", minutes, seconds)
+    }
+}
+
+@Composable
+private fun EmptyRecent() {
+    val colors = VaultTheme.colors
+    val spacing = VaultTheme.spacing
+    Surface(
+        color = colors.surface,
+        shape = VaultTheme.shapes.card,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = spacing.lg),
+    ) {
+        Text(
+            text = "Nothing hidden yet. Tap a category, then + to hide your first item.",
+            style = VaultTheme.typography.bodyMedium,
+            color = colors.textSecondary,
+            modifier = Modifier.padding(spacing.lg),
+        )
     }
 }

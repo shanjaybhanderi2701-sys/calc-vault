@@ -6,9 +6,9 @@ import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * Home-dashboard polish contracts from the APP-234 spec (implemented under APP-238):
- * the first-run hint's gating ignores seeded folders (§1.1), the dual-count subtitles
- * pluralize properly (§1.3), and the video duration badge formats sanely (§2.2).
+ * Home-dashboard polish contracts from the APP-234 spec rev 2 (implemented under
+ * APP-238): the emptiness signal ignores seeded folders, the dual-count subtitles
+ * pluralize properly (§1.3), and the video duration chip formats sanely (§2.2).
  */
 class VaultHomeStateTest {
     private fun item(id: String) =
@@ -21,9 +21,9 @@ class VaultHomeStateTest {
         )
 
     @Test
-    fun `fresh vault with seeded folders still counts as empty for the first-run hint`() {
+    fun `fresh vault with seeded folders still counts as empty`() {
         // Every fresh vault seeds one Download folder per Phase-1 category (APP-206), so
-        // the hint gate must ignore folder counts entirely — otherwise it never shows.
+        // the emptiness signal must ignore folder counts entirely.
         val state =
             VaultHomeState(
                 folderCounts = VaultCategory.PHASE1.associateWith { 1 },
@@ -32,16 +32,16 @@ class VaultHomeStateTest {
     }
 
     @Test
-    fun `any hidden item suppresses the first-run hint`() {
+    fun `any hidden item makes the vault non-empty`() {
         val withCount =
             VaultHomeState(counts = mapOf(VaultCategory.PHOTOS to 1))
         assertThat(withCount.isEmpty).isFalse()
     }
 
     @Test
-    fun `stale surviving vault content suppresses the first-run hint via recent`() {
+    fun `stale surviving vault content makes the vault non-empty via recent`() {
         // A previous install's .CalcVault/ floods `recent` on first unlock (spec defect 6):
-        // the hint must stay hidden even though this session hid nothing.
+        // the vault must read as non-empty even though this session hid nothing.
         val withRecent = VaultHomeState(recent = listOf(item("stale")))
         assertThat(withRecent.isEmpty).isFalse()
     }
