@@ -3,16 +3,21 @@ package com.appblish.calculatorvault.vault
 import android.os.Environment
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.appblish.calculatorvault.vault.crypto.VaultCrypto
+import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -94,6 +99,90 @@ class SeededDefaultFoldersTest {
             assertThat(VaultStorage.indexFile(context, decoyNamespace).path).contains("/$decoyNamespace/")
 
             VaultSession.begin(realPin, namespace = "")
+        }
+
+    /**
+     * The migration bug fixed for APP-225: `.CalcVault/` survives uninstall by design, so a
+     * device that ever ran an older build already has an `index.enc` — and the old
+     * first-run-only seed never fired for it. This fabricates exactly that artifact (a valid
+     * key file + an index written with the production crypto stack whose folders are the
+     * legacy Camera-style set, plus a FILES item), then unlocks and asserts the
+     * category-scoped top-up: empty Phase-1 categories gain "Download", a populated one is
+     * left alone (no Download resurrected next to "Camera"), non-Phase-1 content loads
+     * untouched, and the top-up is persisted across a relock/unlock round-trip.
+     */
+    @Test
+    fun staleIndexFromOlderBuildGetsMissingDownloadFoldersToppedUpOnUnlock() =
+        runBlocking {
+            val namespace = "stale_migration"
+            VaultSession.begin(realPin, namespace = namespace)
+
+            // Fabricate the older build's leftovers BEFORE the repository ever runs: key file
+            // via VaultKeyFile (the repo will unwrap the same key from the same PIN), index
+            // via VaultCrypto — the repo's own persistence format and cipher.
+            val dataKey = VaultKeyFile(VaultStorage.keyFile(context, namespace)).unlockOrCreate(realPin)
+            val staleIndex =
+                JSONObject().apply {
+                    put(
+                        "items",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("id", "legacy-file-1")
+                                put("category", VaultCategory.FILES.name)
+                                put("originalName", "tax-2025.pdf")
+                                put("dateLabel", "12 Jun 2026")
+                                put("sortKey", 1L)
+                            },
+                        ),
+                    )
+                    put(
+                        "folders",
+                        JSONArray().put(
+                            JSONObject().apply {
+                                put("id", "seed_photos_camera")
+                                put("category", VaultCategory.PHOTOS.name)
+                                put("name", "Camera")
+                            },
+                        ),
+                    )
+                    put("bin", JSONArray())
+                }
+            val encrypted = ByteArrayOutputStream()
+            staleIndex.toString().toByteArray(Charsets.UTF_8).inputStream().use { source ->
+                VaultCrypto(dataKey).encrypt(source, encrypted)
+            }
+            VaultStorage.indexFile(context, namespace).writeBytes(encrypted.toByteArray())
+
+            // First unlock of the new build against the stale index.
+            val repo = EncryptedVaultContentRepository(context)
+            repo.unlock()
+            DoDTestSupport.awaitUnlock(repo)
+
+            // Photos already holds a folder → left exactly as found, NO Download added.
+            assertThat(awaitFolders(repo, VaultCategory.PHOTOS, expected = 1).map { it.name })
+                .containsExactly("Camera")
+            // Videos and Audios had ZERO folders → each topped up with the seeded default.
+            for (category in listOf(VaultCategory.VIDEOS, VaultCategory.AUDIOS)) {
+                val seeded = awaitFolders(repo, category, expected = 1)
+                assertThat(seeded.map { it.name }).containsExactly("Download")
+                assertThat(seeded.single().id).isEqualTo("seed_${category.name.lowercase()}_download")
+            }
+            // The non-Phase-1 (FILES) item from the old build loads untouched.
+            assertThat(repo.allItems().first().map { it.id }).containsExactly("legacy-file-1")
+
+            // Relock/unlock: the top-up was persisted, and it does not run again (still one
+            // folder per category — nothing duplicated, "Camera" still un-Downloaded).
+            VaultSession.begin(realPin, namespace = namespace)
+            val reopened = EncryptedVaultContentRepository(context)
+            reopened.unlock()
+            DoDTestSupport.awaitUnlock(reopened)
+            assertThat(awaitFolders(reopened, VaultCategory.PHOTOS, expected = 1).map { it.name })
+                .containsExactly("Camera")
+            assertThat(awaitFolders(reopened, VaultCategory.VIDEOS, expected = 1).map { it.name })
+                .containsExactly("Download")
+            assertThat(awaitFolders(reopened, VaultCategory.AUDIOS, expected = 1).map { it.name })
+                .containsExactly("Download")
+            assertThat(reopened.allItems().first().map { it.id }).containsExactly("legacy-file-1")
         }
 
     /**

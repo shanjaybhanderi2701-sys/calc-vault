@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault.vault
 
+import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
@@ -35,6 +36,11 @@ class HideImportViewModelTest {
         val foldersState = MutableStateFlow<List<VaultFolder>>(emptyList())
         val hidden = mutableListOf<VaultItem>()
         val createdFolderNames = mutableListOf<String>()
+
+        // When > 0, [hide] drops that many leading items from the stored result —
+        // simulating per-item encrypt/copy failures (the repository contract returns
+        // only the items actually stored).
+        var failHideCount = 0
         private var nextId = 1
 
         fun seedFolder(
@@ -62,8 +68,9 @@ class HideImportViewModelTest {
         override fun recycleBin(): Flow<List<RecycleBinEntry>> = flowOf(emptyList())
 
         override suspend fun hide(items: List<VaultItem>): List<VaultItem> {
-            hidden += items
-            return items
+            val stored = items.drop(failHideCount)
+            hidden += stored
+            return stored
         }
 
         override suspend fun createFolder(
@@ -105,6 +112,9 @@ class HideImportViewModelTest {
 
     @After
     fun tearDown() {
+        // Both are process-wide slots — reset so no summary/progress leaks across tests.
+        HideImportViewModel.consumeHideSummary()
+        BulkOpProgress.finish()
         Dispatchers.resetMain()
     }
 
@@ -240,5 +250,51 @@ class HideImportViewModelTest {
         assertEquals(emptySet<String>(), vm.state.value.selectedFolderIds)
         assertTrue(vm.state.value.done)
         assertNull(vm.state.value.selectedAlbumId)
+    }
+
+    // --- P2-3: operation feedback (hide summary + bulk progress passthrough) ---
+
+    @Test
+    fun hideNow_publishesCountOnlySummary_whenEveryItemStores() {
+        val vm = viewModel()
+        vm.selectAlbum("camera")
+        vm.toggleAll()
+        vm.hideNow()
+
+        assertEquals("9 hidden", HideImportViewModel.hideSummary.value)
+
+        HideImportViewModel.consumeHideSummary()
+        assertNull(HideImportViewModel.hideSummary.value)
+    }
+
+    @Test
+    fun hideNow_publishesFailureCount_whenRepositoryStoresFewerThanRequested() {
+        repository.failHideCount = 2
+        val vm = viewModel()
+        vm.selectAlbum("camera")
+        vm.toggleAll()
+        vm.hideNow()
+
+        // failures = requested − stored (the hide() contract returns only stored items).
+        assertEquals("7 hidden, 2 failed", HideImportViewModel.hideSummary.value)
+    }
+
+    @Test
+    fun hideSummaryText_coversSingularAndFullFailureShapes() {
+        assertEquals("1 hidden", HideImportViewModel.hideSummaryText(hidden = 1, failed = 0))
+        assertEquals("0 hidden, 3 failed", HideImportViewModel.hideSummaryText(hidden = 0, failed = 3))
+    }
+
+    @Test
+    fun bulkProgress_mirrorsTheSharedBulkOpProgressFlow() {
+        val vm = viewModel()
+        assertNull(vm.bulkProgress.value)
+
+        BulkOpProgress.start("Hiding files", 3)
+        BulkOpProgress.update(2)
+        assertEquals(BulkOpProgress.Progress(label = "Hiding files", done = 2, total = 3), vm.bulkProgress.value)
+
+        BulkOpProgress.finish()
+        assertNull(vm.bulkProgress.value)
     }
 }

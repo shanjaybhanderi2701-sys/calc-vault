@@ -6,13 +6,18 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.navigation.VaultNavHost
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
+import com.appblish.calculatorvault.ui.theme.VaultTheme
 import kotlinx.coroutines.launch
 
 /**
@@ -37,13 +42,22 @@ class MainActivity : ComponentActivity() {
             }
         }
         applyPersistedHideFromRecents()
-        // Full-screen immersive edge-to-edge (APP-204): hide the system bars so no surface is
-        // clipped by the system navigation bar. Supersedes the earlier enableEdgeToEdge() call.
-        applyImmersiveEdgeToEdge()
+        // Edge-to-edge with VISIBLE system bars (APP-225 P2-4, supersedes APP-204's
+        // immersive hide-bars mode): transparent bars with light icons over the dark theme.
+        // The Surface paints the canvas edge-to-edge (so the strips behind the transparent
+        // bars stay on-theme) while the inner Box pads the entire nav tree by
+        // WindowInsets.safeDrawing — one root-level pad keeps every screen clear of the
+        // status bar, display cutout, and navigation bar without per-screen inset handling.
+        applyEdgeToEdge()
         setContent {
             CalculatorVaultTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    VaultNavHost()
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = VaultTheme.colors.canvas,
+                ) {
+                    Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+                        VaultNavHost()
+                    }
                 }
             }
         }

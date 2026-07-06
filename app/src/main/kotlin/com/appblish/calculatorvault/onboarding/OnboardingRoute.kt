@@ -60,6 +60,8 @@ fun OnboardingRoute(
                 onSubmit = viewModel::onPinCreated,
                 onBack = viewModel::onBack,
                 modifier = modifier,
+                // P3-1: first-run only — pulse "=" once the 4th digit is in.
+                highlightEqualsWhenComplete = true,
             )
 
         OnboardingStep.CONFIRM_PIN ->
@@ -69,6 +71,7 @@ fun OnboardingRoute(
                 onSubmit = viewModel::onPinConfirmed,
                 onBack = viewModel::onBack,
                 modifier = modifier,
+                highlightEqualsWhenComplete = true,
             )
 
         OnboardingStep.INTRO_PRIVATE ->

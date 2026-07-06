@@ -5,18 +5,26 @@ import android.content.pm.ApplicationInfo
 import android.os.Bundle
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.material3.Surface
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.applock.ui.LockScreenContent
-import com.appblish.calculatorvault.applyImmersiveEdgeToEdge
+import com.appblish.calculatorvault.applyEdgeToEdge
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.intruder.IntruderCamera
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
+import com.appblish.calculatorvault.ui.theme.VaultTheme
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -40,7 +48,9 @@ class LockScreenActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        applyImmersiveEdgeToEdge()
+        // Edge-to-edge with visible transparent system bars (APP-225 P2-4), matching
+        // MainActivity; the content tree below pads by WindowInsets.safeDrawing.
+        applyEdgeToEdge()
         AuthGraph.init(applicationContext)
         AppLockGraph.init(applicationContext)
 
@@ -70,52 +80,59 @@ class LockScreenActivity : FragmentActivity() {
 
         setContent {
             CalculatorVaultTheme {
-                LockScreenContent(
-                    appLabel = appLabel,
-                    appIcon = appIcon,
-                    method = method,
-                    pinLength = pin.length,
-                    maxPinLength = PIN_LENGTH,
-                    error = error,
-                    biometricAvailable = BiometricAuth.canAuthenticate(this),
-                    onDigit = { ch ->
-                        if (pin.length < PIN_LENGTH) {
-                            error = false
-                            pin += ch
-                            if (pin.length == PIN_LENGTH) {
-                                val entered = pin
-                                pin = ""
-                                lifecycleScope.launch {
-                                    if (verify(entered)) {
-                                        onUnlocked()
-                                    } else {
-                                        error = true
-                                        wrongAttempts += 1
-                                        onWrongAttempt(wrongAttempts)
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = VaultTheme.colors.canvas,
+                ) {
+                    Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+                        LockScreenContent(
+                            appLabel = appLabel,
+                            appIcon = appIcon,
+                            method = method,
+                            pinLength = pin.length,
+                            maxPinLength = PIN_LENGTH,
+                            error = error,
+                            biometricAvailable = BiometricAuth.canAuthenticate(this@LockScreenActivity),
+                            onDigit = { ch ->
+                                if (pin.length < PIN_LENGTH) {
+                                    error = false
+                                    pin += ch
+                                    if (pin.length == PIN_LENGTH) {
+                                        val entered = pin
+                                        pin = ""
+                                        lifecycleScope.launch {
+                                            if (verify(entered)) {
+                                                onUnlocked()
+                                            } else {
+                                                error = true
+                                                wrongAttempts += 1
+                                                onWrongAttempt(wrongAttempts)
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        }
-                    },
-                    onBackspace = {
-                        error = false
-                        if (pin.isNotEmpty()) pin = pin.dropLast(1)
-                    },
-                    onBiometric = { promptBiometric(::onUnlocked) },
-                    onChangeMethod = {
-                        method =
-                            when (method) {
-                                LockMethod.Pin -> LockMethod.Pattern
-                                LockMethod.Pattern -> LockMethod.Passcode
-                                LockMethod.Passcode -> LockMethod.Biometric
-                                LockMethod.Biometric -> LockMethod.Pin
-                            }
-                        lifecycleScope.launch {
-                            val store = AppLockGraph.appLockStore
-                            store.setSettings(store.settings().copy(lockMethod = method))
-                        }
-                    },
-                )
+                            },
+                            onBackspace = {
+                                error = false
+                                if (pin.isNotEmpty()) pin = pin.dropLast(1)
+                            },
+                            onBiometric = { promptBiometric(::onUnlocked) },
+                            onChangeMethod = {
+                                method =
+                                    when (method) {
+                                        LockMethod.Pin -> LockMethod.Pattern
+                                        LockMethod.Pattern -> LockMethod.Passcode
+                                        LockMethod.Passcode -> LockMethod.Biometric
+                                        LockMethod.Biometric -> LockMethod.Pin
+                                    }
+                                lifecycleScope.launch {
+                                    val store = AppLockGraph.appLockStore
+                                    store.setSettings(store.settings().copy(lockMethod = method))
+                                }
+                            },
+                        )
+                    }
+                }
             }
         }
     }

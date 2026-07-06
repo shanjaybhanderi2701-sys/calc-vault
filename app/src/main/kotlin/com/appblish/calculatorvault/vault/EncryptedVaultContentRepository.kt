@@ -407,34 +407,49 @@ class EncryptedVaultContentRepository(
         VaultStorage.indexFile(appContext).writeBytes(encrypted.toByteArray())
     }
 
+    /**
+     * Load the encrypted index (when present), then top up the predefined default folders.
+     *
+     * Seeding is **idempotent and category-scoped**, not first-run-only (APP-225 board fix):
+     * the public `.CalcVault/` folder survives uninstall by design, so an index written by an
+     * older build (pre-"Download" catalog, or the legacy Camera/Screenshots/… seed set) is a
+     * perfectly normal sight here — and the old exists()-gated seed never fired for it. After
+     * every successful load, each Phase-1 category with ZERO folders gets its default(s) from
+     * [DefaultVaultFolders]; a category holding ≥1 folder is left alone, so a "Download" the
+     * user deleted stays deleted while other folders remain in that category. Tradeoff:
+     * deleting a category's *last* folder resurrects "Download" on the next unlock — accepted
+     * to guarantee migrated/stale vaults always open with a usable default. Items/folders in
+     * non-Phase-1 categories (e.g. FILES/CONTACTS from old builds) load and persist untouched;
+     * they are simply not shown by Phase-1 UI. Each namespace (real vault + every decoy) still
+     * seeds only its OWN index.enc under its own directory, so decoy isolation is unchanged.
+     */
     private fun loadIndex() {
         val cipher = crypto ?: return
         val file = VaultStorage.indexFile(appContext)
-        if (!file.exists()) {
-            // First unlock of this vault namespace — no index yet. Seed the predefined folders
-            // (xlock / Figma parity, APP-206) and persist so the vault opens with default
-            // folders instead of an empty shell. Each namespace (real vault + every decoy)
-            // seeds into its OWN index.enc under its own .CalcVault/ sub-directory, so a
-            // decoy's seeded folders never leak into the real vault. Runs once: on the next
-            // unlock the index exists and is loaded verbatim, so folders the user deletes stay
-            // deleted.
-            foldersState.value = DefaultVaultFolders.forFreshVault()
-            persist()
-            return
-        }
-        runCatching {
-            val out = ByteArrayOutputStream()
-            file.inputStream().use { source -> cipher.decrypt(source, out) }
-            val root = JSONObject(String(out.toByteArray(), Charsets.UTF_8))
-            itemsState.value = root.optJSONArray("items").mapObjects { it.toVaultItem() }
-            foldersState.value = root.optJSONArray("folders").mapObjects { it.toVaultFolder() }
-            binState.value =
-                root.optJSONArray("bin").mapObjects { obj ->
-                    RecycleBinEntry(
-                        item = obj.getJSONObject("item").toVaultItem(),
-                        deletedAt = obj.getLong("deletedAt"),
-                    )
+        if (file.exists()) {
+            val loaded =
+                runCatching {
+                    val out = ByteArrayOutputStream()
+                    file.inputStream().use { source -> cipher.decrypt(source, out) }
+                    val root = JSONObject(String(out.toByteArray(), Charsets.UTF_8))
+                    itemsState.value = root.optJSONArray("items").mapObjects { it.toVaultItem() }
+                    foldersState.value = root.optJSONArray("folders").mapObjects { it.toVaultFolder() }
+                    binState.value =
+                        root.optJSONArray("bin").mapObjects { obj ->
+                            RecycleBinEntry(
+                                item = obj.getJSONObject("item").toVaultItem(),
+                                deletedAt = obj.getLong("deletedAt"),
+                            )
+                        }
                 }
+            // An index we cannot decode is left exactly as found — never clobber it with a
+            // freshly seeded one (its blobs may still be recoverable out-of-band).
+            if (loaded.isFailure) return
+        }
+        val missing = DefaultVaultFolders.missingDefaults(foldersState.value)
+        if (missing.isNotEmpty()) {
+            foldersState.value = foldersState.value + missing
+            persist()
         }
     }
 

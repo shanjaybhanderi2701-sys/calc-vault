@@ -68,9 +68,10 @@ data class CategoryState(
     val folderSort: FolderSort = FolderSort.DATE_DESC,
     val selectedIds: Set<String> = emptySet(),
     val selectionMode: Boolean = false,
-    // The pending one-per-operation restore notice (D-3); the screen shows it as a
-    // snackbar and consumes it. Null when nothing is pending.
-    val restoreNotice: String? = null,
+    // The pending one-per-operation summary notice (D-3, generalized for P2-3): restore /
+    // recycle-bin / permanent-delete outcomes plus the hide picker's "N hidden" hand-off.
+    // The screen shows it as a snackbar and consumes it. Null when nothing is pending.
+    val opNotice: String? = null,
 ) {
     val inFolder: Boolean get() = openFolderId != null
 
@@ -111,10 +112,10 @@ class CategoryViewModel(
 ) : ViewModel() {
     private val local = MutableStateFlow(LocalState())
 
-    // One notice per restore operation (D-3): set by [restoreSelected], consumed by the
-    // screen once its snackbar has shown. A plain StateFlow (not an event bus) keeps the
-    // combine below simple; the consume handshake prevents re-shows.
-    private val restoreNotice = MutableStateFlow<String?>(null)
+    // One notice per mutation (D-3, generalized for P2-3): set by restore/recycle/delete,
+    // consumed by the screen once its snackbar has shown. A plain StateFlow (not an event
+    // bus) keeps the combine below simple; the consume handshake prevents re-shows.
+    private val opNotice = MutableStateFlow<String?>(null)
 
     /** Screen-local state: selection, which folder is open, and the folder-grid sort. */
     private data class LocalState(
@@ -129,8 +130,12 @@ class CategoryViewModel(
             repository.items(category),
             repository.folders(category),
             local,
-            restoreNotice,
-        ) { items, folders, loc, notice ->
+            opNotice,
+            // The hide picker pops back the moment its op completes, so its "N hidden"
+            // summary (P2-3) travels through the shared slot and surfaces here — on the
+            // category screen the user lands back on. Own notices win if both are pending.
+            HideImportViewModel.hideSummary,
+        ) { items, folders, loc, notice, hideSummary ->
             // Drop selections that no longer exist (e.g. after a recycle-bin move).
             val validIds = loc.ids.filter { id -> items.any { it.id == id } }.toSet()
             CategoryState(
@@ -141,7 +146,7 @@ class CategoryViewModel(
                 folderSort = loc.sort,
                 selectedIds = validIds,
                 selectionMode = loc.active && validIds.isNotEmpty(),
-                restoreNotice = notice,
+                opNotice = notice ?: hideSummary,
             )
         }.stateIn(
             viewModelScope,
@@ -195,36 +200,51 @@ class CategoryViewModel(
         return VaultThumbnails.forItem(context, item) { repository.openDecrypted(itemId) }
     }
 
-    /** "Move to Recycle Bin" from the delete-choice dialog (D-4): recoverable for 30 days. */
-    fun recycleSelected() = mutateSelection { repository.moveToRecycleBin(it) }
+    /**
+     * "Move to Recycle Bin" from the delete-choice dialog (D-4): recoverable for 30 days.
+     * Surfaces a one-per-operation summary ("3 items moved to Recycle Bin") via
+     * [CategoryState.opNotice] — same feedback contract as restore (P2-3).
+     */
+    fun recycleSelected() =
+        mutateSelection { ids ->
+            repository.moveToRecycleBin(ids)
+            opNotice.value = "${countLabel(ids.size)} moved to Recycle Bin"
+        }
 
     /**
      * "Delete permanently" from the delete-choice dialog (D-4). The repository contract
      * scopes [VaultContentRepository.deleteForever] to recycle-bin entries, so this routes
      * the selection *through* the bin and destroys it in one gesture — same end state as a
-     * direct permanent delete, without widening the repository interface.
+     * direct permanent delete, without widening the repository interface. Surfaces the
+     * "2 items deleted" summary via [CategoryState.opNotice] (P2-3).
      */
     fun deleteSelectedForever() =
         mutateSelection { ids ->
             repository.moveToRecycleBin(ids)
             repository.deleteForever(ids)
+            opNotice.value = "${countLabel(ids.size)} deleted"
         }
 
     /**
      * Restore the selection: decrypt back to public storage so it returns to the gallery
      * (spec §8 vocabulary — the action is "Restore", never "unhide"). The per-operation
      * [com.appblish.calculatorvault.vault.model.RestoreSummary] outcome is surfaced as ONE
-     * snackbar notice via [CategoryState.restoreNotice] — never silent (design call D-3).
+     * snackbar notice via [CategoryState.opNotice] — never silent (design call D-3).
      */
     fun restoreSelected() =
         mutateSelection { ids ->
             val summary = repository.unhideDetailed(ids)
-            restoreNotice.value = summary.noticeText()
+            opNotice.value = summary.noticeText()
         }
 
-    /** The screen calls this once the restore snackbar has been shown (or dismissed). */
-    fun consumeRestoreNotice() {
-        restoreNotice.value = null
+    /**
+     * The screen calls this once the summary snackbar has been shown (or dismissed).
+     * Clears the own restore/recycle/delete notice *and* the shared hide summary — one
+     * snackbar consumes whichever source produced it.
+     */
+    fun consumeOpNotice() {
+        opNotice.value = null
+        HideImportViewModel.consumeHideSummary()
     }
 
     fun moveSelectedToFolder(folderId: String?) = mutateSelection { repository.moveToFolder(it, folderId) }
@@ -245,6 +265,9 @@ class CategoryViewModel(
     }
 
     private companion object {
+        /** Pluralized count for the P2-3 operation summaries ("1 item" / "3 items"). */
+        fun countLabel(count: Int): String = if (count == 1) "1 item" else "$count items"
+
         /**
          * Build the root grid's tiles: every real folder (count/cover derived from the
          * live items, not the folder's stored count) plus, when folder-less items exist,

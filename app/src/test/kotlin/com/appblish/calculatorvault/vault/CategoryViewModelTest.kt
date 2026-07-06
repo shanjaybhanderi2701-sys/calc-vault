@@ -19,8 +19,9 @@ import org.junit.Test
  * Locks in the folder-grid-first category state machine (APP-225, S10/S16/S17 + D-3/D-4):
  * the root exposes folder tiles only (with a "Recent" pseudo-folder so folder-less items
  * are never hidden), open-folder/back is internal ViewModel state, Delete routes through
- * the two-choice dialog actions (bin vs permanent), and Restore surfaces exactly one
- * per-operation summary notice — never silent.
+ * the two-choice dialog actions (bin vs permanent), and every mutation — Restore, Recycle
+ * Bin, permanent delete, plus the hide picker's "N hidden" hand-off — surfaces exactly one
+ * per-operation summary notice (P2-3) — never silent.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CategoryViewModelTest {
@@ -28,7 +29,13 @@ class CategoryViewModelTest {
 
     @Before fun setUp() = Dispatchers.setMain(dispatcher)
 
-    @After fun tearDown() = Dispatchers.resetMain()
+    @After
+    fun tearDown() {
+        // The hide summary is a process-wide slot shared across ViewModels — reset it so
+        // one test's pending summary can never leak into the next.
+        HideImportViewModel.consumeHideSummary()
+        Dispatchers.resetMain()
+    }
 
     /** Delegating fake: real in-memory content store + a scriptable [RestoreSummary]. */
     private class RecordingRepository(
@@ -224,11 +231,11 @@ class CategoryViewModelTest {
             dispatcher.scheduler.advanceUntilIdle()
 
             assertThat(repo.restoredIds).containsExactly(stored[0].id, stored[1].id)
-            val state = vm.state.first { it.restoreNotice != null }
-            assertThat(state.restoreNotice).isEqualTo(summary.noticeText())
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo(summary.noticeText())
 
-            vm.consumeRestoreNotice()
-            assertThat(vm.state.first { it.restoreNotice == null }.restoreNotice).isNull()
+            vm.consumeOpNotice()
+            assertThat(vm.state.first { it.opNotice == null }.opNotice).isNull()
         }
 
     @Test
@@ -243,7 +250,59 @@ class CategoryViewModelTest {
             vm.restoreSelected()
             dispatcher.scheduler.advanceUntilIdle()
 
-            val state = vm.state.first { it.restoreNotice != null }
-            assertThat(state.restoreNotice).isEqualTo("Couldn't restore — check storage access")
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo("Couldn't restore — check storage access")
+        }
+
+    @Test
+    fun `moving to the recycle bin surfaces a counted summary notice`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val stored = repo.hide(listOf(staged("a", sortKey = 2), staged("b", sortKey = 1)))
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 2 }
+
+            vm.startSelection(stored[0].id)
+            vm.toggle(stored[1].id)
+            vm.recycleSelected()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo("2 items moved to Recycle Bin")
+
+            vm.consumeOpNotice()
+            assertThat(vm.state.first { it.opNotice == null }.opNotice).isNull()
+        }
+
+    @Test
+    fun `permanent delete surfaces a counted summary notice with singular copy`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val stored = repo.hide(listOf(staged("keep", sortKey = 2), staged("gone", sortKey = 1)))
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 2 }
+
+            vm.startSelection(stored.first { it.originalName == "gone.jpg" }.id)
+            vm.deleteSelectedForever()
+            dispatcher.scheduler.advanceUntilIdle()
+
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo("1 item deleted")
+        }
+
+    @Test
+    fun `a pending hide summary from the picker surfaces here and consuming clears both slots`() =
+        runTest(dispatcher) {
+            // The picker pops immediately after hiding, so its summary travels through the
+            // shared HideImportViewModel slot and the category screen renders it (P2-3).
+            HideImportViewModel.publishHideSummary("3 hidden")
+            val vm = vm(RecordingRepository())
+
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo("3 hidden")
+
+            vm.consumeOpNotice()
+            assertThat(HideImportViewModel.hideSummary.value).isNull()
+            assertThat(vm.state.first { it.opNotice == null }.opNotice).isNull()
         }
 }

@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -60,10 +62,12 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.appblish.calculatorvault.ui.components.FastScrollbar
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.components.groupMediaByDate
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.ui.VaultTopBar
@@ -174,6 +178,15 @@ fun HideImportScreen(
                         modifier = Modifier.weight(1f),
                     )
                 }
+                // P2-3: in-UI mirror of the foreground-service "Processing N of M"
+                // notification while a bulk (>1 item) operation runs.
+                val bulkProgress by viewModel.bulkProgress.collectAsStateWithLifecycle()
+                bulkProgress?.takeIf { it.total > 1 }?.let { progress ->
+                    BulkProgressBar(
+                        progress = progress,
+                        modifier = Modifier.padding(horizontal = spacing.lg, vertical = spacing.sm),
+                    )
+                }
                 val hideCount = if (onFolderStep) state.selectedFolderIds.size else state.selectedIds.size
                 PillButton(
                     text =
@@ -235,37 +248,43 @@ private fun FolderGrid(
 ) {
     val spacing = VaultTheme.spacing
     val context = LocalContext.current
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
-        modifier = modifier.fillMaxWidth().padding(horizontal = spacing.lg),
-    ) {
-        items(albums, key = { it.id }) { album ->
-            FolderTile(
-                album = album,
-                selected = if (album.id == SourceAlbum.RECENT_ID) null else album.id in selectedFolderIds,
-                categoryIcon = { category.icon() },
-                categoryColor = { category.color() },
-                onClick = { onOpen(album.id) },
-                onToggle = { onToggle(album.id) },
-                loadCover = {
-                    album.coverUri?.let { uri ->
-                        VaultThumbnails.forSource(
-                            context,
-                            SourceItem(
-                                id = album.id,
-                                name = album.name,
-                                dateLabel = "",
-                                sortKey = 0L,
-                                albumId = album.id,
-                                albumName = album.name,
-                                contentUri = uri,
-                                mimeType = album.coverMime,
-                            ),
-                        )
-                    }
-                },
-            )
+    val gridState = rememberLazyGridState()
+    Box(modifier = modifier.fillMaxWidth()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            state = gridState,
+            modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg),
+        ) {
+            items(albums, key = { it.id }) { album ->
+                FolderTile(
+                    album = album,
+                    selected = if (album.id == SourceAlbum.RECENT_ID) null else album.id in selectedFolderIds,
+                    categoryIcon = { category.icon() },
+                    categoryColor = { category.color() },
+                    onClick = { onOpen(album.id) },
+                    onToggle = { onToggle(album.id) },
+                    loadCover = {
+                        album.coverUri?.let { uri ->
+                            VaultThumbnails.forSource(
+                                context,
+                                SourceItem(
+                                    id = album.id,
+                                    name = album.name,
+                                    dateLabel = "",
+                                    sortKey = 0L,
+                                    albumId = album.id,
+                                    albumName = album.name,
+                                    contentUri = uri,
+                                    mimeType = album.coverMime,
+                                ),
+                            )
+                        }
+                    },
+                )
+            }
         }
+        // P2-2: draggable fast-scroll thumb (renders only once the grid tops ~30 cells).
+        FastScrollbar(state = gridState, modifier = Modifier.align(Alignment.CenterEnd))
     }
 }
 
@@ -361,31 +380,64 @@ private fun SectionedItemGrid(
         }
     val sourcesById = remember(state.sources) { state.sources.associateBy { it.id } }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
-        modifier = modifier.fillMaxWidth().padding(horizontal = spacing.lg),
-    ) {
-        groups.forEach { group ->
-            val sectionIds = group.items.map { it.id }
-            item(key = "header_${group.dateLabel}", span = { GridItemSpan(maxLineSpan) }) {
-                SectionHeader(
-                    label = group.dateLabel,
-                    allSelected = sectionIds.isNotEmpty() && state.selectedIds.containsAll(sectionIds),
-                    onToggle = { viewModel.toggleSection(sectionIds) },
-                )
-            }
-            items(group.items, key = { it.id }) { item ->
-                PickerCell(
-                    selected = item.id in state.selectedIds,
-                    onToggle = { viewModel.toggle(item.id) },
-                    onExpand = { viewModel.openPreview(item.id) },
-                    loadThumbnail = {
-                        sourcesById[item.id]?.let { VaultThumbnails.forSource(context, it) }
-                    },
-                    thumbnailKey = item.id,
-                )
+    val gridState = rememberLazyGridState()
+    Box(modifier = modifier.fillMaxWidth()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(3),
+            state = gridState,
+            modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg),
+        ) {
+            groups.forEach { group ->
+                val sectionIds = group.items.map { it.id }
+                item(key = "header_${group.dateLabel}", span = { GridItemSpan(maxLineSpan) }) {
+                    SectionHeader(
+                        label = group.dateLabel,
+                        allSelected = sectionIds.isNotEmpty() && state.selectedIds.containsAll(sectionIds),
+                        onToggle = { viewModel.toggleSection(sectionIds) },
+                    )
+                }
+                items(group.items, key = { it.id }) { item ->
+                    PickerCell(
+                        selected = item.id in state.selectedIds,
+                        onToggle = { viewModel.toggle(item.id) },
+                        onExpand = { viewModel.openPreview(item.id) },
+                        loadThumbnail = {
+                            sourcesById[item.id]?.let { VaultThumbnails.forSource(context, it) }
+                        },
+                        thumbnailKey = item.id,
+                    )
+                }
             }
         }
+        // P2-2: draggable fast-scroll thumb (renders only once the grid tops ~30 cells).
+        FastScrollbar(state = gridState, modifier = Modifier.align(Alignment.CenterEnd))
+    }
+}
+
+/**
+ * P2-3: the in-UI mirror of [com.appblish.calculatorvault.vault.media.BulkOpService]'s
+ * foreground "Processing N of M" notification — a thin accent progress bar + label pinned
+ * under the picker while a bulk (>1 item) hide/restore batch runs.
+ */
+@Composable
+private fun BulkProgressBar(
+    progress: BulkOpProgress.Progress,
+    modifier: Modifier = Modifier,
+) {
+    val colors = VaultTheme.colors
+    Column(modifier = modifier.fillMaxWidth()) {
+        LinearProgressIndicator(
+            progress = { progress.done.toFloat() / progress.total.coerceAtLeast(1) },
+            color = colors.accent,
+            trackColor = colors.surfaceVariant,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            text = "Processing ${progress.done} of ${progress.total}",
+            style = VaultTheme.typography.labelMedium,
+            color = colors.textSecondary,
+            modifier = Modifier.padding(top = VaultTheme.spacing.xs),
+        )
     }
 }
 

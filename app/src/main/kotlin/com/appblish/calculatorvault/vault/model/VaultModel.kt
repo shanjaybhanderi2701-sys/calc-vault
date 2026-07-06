@@ -68,15 +68,25 @@ data class VaultFolder(
 )
 
 /**
- * The predefined folders seeded into every fresh vault the first time it is initialized.
- * Build spec §4 (APP-225, board-ruled on APP-220): each of the three Phase-1 categories —
- * Photos, Videos, Audio — is created on first use, even when empty, containing exactly one
- * default empty **"Download"** folder. Seeding happens once per vault *namespace*: the real
- * vault and each decoy slot (`decoy_<slot>/`) seed into their own encrypted index, so a
- * decoy's folders can never leak into the real vault.
+ * The predefined folders seeded into every vault. Build spec §4 (APP-225, board-ruled on
+ * APP-220): each of the three Phase-1 categories — Photos, Videos, Audio — is created on
+ * first use, even when empty, containing exactly one default empty **"Download"** folder.
+ * Seeding is per vault *namespace*: the real vault and each decoy slot (`decoy_<slot>/`)
+ * seed into their own encrypted index, so a decoy's folders can never leak into the real
+ * vault.
+ *
+ * Because the public `.CalcVault/` index survives uninstall **by design**, seeding cannot be
+ * first-run-only: an index written by an older build (pre-"Download" catalog, or with the
+ * legacy Camera/Screenshots/… set) would otherwise never receive the required default. So
+ * seeding is **idempotent and category-scoped** ([missingDefaults]): on every index load,
+ * any Phase-1 category holding ZERO folders gets its catalog default(s); a category with
+ * ≥1 folder — user-created, legacy seed, or a surviving "Download" — is left alone, so a
+ * default the user deleted stays deleted while they keep other folders in that category.
+ * Tradeoff: deleting a category's *last* folder brings "Download" back on the next unlock;
+ * accepted, to guarantee migrated/stale vaults always open with a usable default.
  *
  * Each default folder carries a **stable, derived id** (`seed_<category>_<slug>`) so seeding
- * is idempotent and a folder the user later renames or deletes is never resurrected.
+ * is idempotent and a folder the user later renames is never resurrected.
  */
 object DefaultVaultFolders {
     /** (category, display name) pairs seeded into a fresh vault, in display order. */
@@ -84,10 +94,20 @@ object DefaultVaultFolders {
         VaultCategory.PHASE1.map { it to "Download" }
 
     /** The default folders for a brand-new vault namespace, with stable ids. */
-    fun forFreshVault(): List<VaultFolder> =
-        CATALOG.map { (category, name) ->
-            VaultFolder(id = seedId(category, name), category = category, name = name)
-        }
+    fun forFreshVault(): List<VaultFolder> = missingDefaults(existing = emptyList())
+
+    /**
+     * The catalog defaults missing from [existing]: for each Phase-1 category with ZERO
+     * folders in [existing], that category's default folder(s). Categories that already hold
+     * ≥1 folder contribute nothing (see the object KDoc for the deleted-vs-migrated
+     * tradeoff); non-Phase-1 folders in [existing] neither seed nor suppress anything.
+     */
+    fun missingDefaults(existing: List<VaultFolder>): List<VaultFolder> {
+        val populated = existing.mapTo(mutableSetOf()) { it.category }
+        return CATALOG
+            .filter { (category, _) -> category !in populated }
+            .map { (category, name) -> VaultFolder(id = seedId(category, name), category = category, name = name) }
+    }
 
     /** Stable id for a seeded folder — deterministic so re-seeding never duplicates it. */
     private fun seedId(

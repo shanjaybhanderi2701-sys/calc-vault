@@ -29,26 +29,42 @@ internal object SessionLock {
         )
 
     /**
+     * How long an armed grant round-trip stays valid (APP-225 board finding P1b). A real
+     * primer trip through system Settings takes seconds; a flag that was armed but never
+     * consumed (grant intent failed to resolve, user swiped the app away mid-trip, …) must
+     * NOT suppress a later, unrelated backgrounding — that would let Recents resume an
+     * unlocked vault without the PIN. Two minutes is generous for the round-trip and far
+     * too short to survive to a plausible "come back later" backgrounding.
+     */
+    private const val GRANT_ROUND_TRIP_EXPIRY_MS: Long = 2 * 60 * 1000L
+
+    /**
      * One-shot suppression for the All-Files-Access grant round-trip (spec §5, design call
      * D-2 on APP-224): the primer bottom sheet sends the user to full-screen **system
      * Settings** to flip the grant, which backgrounds the app and would otherwise re-lock
      * the vault and strand the "return straight into the tapped category" flow. The primer
      * arms this immediately before launching the system intent; the very next ON_STOP
-     * consumes it instead of re-locking. It never survives more than one background event.
+     * consumes it instead of re-locking. It never survives more than one background event,
+     * and it auto-expires after [GRANT_ROUND_TRIP_EXPIRY_MS] even if never consumed.
+     * `null` means "not armed"; otherwise it holds the arming timestamp.
      */
     @Volatile
-    private var suppressNextRelock: Boolean = false
+    private var grantRoundTripArmedAtMs: Long? = null
 
     /** Arm the one-shot re-lock suppression for a permission grant round-trip. */
-    fun beginGrantRoundTrip() {
-        suppressNextRelock = true
+    fun beginGrantRoundTrip(nowMs: Long = System.currentTimeMillis()) {
+        grantRoundTripArmedAtMs = nowMs
     }
 
-    /** Consume the one-shot suppression; true means "skip this re-lock". */
-    fun consumeGrantRoundTrip(): Boolean {
-        val suppressed = suppressNextRelock
-        suppressNextRelock = false
-        return suppressed
+    /**
+     * Consume the one-shot suppression; true means "skip this re-lock". The flag is spent
+     * either way, and an armed flag older than [GRANT_ROUND_TRIP_EXPIRY_MS] has already
+     * expired and returns false, so a stale round-trip can never mask a real backgrounding.
+     */
+    fun consumeGrantRoundTrip(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val armedAtMs = grantRoundTripArmedAtMs
+        grantRoundTripArmedAtMs = null
+        return armedAtMs != null && nowMs - armedAtMs < GRANT_ROUND_TRIP_EXPIRY_MS
     }
 
     /**
@@ -58,12 +74,21 @@ internal object SessionLock {
     fun isVaultSurface(route: String?): Boolean = route != null && route !in PRE_VAULT_SURFACES
 
     /**
-     * Forget the in-memory session and drop the data key + cached content so a backgrounded
-     * vault cannot be resumed. Safe to call repeatedly. Callers gate this on
-     * [isVaultSurface].
+     * Forget the in-memory session and drop the data key + cached content so the vault is
+     * unreachable without the PIN. Pure state drop — it never navigates — so it is safe
+     * from ANY leave-the-vault path (APP-225 board finding P1a): the `ON_STOP`
+     * backgrounding observer (gated on [isVaultSurface]) AND the vault-home `BackHandler`
+     * that pops back out to the calculator disguise. Safe to call repeatedly, including
+     * when nothing is unlocked.
      */
     fun relock() {
         VaultSession.clear()
         VaultGraph.contentRepository.lock()
     }
+
+    /**
+     * Alias for [relock] whose name states the caller's intent at back-navigation call
+     * sites: the user is deliberately leaving the vault right now, not being backgrounded.
+     */
+    fun lockNow() = relock()
 }

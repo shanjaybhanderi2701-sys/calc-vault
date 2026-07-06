@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -175,6 +176,14 @@ class HideImportViewModel(
     private val _state = MutableStateFlow(initialState(category, mediaSource))
     val state: StateFlow<HideImportState> = _state.asStateFlow()
 
+    /**
+     * Live "Processing N of M" progress of the running bulk operation, mirrored from
+     * [BulkOpProgress] (which already drives the foreground-service notification). The
+     * screen renders it as a thin inline progress bar at the bottom of the picker while a
+     * bulk (>1 item) hide runs; null when nothing is in flight (P2-3, board feedback).
+     */
+    val bulkProgress: StateFlow<BulkOpProgress.Progress?> = BulkOpProgress.progress
+
     /** Called by the screen after the runtime permission result. */
     fun onPermissionResult(granted: Boolean) {
         if (!granted || mediaSource == null) {
@@ -300,7 +309,12 @@ class HideImportViewModel(
             // aggregate carry their *real* bucket name (MediaSource keeps it per row).
             val folderIdByBucket =
                 folderIdsForBuckets(chosen.mapNotNull { src -> src.albumName.takeIf { it.isNotBlank() } }.toSet())
-            repository.hide(chosen.map { src -> src.toVaultItem(category, folderIdByBucket[src.albumName]) })
+            val stored =
+                repository.hide(chosen.map { src -> src.toVaultItem(category, folderIdByBucket[src.albumName]) })
+            // P2-3 operation feedback: publish the "N hidden" / "N hidden, M failed"
+            // summary (failures = requested − stored). The screen pops on completion, so
+            // the CategoryScreen the user returns to renders it (see [hideSummary]).
+            publishHideSummary(hideSummaryText(hidden = stored.size, failed = chosen.size - stored.size))
             val deletable = chosen.mapNotNull { it.contentUri.takeIf { uri -> uri.isNotBlank() } }
             when {
                 deletable.isEmpty() ->
@@ -385,8 +399,34 @@ class HideImportViewModel(
             relativePath = relativePath.takeIf { it.isNotBlank() },
         )
 
-    private companion object {
-        fun initialState(
+    companion object {
+        // The pending outcome summary of the last hide operation (P2-3). The picker pops
+        // back the moment the op completes, so the summary can't live on this ViewModel's
+        // own (dying) state — it travels through this process-wide slot instead, and the
+        // CategoryScreen the user lands back on renders + consumes it, mirroring the
+        // opNotice consume handshake in [CategoryViewModel].
+        private val pendingHideSummary = MutableStateFlow<String?>(null)
+
+        /** The pending "N hidden" summary; null when nothing is awaiting display. */
+        val hideSummary: StateFlow<String?> = pendingHideSummary.asStateFlow()
+
+        /** Called (via CategoryViewModel.consumeOpNotice) once the summary was shown. */
+        fun consumeHideSummary() {
+            pendingHideSummary.value = null
+        }
+
+        /** Publish [text] as the pending hide summary (null clears). Internal for tests. */
+        internal fun publishHideSummary(text: String?) {
+            pendingHideSummary.value = text
+        }
+
+        /** P2-3 summary copy: "N hidden" on full success, "N hidden, M failed" otherwise. */
+        internal fun hideSummaryText(
+            hidden: Int,
+            failed: Int,
+        ): String = if (failed > 0) "$hidden hidden, $failed failed" else "$hidden hidden"
+
+        private fun initialState(
             category: VaultCategory,
             mediaSource: MediaSource?,
         ): HideImportState =
@@ -396,7 +436,7 @@ class HideImportViewModel(
                 albums = if (mediaSource == null) sampleAlbums(category) else emptyList(),
             )
 
-        fun sampleAlbums(category: VaultCategory): List<SourceAlbum> {
+        private fun sampleAlbums(category: VaultCategory): List<SourceAlbum> {
             val buckets =
                 when (category) {
                     VaultCategory.PHOTOS ->
@@ -419,7 +459,7 @@ class HideImportViewModel(
             return listOf(recent) + buckets
         }
 
-        fun sampleSources(
+        private fun sampleSources(
             category: VaultCategory,
             albumId: String,
         ): List<SourceItem> {

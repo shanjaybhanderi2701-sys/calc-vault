@@ -21,7 +21,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -63,6 +65,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
+import com.appblish.calculatorvault.ui.components.FastScrollbar
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
@@ -106,14 +109,15 @@ fun CategoryScreen(
         if (state.selectionMode) viewModel.clearSelection() else viewModel.closeFolder()
     }
 
-    // D-3: one snackbar per restore operation, never silent. ~6s (Long) so the fallback
+    // D-3 (generalized for P2-3): one snackbar per operation — restore, recycle, delete,
+    // and the hide picker's "N hidden" hand-off — never silent. ~6s (Long) so the fallback
     // destination is readable; consumed even if the effect is cancelled mid-show.
-    LaunchedEffect(state.restoreNotice) {
-        val notice = state.restoreNotice ?: return@LaunchedEffect
+    LaunchedEffect(state.opNotice) {
+        val notice = state.opNotice ?: return@LaunchedEffect
         try {
             snackbarHostState.showSnackbar(notice, duration = SnackbarDuration.Long)
         } finally {
-            viewModel.consumeRestoreNotice()
+            viewModel.consumeOpNotice()
         }
     }
 
@@ -172,7 +176,8 @@ fun CategoryScreen(
                         )
                     // S17 empty folder: per-category "No Hidden … Yet" with the hide hint.
                     state.folderItems.isEmpty() -> EmptyFolderState(state.category)
-                    usesGrid ->
+                    usesGrid -> {
+                        val mediaGridState = rememberLazyGridState()
                         DateGroupedMediaGrid(
                             items = state.folderItems.map { it.toMediaItem() },
                             selectionMode = state.selectionMode,
@@ -181,7 +186,13 @@ fun CategoryScreen(
                             onItemClick = { media -> onItemClicked(state, viewModel, media.id, onOpenItem) },
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
                             loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
+                            state = mediaGridState,
                         )
+                        FastScrollbar(
+                            state = mediaGridState,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                        )
+                    }
                     else ->
                         CategoryList(
                             items = state.folderItems,
@@ -464,22 +475,27 @@ private fun CategoryList(
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
-    LazyColumn(modifier = Modifier.fillMaxSize()) {
-        items(items, key = { it.id }) { item ->
-            val selected = item.id in selectedIds
-            Column(
-                modifier =
-                    Modifier
-                        .background(if (selected) colors.accent.copy(alpha = 0.14f) else colors.canvas)
-                        .combinedClickable(
-                            onClick = { onItemClick(item) },
-                            onLongClick = { onItemLongPress(item) },
-                        ).padding(horizontal = spacing.lg, vertical = spacing.md),
-            ) {
-                Text(text = item.originalName, style = VaultTheme.typography.bodyLarge, color = colors.textPrimary)
-                Text(text = item.dateLabel, style = VaultTheme.typography.labelMedium, color = colors.textSecondary)
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(items, key = { it.id }) { item ->
+                val selected = item.id in selectedIds
+                Column(
+                    modifier =
+                        Modifier
+                            .background(if (selected) colors.accent.copy(alpha = 0.14f) else colors.canvas)
+                            .combinedClickable(
+                                onClick = { onItemClick(item) },
+                                onLongClick = { onItemLongPress(item) },
+                            ).padding(horizontal = spacing.lg, vertical = spacing.md),
+                ) {
+                    Text(text = item.originalName, style = VaultTheme.typography.bodyLarge, color = colors.textPrimary)
+                    Text(text = item.dateLabel, style = VaultTheme.typography.labelMedium, color = colors.textSecondary)
+                }
             }
         }
+        // P2-2: draggable fast-scroll for long folders (renders only past ~30 items).
+        FastScrollbar(state = listState, modifier = Modifier.align(Alignment.CenterEnd))
     }
 }
 

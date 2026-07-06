@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.navigation
 
 import android.Manifest
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.Composable
@@ -28,7 +29,6 @@ import com.appblish.calculatorvault.calculator.CalculatorScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
-import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.settings.SettingsLanguageScreen
 import com.appblish.calculatorvault.settings.SettingsScreen
 import com.appblish.calculatorvault.settings.ThemeScreen
@@ -46,9 +46,9 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.storage.ui.AllFilesPrimerSheet
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
-import com.appblish.calculatorvault.vault.viewer.ItemViewerScreen
+import com.appblish.calculatorvault.vault.viewer.PagerViewerScreen
+import com.appblish.calculatorvault.vault.viewer.PagerViewerViewModel
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
-import com.appblish.calculatorvault.vault.viewer.ViewerViewModel
 
 /**
  * The app spine, re-scoped to the Phase-1 build spec (APP-225). Starts on the
@@ -93,8 +93,7 @@ fun VaultNavHost() {
             LifecycleEventObserver { _, event ->
                 if (event == Lifecycle.Event.ON_STOP &&
                     SessionLock.isVaultSurface(navController.currentDestination?.route) &&
-                    !SessionLock.consumeGrantRoundTrip() &&
-                    SettingsGraph.relockOnBackgroundEnabled
+                    !SessionLock.consumeGrantRoundTrip()
                 ) {
                     SessionLock.relock()
                     navController.navigate(VaultDestinations.CALCULATOR) {
@@ -164,6 +163,14 @@ fun VaultNavHost() {
         composable(VaultDestinations.VAULT_HOME) {
             val activityContext = LocalContext.current
 
+            // Back-out to the calculator must forget the session + data key (APP-225 P1a):
+            // otherwise the repository stays unlocked in memory behind the disguise. Lock
+            // first, then pop to the calculator planted beneath by enterVault().
+            BackHandler {
+                SessionLock.lockNow()
+                navController.popBackStack(VaultDestinations.CALCULATOR, inclusive = false)
+            }
+
             // Contextual All-Files-Access gate (spec §5, design call D-2): content surfaces
             // prompt via the primer bottom sheet on first tap; the tapped destination is
             // parked and resumed the moment the grant round-trip returns successfully.
@@ -206,7 +213,7 @@ fun VaultNavHost() {
 
             VaultHomeScreen(
                 onCategoryClick = { openContent(VaultDestinations.category(it)) },
-                onRecentClick = { openContent(VaultDestinations.viewer(it.id)) },
+                onRecentClick = { openContent(VaultDestinations.viewer(it.id, it.category)) },
                 onRecycleBinClick = { openContent(VaultDestinations.RECYCLE_BIN) },
                 onSearchClick = { navController.navigate(VaultDestinations.SEARCH) },
                 onThemeClick = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
@@ -242,7 +249,7 @@ fun VaultNavHost() {
         composable(VaultDestinations.SEARCH) {
             VaultSearchScreen(
                 onBack = { navController.popBackStack() },
-                onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id)) },
+                onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id, it.category)) },
             )
         }
 
@@ -259,7 +266,13 @@ fun VaultNavHost() {
             CategoryScreen(
                 viewModel = vm,
                 onBack = { navController.popBackStack() },
-                onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id)) },
+                onOpenItem = {
+                    // The pager's page set must equal the grid the user tapped: the open
+                    // folder's items, or the category root ("Recent") when no folder is open.
+                    navController.navigate(
+                        VaultDestinations.viewer(it.id, category, vm.state.value.openFolderId),
+                    )
+                },
                 onHide = { navController.navigate(VaultDestinations.hide(category)) },
             )
         }
@@ -287,38 +300,35 @@ fun VaultNavHost() {
 
         composable(
             route = VaultDestinations.VIEWER,
-            arguments = listOf(navArgument(VaultDestinations.ARG_ITEM_ID) { type = NavType.StringType }),
+            arguments =
+                listOf(
+                    navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
+                    navArgument(VaultDestinations.ARG_ITEM_ID) { type = NavType.StringType },
+                    navArgument(VaultDestinations.ARG_FOLDER_ID) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
         ) { entry ->
             val itemId = entry.arguments?.getString(VaultDestinations.ARG_ITEM_ID).orEmpty()
+            val category = entry.category()
+            val folderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
             val viewerContext = LocalContext.current.applicationContext
-            val vm: ViewerViewModel =
+            // Gallery-grade pager viewer (APP-235 P0): swipes across the tapped grid's page
+            // set, zooms photos, plays video/audio via ExoPlayer per settled page.
+            val vm: PagerViewerViewModel =
                 viewModel(
-                    key = "viewer-$itemId",
-                    factory = viewModelFactory { initializer { ViewerViewModel(itemId, viewerContext) } },
+                    key = "pager-$itemId",
+                    factory =
+                        viewModelFactory {
+                            initializer { PagerViewerViewModel(itemId, category, folderId, viewerContext) }
+                        },
                 )
-            val item by vm.item.collectAsStateWithLifecycle()
-            val bytes by vm.decrypted.collectAsStateWithLifecycle()
-            val mediaFile by vm.mediaFile.collectAsStateWithLifecycle()
-            item?.let { current ->
-                ItemViewerScreen(
-                    item = current,
-                    bytes = bytes,
-                    mediaFile = mediaFile,
-                    onBack = { navController.popBackStack() },
-                    onRestore = {
-                        vm.restore()
-                        navController.popBackStack()
-                    },
-                    onMoveToRecycleBin = {
-                        vm.moveToRecycleBin()
-                        navController.popBackStack()
-                    },
-                    onDeletePermanently = {
-                        vm.deletePermanently()
-                        navController.popBackStack()
-                    },
-                )
-            }
+            PagerViewerScreen(
+                viewModel = vm,
+                onBack = { navController.popBackStack() },
+            )
         }
 
         composable(

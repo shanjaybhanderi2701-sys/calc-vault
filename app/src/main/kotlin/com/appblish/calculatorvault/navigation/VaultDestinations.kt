@@ -42,6 +42,7 @@ internal object VaultDestinations {
 
     const val ARG_CATEGORY = "category"
     const val ARG_ITEM_ID = "itemId"
+    const val ARG_FOLDER_ID = "folderId"
 
     private const val CATEGORY_BASE = "category"
     private const val HIDE_BASE = "hide"
@@ -50,7 +51,7 @@ internal object VaultDestinations {
 
     const val CATEGORY = "$CATEGORY_BASE/{$ARG_CATEGORY}"
     const val HIDE = "$HIDE_BASE/{$ARG_CATEGORY}"
-    const val VIEWER = "$VIEWER_BASE/{$ARG_ITEM_ID}"
+    const val VIEWER = "$VIEWER_BASE/{$ARG_CATEGORY}/{$ARG_ITEM_ID}?$ARG_FOLDER_ID={$ARG_FOLDER_ID}"
     const val SLIDESHOW = "$SLIDESHOW_BASE/{$ARG_CATEGORY}"
     const val RECYCLE_BIN = "recyclebin"
 
@@ -58,7 +59,17 @@ internal object VaultDestinations {
 
     fun hide(category: VaultCategory) = "$HIDE_BASE/${category.name}"
 
-    fun viewer(itemId: String) = "$VIEWER_BASE/$itemId"
+    /**
+     * Pager viewer over one grid's page set (APP-235 P0): the [category]'s items filtered
+     * to [folderId] — null = the category root ("Recent" pseudo-folder). The tapped
+     * [itemId] is the start page.
+     */
+    fun viewer(
+        itemId: String,
+        category: VaultCategory,
+        folderId: String? = null,
+    ) = "$VIEWER_BASE/${category.name}/$itemId" +
+        (folderId?.let { "?$ARG_FOLDER_ID=$it" } ?: "")
 
     fun slideshow(category: VaultCategory) = "$SLIDESHOW_BASE/${category.name}"
 
