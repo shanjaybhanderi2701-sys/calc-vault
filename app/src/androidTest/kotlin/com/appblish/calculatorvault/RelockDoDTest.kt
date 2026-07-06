@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault
 
+import android.content.Intent
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -9,6 +10,8 @@ import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.vault.DoDTestSupport
+import com.appblish.calculatorvault.vault.EncryptedVaultContentRepository
+import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.VaultSession
 import com.google.common.truth.Truth.assertThat
 import kotlinx.coroutines.runBlocking
@@ -27,8 +30,10 @@ import org.junit.runner.RunWith
  *     signal `ProcessLifecycleOwner` reports): the in-memory session must be forgotten
  *     while still backgrounded, and the resumed UI must show the calculator disguise with
  *     no vault content — the PIN is required again.
- *  2. **Backing out** of the vault home (real back key): same contract via the
- *     `BackHandler` path.
+ *  2. **Backing out** of the vault home (real back key): the disguise and the unlocked
+ *     vault must not share a back stack, so back at the home root exits the app to the
+ *     device home screen with the vault locked (APP-248) — it must NOT pop back to the
+ *     calculator in an unlocked in-app session — and reopening then demands the PIN.
  *
  * Driven via UiAutomator (accessibility tree, unaffected by FLAG_SECURE) rather than a
  * compose rule: the compose test environment re-hosts the window's recomposer on the test
@@ -79,14 +84,26 @@ class RelockDoDTest {
     }
 
     @Test
-    fun backingOutOfVaultHomeForgetsSessionAndShowsCalculator() {
+    fun backingOutOfVaultHomeExitsToDeviceHomeWithVaultLockedThenPinRequiredOnReopen() {
         ActivityScenario.launch(MainActivity::class.java).use { _ ->
             unlockVaultViaCalculator()
             assertThat(VaultSession.passphrase).isEqualTo(pin)
+            awaitVaultUnlocked()
 
+            // Back at the vault-home root exits the app to the launcher (APP-248) — it must
+            // NOT surface the calculator in an unlocked in-app session. Our task leaves the
+            // foreground and the vault is locked (session forgotten + data key dropped).
             device.pressBack()
+            awaitLeftForeground()
+            awaitSessionCleared()
+            assertThat(vaultIsUnlocked()).isFalse()
+
+            // Reopening the (warm) app lands on the calculator disguise with no vault
+            // content — the PIN is required again, never straight into the vault.
+            reopenApp()
             awaitCalculatorLockScreen()
             assertThat(VaultSession.passphrase).isNull()
+            assertThat(vaultIsUnlocked()).isFalse()
         }
     }
 
@@ -115,5 +132,39 @@ class RelockDoDTest {
     private fun awaitCalculatorLockScreen() {
         assertThat(device.wait(Until.gone(By.textContains("Photos")), 15_000)).isTrue()
         assertThat(device.wait(Until.hasObject(By.text("=")), 15_000)).isTrue()
+    }
+
+    /** True while the device-backed vault repository holds a live data key. */
+    private fun vaultIsUnlocked(): Boolean =
+        (VaultGraph.contentRepository as EncryptedVaultContentRepository).isUnlocked()
+
+    /** Poll until the async [unlock] has derived the data key, failing loudly on timeout. */
+    private fun awaitVaultUnlocked() {
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline && !vaultIsUnlocked()) {
+            Thread.sleep(100)
+        }
+        assertThat(vaultIsUnlocked()).isTrue()
+    }
+
+    /**
+     * Poll until CalcVault is no longer the foreground package (APP-248): backing out of the
+     * vault home must move the task to the background and reveal the device home / launcher —
+     * NOT keep our own calculator in the foreground.
+     */
+    private fun awaitLeftForeground() {
+        val ourPackage = context.packageName
+        val deadline = System.currentTimeMillis() + 15_000
+        while (System.currentTimeMillis() < deadline && device.currentPackageName == ourPackage) {
+            Thread.sleep(100)
+        }
+        assertThat(device.currentPackageName).isNotEqualTo(ourPackage)
+    }
+
+    /** Bring the backgrounded task back to the foreground (warm reopen), as a launcher tap would. */
+    private fun reopenApp() {
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName)!!
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        context.startActivity(intent)
     }
 }

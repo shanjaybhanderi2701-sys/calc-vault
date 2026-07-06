@@ -1,6 +1,9 @@
 package com.appblish.calculatorvault.navigation
 
 import android.Manifest
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -181,12 +184,18 @@ fun VaultNavHost() {
         composable(VaultDestinations.VAULT_HOME) {
             val activityContext = LocalContext.current
 
-            // Back-out to the calculator must forget the session + data key (APP-225 P1a):
-            // otherwise the repository stays unlocked in memory behind the disguise. Lock
-            // first, then pop to the calculator planted beneath by enterVault().
+            // Back at the vault-home root leaves the app entirely (APP-248): the disguise
+            // and the unlocked vault must never share a back stack, so pressing back here
+            // exits to the device home screen with the vault LOCKED, rather than popping
+            // back to the calculator in an unlocked in-app session. Forget the session +
+            // data key first (APP-225 P1a — otherwise the repository stays unlocked in
+            // memory behind the disguise), then move the task to the background (launcher).
+            // Backgrounding fires the ON_STOP observer above, which additionally resets the
+            // restored spine onto the calculator lock, so the next foreground (warm or cold)
+            // shows the calculator disguise and demands the PIN again.
             BackHandler {
                 SessionLock.lockNow()
-                navController.popBackStack(VaultDestinations.CALCULATOR, inclusive = false)
+                activityContext.findActivity()?.moveTaskToBack(true)
             }
 
             // Contextual All-Files-Access gate (spec §5, design call D-2): content surfaces
@@ -404,3 +413,16 @@ private fun androidx.navigation.NavBackStackEntry.category(): VaultCategory {
     val name = arguments?.getString(VaultDestinations.ARG_CATEGORY)
     return VaultCategory.entries.firstOrNull { it.name == name } ?: VaultCategory.PHOTOS
 }
+
+/**
+ * Walk the [Context] wrapper chain to the hosting [Activity] (APP-248). `LocalContext` in a
+ * Compose tree is a `ContextThemeWrapper`, not the Activity, so exiting the app to the
+ * launcher via `moveTaskToBack` needs the underlying Activity resolved explicitly. Returns
+ * null if no Activity is in the chain (should not happen for a hosted composable).
+ */
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }
