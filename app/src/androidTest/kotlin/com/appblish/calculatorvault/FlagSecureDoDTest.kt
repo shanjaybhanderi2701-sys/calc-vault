@@ -14,23 +14,22 @@ import org.junit.runner.RunWith
  * asserted directly on the live window attributes via ActivityScenario, not by eyeballing
  * a black screencap (board hard rule #2).
  *
- * APP-233 carved out ONE exception: debug builds skip the flag so bug-report screenshots
- * work. The DoD assertion is therefore build-type-aware — release-shaped builds MUST carry
- * the flag, debug builds MUST NOT (proving the gate is actually wired, not just absent).
+ * The assertion is unconditional across build types (APP-241): every variant — including
+ * the debug variant this CI matrix instruments — must carry the flag by default, so §10
+ * is proven on the binary actually under test. APP-233's bug-report screenshot capability
+ * is no longer a blanket debug carve-out but an explicit per-device operator opt-out
+ * (`adb shell settings put global calcvault_allow_screenshots 1`), which is never set in
+ * CI and never honored by release builds.
  */
 @RunWith(AndroidJUnit4::class)
 class FlagSecureDoDTest {
     @Test
-    fun mainActivityWindowCarriesFlagSecurePerBuildTypePolicy() {
+    fun mainActivityWindowCarriesFlagSecure() {
         ActivityScenario.launch(MainActivity::class.java).use { scenario ->
             scenario.onActivity { activity ->
-                val secure = activity.window.attributes.flags and WindowManager.LayoutParams.FLAG_SECURE
-                if (BuildConfig.DEBUG) {
-                    // APP-233: debug builds intentionally allow capture for bug evidence.
-                    assertThat(secure).isEqualTo(0)
-                } else {
-                    assertThat(secure).isEqualTo(WindowManager.LayoutParams.FLAG_SECURE)
-                }
+                val flags = activity.window.attributes.flags
+                assertThat(flags and WindowManager.LayoutParams.FLAG_SECURE)
+                    .isEqualTo(WindowManager.LayoutParams.FLAG_SECURE)
             }
         }
     }

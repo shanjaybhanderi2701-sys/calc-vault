@@ -6,6 +6,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.media.Image
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
+import android.media.MediaMuxer
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
@@ -148,5 +153,148 @@ internal object DoDTestSupport {
         require(namespace.isNotBlank()) { "refusing to wipe the root vault namespace" }
         val root = File(Environment.getExternalStorageDirectory(), VaultStorage.DIR_NAME)
         File(root, namespace).deleteRecursively()
+    }
+
+    /** Insert a public video into MediaStore under [relativePath]; returns its content Uri. */
+    fun insertPublicVideo(
+        context: Context,
+        displayName: String,
+        relativePath: String,
+        bytes: ByteArray,
+    ): Uri {
+        val resolver = context.contentResolver
+        val values =
+            ContentValues().apply {
+                put(MediaStore.MediaColumns.DISPLAY_NAME, displayName)
+                put(MediaStore.MediaColumns.MIME_TYPE, "video/mp4")
+                put(MediaStore.MediaColumns.RELATIVE_PATH, relativePath)
+                put(MediaStore.MediaColumns.IS_PENDING, 1)
+            }
+        val uri = resolver.insert(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, values)
+        assertThat(uri).isNotNull()
+        resolver.openOutputStream(uri!!)!!.use { it.write(bytes) }
+        resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
+        return uri
+    }
+
+    /** Delete every MediaStore.Video row named [displayName] (cleanup; rows are our own). */
+    fun deleteVideoRows(
+        context: Context,
+        displayName: String,
+    ) {
+        runCatching {
+            context.contentResolver.delete(
+                MediaStore.Video.Media.EXTERNAL_CONTENT_URI,
+                "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
+                arrayOf(displayName),
+            )
+        }
+    }
+
+    /**
+     * Encode a genuine ~1s solid-red H.264/MP4 in-process (MediaCodec software AVC encoder
+     * + MediaMuxer — present on every CI AVD image), so the video thumbnail and Media3
+     * playback DoD checks exercise a *real* container/codec instead of a fixture blob that
+     * only pretends to be a video.
+     */
+    fun synthesizeMp4Bytes(context: Context): ByteArray {
+        val width = 320
+        val height = 240
+        val fps = 15
+        val frames = 15
+        val format =
+            MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
+                setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
+                )
+                setInteger(MediaFormat.KEY_BIT_RATE, 500_000)
+                setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        codec.start()
+        val out = File.createTempFile("dod_synth", ".mp4", context.cacheDir)
+        val muxer = MediaMuxer(out.absolutePath, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        try {
+            var track = -1
+            var muxing = false
+            var framesQueued = 0
+            var eosSeen = false
+            val info = MediaCodec.BufferInfo()
+            val frameUs = 1_000_000L / fps
+            while (!eosSeen) {
+                if (framesQueued <= frames) {
+                    val inIndex = codec.dequeueInputBuffer(10_000)
+                    if (inIndex >= 0) {
+                        if (framesQueued == frames) {
+                            codec.queueInputBuffer(
+                                inIndex,
+                                0,
+                                0,
+                                framesQueued * frameUs,
+                                MediaCodec.BUFFER_FLAG_END_OF_STREAM,
+                            )
+                        } else {
+                            val image = codec.getInputImage(inIndex)
+                            assertThat(image).isNotNull()
+                            fillSolidRedYuv(image!!, width, height)
+                            codec.queueInputBuffer(inIndex, 0, width * height * 3 / 2, framesQueued * frameUs, 0)
+                        }
+                        framesQueued++
+                    }
+                }
+                val outIndex = codec.dequeueOutputBuffer(info, 10_000)
+                when {
+                    outIndex == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                        track = muxer.addTrack(codec.outputFormat)
+                        muxer.start()
+                        muxing = true
+                    }
+                    outIndex >= 0 -> {
+                        val buffer = codec.getOutputBuffer(outIndex)
+                        if (buffer != null &&
+                            info.size > 0 &&
+                            info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG == 0 &&
+                            muxing
+                        ) {
+                            muxer.writeSampleData(track, buffer, info)
+                        }
+                        if (info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) eosSeen = true
+                        codec.releaseOutputBuffer(outIndex, false)
+                    }
+                }
+            }
+        } finally {
+            runCatching { codec.stop() }
+            codec.release()
+            runCatching { muxer.stop() }
+            muxer.release()
+        }
+        val bytes = out.readBytes()
+        out.delete()
+        assertThat(bytes.size).isGreaterThan(0)
+        return bytes
+    }
+
+    /** Fill one flexible-YUV input image with solid red (BT.601: Y=76, U=84, V=255). */
+    private fun fillSolidRedYuv(
+        image: Image,
+        width: Int,
+        height: Int,
+    ) {
+        val values = byteArrayOf(76, 84, 0xFF.toByte())
+        image.planes.forEachIndexed { planeIndex, plane ->
+            val planeWidth = if (planeIndex == 0) width else width / 2
+            val planeHeight = if (planeIndex == 0) height else height / 2
+            val buffer = plane.buffer
+            for (row in 0 until planeHeight) {
+                for (col in 0 until planeWidth) {
+                    val position = row * plane.rowStride + col * plane.pixelStride
+                    if (position < buffer.capacity()) buffer.put(position, values[planeIndex])
+                }
+            }
+        }
     }
 }

@@ -50,7 +50,10 @@ class SeededDefaultFoldersTest {
 
     @Test
     fun freshVaultSeedsOneDownloadFolderPerPhase1CategoryOnceAndDecoysStayIsolated() =
-        runBlocking {
+        // <Unit> pins the JUnit4-required void return: the block's tail expression is a
+        // Truth chain, and an inferred non-Unit return fails the whole class's
+        // "should be void" validation (APP-241 FAIL-2).
+        runBlocking<Unit> {
             // --- Real vault: first unlock seeds the Phase-1 defaults ------------------------
             VaultSession.begin(realPin, namespace = "")
             val real = EncryptedVaultContentRepository(context)

@@ -3,6 +3,7 @@ package com.appblish.calculatorvault
 import android.app.ActivityManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -33,9 +34,13 @@ class MainActivity : ComponentActivity() {
         // privacy layer; hiding the task from recents entirely is an opt-in setting applied
         // below (OFF by default — a calculator that vanishes from recents is more
         // suspicious, spec §10 / APP-225).
-        // Debug builds skip the secure-window flags (APP-233): screenshots must work for
-        // bug reporting during stabilization; release builds always get the protection.
-        if (!BuildConfig.DEBUG) {
+        // Every build type applies the flags by default, so the instrumented §10 proof
+        // (FlagSecureDoDTest) runs against the debug variant CI actually builds (APP-241).
+        // Debug-only escape hatch for bug-report screenshots (APP-233): a device-global
+        // setting an operator flips explicitly per capture session —
+        //   adb shell settings put global calcvault_allow_screenshots 1
+        // (then relaunch; delete the setting to restore protection). Release ignores it.
+        if (!BuildConfig.DEBUG || !debugScreenshotsEnabled()) {
             window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 setRecentsScreenshotEnabled(false)
@@ -62,6 +67,12 @@ class MainActivity : ComponentActivity() {
             }
         }
     }
+
+    /** True only when the debug screenshot override (APP-233) was explicitly set via adb. */
+    private fun debugScreenshotsEnabled(): Boolean =
+        runCatching {
+            Settings.Global.getInt(contentResolver, "calcvault_allow_screenshots", 0) == 1
+        }.getOrDefault(false)
 
     /** Re-apply the opt-in "hide from recents" setting to this task on every launch. */
     private fun applyPersistedHideFromRecents() {

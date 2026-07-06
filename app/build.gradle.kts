@@ -119,5 +119,10 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")
+    // UiAutomator drives the production composition for the re-lock DoD proof
+    // (APP-241): a compose rule would re-host the window recomposer on the test clock
+    // and break the spine's own navigation effects; the accessibility tree also stays
+    // readable under FLAG_SECURE.
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation(libs.truth)
 }
