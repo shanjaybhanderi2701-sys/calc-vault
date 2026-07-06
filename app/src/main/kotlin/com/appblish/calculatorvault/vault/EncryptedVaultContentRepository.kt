@@ -71,7 +71,13 @@ class EncryptedVaultContentRepository(
     private val mutex = Mutex()
 
     private val itemsState = MutableStateFlow<List<VaultItem>>(emptyList())
-    private val foldersState = MutableStateFlow<List<VaultFolder>>(emptyList())
+
+    // Starts at the seed catalog (not empty) so the home dual-counts and the category
+    // roots agree from the very first render — a fresh install must never read "0 Folders"
+    // while Photos already shows the seeded Download folder (APP-234 spec §1.3). The ids
+    // are the stable seed ids, so [loadIndex] replacing this with the persisted truth is
+    // invisible on a fresh vault and only corrects folders the user renamed/deleted.
+    private val foldersState = MutableStateFlow(DefaultVaultFolders.forFreshVault())
     private val binState = MutableStateFlow<List<RecycleBinEntry>>(emptyList())
 
     /** True once [unlock] has derived the data key and loaded the index (test/UI probe). */
@@ -107,7 +113,7 @@ class EncryptedVaultContentRepository(
         // singleton never serves one vault's content under another vault's passphrase.
         crypto = null
         itemsState.value = emptyList()
-        foldersState.value = emptyList()
+        foldersState.value = DefaultVaultFolders.forFreshVault()
         binState.value = emptyList()
     }
 

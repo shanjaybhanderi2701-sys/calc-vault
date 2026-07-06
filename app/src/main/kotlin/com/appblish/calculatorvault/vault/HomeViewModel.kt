@@ -1,7 +1,10 @@
 package com.appblish.calculatorvault.vault
 
+import android.content.Context
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,8 +24,11 @@ data class VaultHomeState(
     val binCount: Int = 0,
     val recent: List<VaultItem> = emptyList(),
 ) {
+    // Deliberately ignores folderCounts: every fresh vault seeds a "Download" folder per
+    // category (APP-206/APP-220), so gating on folders would suppress the first-run hint
+    // forever (APP-234 spec §1.1). "Empty" == the user has hidden nothing yet.
     val isEmpty: Boolean
-        get() = recent.isEmpty() && counts.values.all { it == 0 } && folderCounts.values.all { it == 0 }
+        get() = recent.isEmpty() && counts.values.all { it == 0 }
 }
 
 /**
@@ -54,4 +60,14 @@ class HomeViewModel(
         // Enforce the recycle-bin auto-delete window whenever the vault is opened.
         viewModelScope.launch { repository.purgeExpired(clock()) }
     }
+
+    /**
+     * Decode a cover thumbnail for a Recent-strip [item] from its decrypted blob — the
+     * same [VaultThumbnails] path the category folder tiles use, so the home strip shows
+     * real covers instead of category glyphs (APP-234 spec §2.3).
+     */
+    suspend fun thumbnail(
+        context: Context,
+        item: VaultItem,
+    ): ImageBitmap? = VaultThumbnails.forItem(context, item) { repository.openDecrypted(item.id) }
 }

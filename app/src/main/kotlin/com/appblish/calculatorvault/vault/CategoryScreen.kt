@@ -462,6 +462,14 @@ private fun AddFolderTile(onClick: () -> Unit) {
                 modifier = Modifier.size(32.dp),
             )
         }
+        // Same label slot as a folder tile's name, so tile bottoms and label baselines
+        // align across the grid row (APP-234 spec §2.4).
+        Text(
+            text = "Add",
+            style = VaultTheme.typography.labelLarge,
+            color = colors.textSecondary,
+            modifier = Modifier.padding(top = spacing.sm),
+        )
     }
 }
 
