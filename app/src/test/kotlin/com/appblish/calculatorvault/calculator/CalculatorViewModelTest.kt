@@ -53,24 +53,61 @@ class CalculatorViewModelTest {
         }
 
     @Test
-    fun `a four-digit code that resolves to nothing is just arithmetic`() =
+    fun `a four-digit code that resolves to nothing clears the digits and shakes`() =
         runTest {
+            // APP-242: wrong PIN + `=` clears the entry and bumps the shake counter —
+            // no dialog, staying on the calculator.
             val vm = CalculatorViewModel(resolvePin = { null })
             val keys = listOf(CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.EQUALS)
             keys.forEach(vm::onToken)
             assertThat(vm.uiState.value.unlock).isNull()
-            assertThat(vm.uiState.value.display).isEqualTo("9999")
+            assertThat(vm.uiState.value.display).isEmpty()
+            assertThat(vm.uiState.value.pinRejections).isEqualTo(1)
         }
 
     @Test
-    fun `there is no debug backdoor - 1234 without a credential is just arithmetic`() =
+    fun `each wrong code bumps the rejection counter again`() =
+        runTest {
+            // The counter must be monotonic so a second identical rejection still
+            // re-triggers the shake animation keyed off it.
+            val vm = CalculatorViewModel(resolvePin = { null })
+            repeat(2) {
+                listOf(CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.NINE, CalcToken.EQUALS)
+                    .forEach(vm::onToken)
+            }
+            assertThat(vm.uiState.value.pinRejections).isEqualTo(2)
+        }
+
+    @Test
+    fun `there is no debug backdoor - 1234 without a credential never unlocks`() =
         runTest {
             // Spec §11 (APP-225): no debug seed PIN / default secret. The historical fixed
-            // debug code must evaluate as a plain number like any other unknown input.
+            // debug code gets the same wrong-PIN treatment as any other unknown code.
             val vm = CalculatorViewModel(resolvePin = { null })
             listOf(CalcToken.ONE, CalcToken.TWO, CalcToken.THREE, CalcToken.FOUR, CalcToken.EQUALS).forEach(vm::onToken)
             assertThat(vm.uiState.value.unlock).isNull()
-            assertThat(vm.uiState.value.display).isEqualTo("1234")
+            assertThat(vm.uiState.value.display).isEmpty()
+            assertThat(vm.uiState.value.pinRejections).isEqualTo(1)
+        }
+
+    @Test
+    fun `arithmetic with a four-digit result does not shake`() =
+        runTest {
+            // Only a *typed* 4-digit candidate is PIN-checked; ordinary sums (even ones
+            // that yield 4-digit results) never trigger rejection feedback.
+            val vm = CalculatorViewModel(resolvePin = { null })
+            val keys =
+                listOf(
+                    CalcToken.NINE,
+                    CalcToken.NINE,
+                    CalcToken.NINE,
+                    CalcToken.MULTIPLY,
+                    CalcToken.NINE,
+                    CalcToken.EQUALS,
+                )
+            keys.forEach(vm::onToken)
+            assertThat(vm.uiState.value.display).isEqualTo("8991")
+            assertThat(vm.uiState.value.pinRejections).isEqualTo(0)
         }
 
     @Test

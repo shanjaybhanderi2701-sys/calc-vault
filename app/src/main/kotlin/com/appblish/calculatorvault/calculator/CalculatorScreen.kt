@@ -40,5 +40,6 @@ fun CalculatorScreen(
         display = state.display.ifEmpty { "0" },
         onKey = viewModel::onToken,
         modifier = modifier,
+        shakeTrigger = state.pinRejections,
     )
 }

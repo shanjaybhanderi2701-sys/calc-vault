@@ -20,15 +20,21 @@ data class CalculatorUiState(
     // layer can derive the data key that unwraps `.CalcVault/` (see VaultKeyFile /
     // VaultSession). Captured at the moment `=` matches a configured code.
     val unlockCode: String = "",
+    // Bumped each time a 4-digit entry fails to resolve to any vault on `=`. The UI keys
+    // a brief display shake off changes to this value — the ONLY wrong-PIN feedback.
+    // Nothing disguise-breaking (dialog/banner/toast) is ever shown (APP-242).
+    val pinRejections: Int = 0,
 )
 
 /**
  * Drives the disguise. Every keypress just edits the display like a normal calculator;
  * the only special key is `=`. On `=`, if the shown value is a 4-digit code that
  * [resolvePin] maps to a vault (the real one, or a decoy), we raise
- * [CalculatorUiState.unlock] (carrying the code) so the host can open that vault. Anything
- * else is evaluated as ordinary arithmetic via [CalculatorEngine] — so to an onlooker it
- * is only ever a calculator.
+ * [CalculatorUiState.unlock] (carrying the code) so the host can open that vault. A
+ * 4-digit code that resolves to nothing clears the display and bumps
+ * [CalculatorUiState.pinRejections] (the UI shakes the display — minimal wrong-PIN
+ * feedback, APP-242). Anything else is evaluated as ordinary arithmetic via
+ * [CalculatorEngine] — so to an onlooker it is only ever a calculator.
  *
  * [resolvePin] is injected (defaults to the app's [AuthGraph] credential store) so the
  * resolution rule is unit-testable without Android. There is no debug backdoor: only a
@@ -60,8 +66,13 @@ class CalculatorViewModel(
                 val kind = resolvePin(current)
                 if (kind != null) {
                     _uiState.update { it.copy(unlock = kind, unlockCode = current) }
-                    return@launch
+                } else {
+                    // Wrong PIN: clear the digits and shake the display, staying on the
+                    // calculator. Deliberately no lockout/backoff/intruder capture —
+                    // deferred by the board past Phase 1 (APP-242).
+                    _uiState.update { it.copy(display = "", pinRejections = it.pinRejections + 1) }
                 }
+                return@launch
             }
             val value = engine.evaluate(current)
             _uiState.update { state -> state.copy(display = value?.let(::formatResult) ?: state.display) }

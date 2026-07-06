@@ -1,8 +1,10 @@
 package com.appblish.calculatorvault.calculator
 
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.keyframes
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -23,6 +25,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -30,6 +33,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.components.CalcKeyStyle
 import com.appblish.calculatorvault.ui.components.CalculatorKey
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -50,6 +54,10 @@ import com.appblish.calculatorvault.ui.theme.VaultTheme
  * continue" cue (P3-1, APP-225 board feedback). It defaults to false and stays false for
  * the calculator disguise and every non-onboarding PIN surface, so the disguise never
  * animates.
+ *
+ * [shakeTrigger] plays a brief horizontal shake of the display each time its value
+ * changes from a previous non-initial value — the minimal wrong-PIN feedback (APP-242).
+ * Callers bump a counter per rejection; 0 (the default) never shakes.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -62,6 +70,7 @@ fun CalculatorKeypad(
     onBack: (() -> Unit)? = null,
     onDisplayLongPress: (() -> Unit)? = null,
     highlightEquals: Boolean = false,
+    shakeTrigger: Int = 0,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -123,13 +132,40 @@ fun CalculatorKeypad(
             } else {
                 Modifier
             }
+        // APP-242 wrong-PIN feedback: a ~360ms damped left-right shake of the display,
+        // re-armed on every bump of [shakeTrigger]. Offset is read inside graphicsLayer so
+        // the shake redraws without recomposing; 0 means "never shaken", so a fresh
+        // composition doesn't replay an old rejection.
+        val shakeOffset = remember { Animatable(0f) }
+        LaunchedEffect(shakeTrigger) {
+            if (shakeTrigger == 0) return@LaunchedEffect
+            shakeOffset.snapTo(0f)
+            shakeOffset.animateTo(
+                targetValue = 0f,
+                animationSpec =
+                    keyframes {
+                        durationMillis = 360
+                        -12f at 45
+                        12f at 105
+                        -8f at 165
+                        8f at 225
+                        -4f at 285
+                        0f at 360
+                    },
+            )
+        }
         Text(
             text = display,
             style = VaultTheme.typography.displayLarge,
             color = colors.textPrimary,
             textAlign = TextAlign.End,
             maxLines = 1,
-            modifier = Modifier.fillMaxWidth().then(displayModifier).padding(vertical = spacing.md),
+            modifier =
+                Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer { translationX = shakeOffset.value.dp.toPx() }
+                    .then(displayModifier)
+                    .padding(vertical = spacing.md),
         )
 
         Spacer(Modifier.weight(1f))
