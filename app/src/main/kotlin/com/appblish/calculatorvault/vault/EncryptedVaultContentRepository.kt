@@ -86,30 +86,50 @@ class EncryptedVaultContentRepository(
     fun isUnlocked(): Boolean = crypto != null
 
     override fun unlock() {
-        if (crypto != null) return
-        val passphrase = VaultSession.passphrase ?: return
+        // Fire-and-forget eager priming for the UI: derive the key on the IO scope so the
+        // home/category surfaces are ready by the time the user browses. Write paths that
+        // must not race this (see [hide]) call [awaitUnlocked] instead and suspend on it.
+        unlockScope.launch { awaitUnlocked() }
+    }
+
+    /**
+     * Ensure the data key is derived and the index loaded, deriving them **inline** (and
+     * suspending until ready) if the vault is not yet unlocked. Returns the live
+     * [VaultCrypto], or null when the vault genuinely cannot be unlocked yet — no session
+     * passphrase or All Files Access not granted, in which case the key file/index in
+     * public storage are unreadable and there is nothing to unlock into.
+     *
+     * Unlike [unlock] (fire-and-forget), a caller that `await`s this is guaranteed a
+     * populated cipher on return. This closes the APP-248 defect the board hit: a hide
+     * kicked off moments after the All-Files-Access grant returned — while the eager
+     * [unlock] coroutine was still burning PBKDF2 — ran with `crypto` still null, so every
+     * item fell into [encryptSource]'s catch and was reported as "N failed" with nothing
+     * actually hidden.
+     */
+    private suspend fun awaitUnlocked(): VaultCrypto? {
+        crypto?.let { return it }
+        val passphrase = VaultSession.passphrase ?: return null
         // The key file + index live in public storage; without All Files Access we cannot
         // even read them. Stay locked (empty vault) until the primer grants access.
-        if (!StoragePermissions.hasAllFilesAccess(appContext)) return
-        unlockScope.launch {
-            mutex.withLock {
-                if (crypto != null) return@withLock
-                val dataKey =
-                    try {
-                        VaultKeyFile(VaultStorage.keyFile(appContext)).unlockOrCreate(passphrase)
-                    } catch (e: Exception) {
-                        // Wrong passphrase / unreadable key file: leave the vault locked.
-                        android.util.Log.w("VaultUnlock", "unlock failed: ${e.javaClass.simpleName}: ${e.message}")
-                        return@withLock
-                    }
-                val cipher = VaultCrypto(dataKey)
-                // Load BEFORE publishing the key: isUnlocked() promises "derived the data
-                // key AND loaded the index", and observers that gate on it (tests, UI
-                // probes) must never catch the pre-load placeholder state (APP-244 race:
-                // the IO thread is preemption-prone right after the PBKDF2 burn).
-                loadIndex(cipher)
-                crypto = cipher
-            }
+        if (!StoragePermissions.hasAllFilesAccess(appContext)) return null
+        return mutex.withLock {
+            crypto?.let { return@withLock it }
+            val dataKey =
+                try {
+                    VaultKeyFile(VaultStorage.keyFile(appContext)).unlockOrCreate(passphrase)
+                } catch (e: Exception) {
+                    // Wrong passphrase / unreadable key file: leave the vault locked.
+                    android.util.Log.w("VaultUnlock", "unlock failed: ${e.javaClass.simpleName}: ${e.message}")
+                    return@withLock null
+                }
+            val cipher = VaultCrypto(dataKey)
+            // Load BEFORE publishing the key: isUnlocked() promises "derived the data
+            // key AND loaded the index", and observers that gate on it (tests, UI
+            // probes) must never catch the pre-load placeholder state (APP-244 race:
+            // the IO thread is preemption-prone right after the PBKDF2 burn).
+            loadIndex(cipher)
+            crypto = cipher
+            cipher
         }
     }
 
@@ -149,6 +169,13 @@ class EncryptedVaultContentRepository(
 
     override suspend fun hide(items: List<VaultItem>): List<VaultItem> =
         withContext(Dispatchers.IO) {
+            // Derive the data key *before* encrypting. hide() can be reached moments after
+            // the All-Files-Access grant returns, while the eager unlock() is still burning
+            // PBKDF2 on another thread (APP-248): without this await the cipher would still
+            // be null and every item would be caught and reported as "failed". A null here
+            // means the vault genuinely cannot unlock (no session / no permission) — there
+            // is nowhere to hide into, so return an empty result rather than a phantom batch.
+            val cipher = awaitUnlocked() ?: return@withContext emptyList()
             withBulkOp("Hiding files", items.size) {
                 val stored = mutableListOf<VaultItem>()
                 for ((index, staged) in items.withIndex()) {
@@ -158,7 +185,7 @@ class EncryptedVaultContentRepository(
                     val blob = VaultStorage.blobFile(appContext, blobName)
                     val encryptedBytes =
                         try {
-                            encryptSource(staged, blob)
+                            encryptSource(staged, blob, cipher)
                         } catch (e: Exception) {
                             // Skip an unreadable source rather than aborting the whole batch;
                             // the original is left in place (nothing to un-hide).
@@ -194,12 +221,12 @@ class EncryptedVaultContentRepository(
             }
         }
 
-    /** Stream the staged original through [VaultCrypto] into [blob]; returns blob size. */
+    /** Stream the staged original through [cipher] into [blob]; returns blob size. */
     private fun encryptSource(
         staged: VaultItem,
         blob: File,
+        cipher: VaultCrypto,
     ): Long {
-        val cipher = requireCrypto()
         val uri = staged.sourceUri
         val input =
             if (uri != null) {
@@ -443,8 +470,6 @@ class EncryptedVaultContentRepository(
     private fun thumbNameOf(encryptedPath: String): String = encryptedPath.substringAfterLast('/')
 
     // --- Storage helpers ------------------------------------------------------------
-
-    private fun requireCrypto(): VaultCrypto = crypto ?: error("Vault is locked; call unlock() first")
 
     /**
      * Run [block] as a tracked bulk operation (spec §11): publish per-item progress to

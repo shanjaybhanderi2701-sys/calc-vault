@@ -106,4 +106,46 @@ class HidePipelineDoDTest {
             assertThat(item.originalName).isEqualTo(displayName)
             assertThat(item.relativePath).isEqualTo(relativePath)
         }
+
+    /**
+     * APP-248 regression (board re-test: "shows N items, fails to hide … throws that
+     * number"). A hide launched before the eager fire-and-forget [unlock] has finished
+     * deriving the key — the exact timing after the All-Files-Access grant returns and the
+     * user immediately hits Hide Now — used to run with the cipher still null: every item
+     * fell into `encryptSource`'s catch and the batch reported "0 hidden, N failed" with
+     * nothing stored. `hide` now `await`s the unlock inline, so it must succeed with **no**
+     * prior [unlock] call at all (only a live session + All Files Access, both set up here).
+     */
+    @Test
+    fun hideSelfUnlocksWithoutAPriorUnlockCall() =
+        runBlocking {
+            val original = DoDTestSupport.sampleJpegBytes()
+            val sourceUri = DoDTestSupport.insertPublicImage(context, displayName, relativePath, original)
+
+            val repo = EncryptedVaultContentRepository(context)
+            // Deliberately DO NOT call repo.unlock()/awaitUnlock(): the session passphrase
+            // and All Files Access are present (see setUp), so hide() must derive the key
+            // itself and store the item rather than silently failing every entry.
+            assertThat(repo.isUnlocked()).isFalse()
+
+            val staged =
+                VaultItem(
+                    id = "staged",
+                    category = VaultCategory.PHOTOS,
+                    originalName = displayName,
+                    dateLabel = "Today",
+                    sortKey = System.currentTimeMillis(),
+                    sourceUri = sourceUri.toString(),
+                    mimeType = "image/jpeg",
+                    relativePath = relativePath,
+                )
+
+            val stored = repo.hide(listOf(staged))
+            context.contentResolver.delete(sourceUri, null, null)
+
+            // The one item was actually hidden — not reported as "failed".
+            assertThat(stored).hasSize(1)
+            assertThat(repo.isUnlocked()).isTrue()
+            assertThat(repo.allItems().first()).hasSize(1)
+        }
 }
