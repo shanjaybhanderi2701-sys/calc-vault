@@ -29,7 +29,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.appblish.calculatorvault.onboarding.SecurityQuestionModal
-import com.appblish.calculatorvault.security.DisguiseManager
 import com.appblish.calculatorvault.security.PreventUninstallController
 import com.appblish.calculatorvault.ui.components.ListRow
 import com.appblish.calculatorvault.ui.components.RowTrailing
@@ -50,6 +49,7 @@ fun SettingsScreen(
     onTheme: () -> Unit,
     onPermissions: () -> Unit,
     onBackup: () -> Unit,
+    onDisguise: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = viewModel(),
 ) {
@@ -137,11 +137,8 @@ fun SettingsScreen(
                     "Showing default \"Calculator\" tile"
                 },
             leadingIcon = Icons.Filled.Face,
-            trailing =
-                RowTrailing.Toggle(settings.disguiseIconEnabled) { enabled ->
-                    DisguiseManager.setAlternate(context, enabled)
-                    viewModel.setDisguiseIcon(enabled)
-                },
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = onDisguise,
         )
         ListRow(
             title = "Permission management",

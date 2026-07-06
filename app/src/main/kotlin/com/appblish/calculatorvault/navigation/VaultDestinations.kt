@@ -32,6 +32,10 @@ internal object VaultDestinations {
     const val SETTINGS_PERMISSIONS = "settings/permissions"
     const val SETTINGS_BACKUP = "settings/backup"
 
+    // Icon-disguise control (activity-alias swap). Reached from the vault-home "Switch app
+    // icon" button + at-risk banner and from Settings (APP-215 / gap G5c).
+    const val DISGUISE = "settings/disguise"
+
     // --- Vault spine (Phase 2) ---
 
     /** Point-of-need All Files Access primer, gating entry to the public-storage vault. */

@@ -28,6 +28,7 @@ import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.recovery.ForgotPasswordRoute
 import com.appblish.calculatorvault.settings.BackupScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
+import com.appblish.calculatorvault.settings.DisguiseScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.settings.SettingsScreen
@@ -173,7 +174,9 @@ fun VaultNavHost() {
                 onCategoryClick = { navController.navigate(VaultDestinations.category(it)) },
                 onRecentClick = { navController.navigate(VaultDestinations.viewer(it.id)) },
                 onRecycleBinClick = { navController.navigate(VaultDestinations.RECYCLE_BIN) },
-                onDisguiseClick = { navController.navigate(VaultDestinations.FAKE_PASSWORD) },
+                // The home "Switch app icon" button + at-risk banner open the icon-disguise
+                // control (activity-alias swap), NOT the decoy fake-password flow (APP-215).
+                onDisguiseClick = { navController.navigate(VaultDestinations.DISGUISE) },
                 onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
                 onExploreToolClick = { navController.navigate(VaultDestinations.exploreRoute(it)) },
             )
@@ -317,7 +320,12 @@ fun VaultNavHost() {
                 onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                 onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
                 onBackup = { navController.navigate(VaultDestinations.SETTINGS_BACKUP) },
+                onDisguise = { navController.navigate(VaultDestinations.DISGUISE) },
             )
+        }
+
+        composable(VaultDestinations.DISGUISE) {
+            DisguiseScreen(onBack = { navController.popBackStack() })
         }
 
         composable(VaultDestinations.SETTINGS_CHANGE_PIN) {
