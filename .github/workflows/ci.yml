@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-163-phase6-integration, app-225-phase1-wave1]
+    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248]
   pull_request:
   workflow_dispatch:
 
