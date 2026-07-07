@@ -170,9 +170,11 @@ private fun ViewerPager(
         zoomed = false
         rotationDegrees = 0
     }
-    // Zooming hides the chrome so it never floats over an inspected photo (design §4).
+    // Zooming hides the chrome so it never floats over an inspected photo; returning to 1×
+    // brings it back (design §4: "keeps bars hidden until zoom returns to 1.0"). Keyed on
+    // [zoomed] alone, so a plain single-tap toggle at 1× is not clobbered by this effect.
     LaunchedEffect(zoomed) {
-        if (zoomed) chromeVisible = false
+        chromeVisible = !zoomed
     }
 
     val currentItem = state.pages.getOrNull(pagerState.currentPage.coerceIn(0, state.pages.lastIndex))
