@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.os.Build
 import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onRoot
@@ -93,20 +94,19 @@ class PagerViewerDoDTest {
             }
         }
 
-        // Page 1 of 2 (the tapped item) is shown with its decoded photo.
-        waitForText("1 of 2")
-        waitForText(nameA)
+        // Page 1 of 2 (the tapped item) is shown with its decoded photo. The W1-D top bar
+        // shows the centered "n / total" pager position (no filename — that lives in the
+        // Property dialog, W1-E2); the photo carries its name as the image content-desc.
+        waitForText("1 / 2")
+        waitForContentDescription(nameA)
 
         // Swipe left → the pager settles on the second item.
         compose.onRoot().performTouchInput { swipeLeft() }
-        waitForText("2 of 2")
-        waitForText(nameB)
+        waitForText("2 / 2")
+        waitForContentDescription(nameB)
 
         // Pinch-to-zoom on the photo. While zoomed the pager must ignore swipes
         // (userScrollEnabled=false is the zoom contract), so the page may not change.
-        compose.waitUntil(10_000) {
-            compose.onAllNodesWithText(nameB).fetchSemanticsNodes().isNotEmpty()
-        }
         val image = compose.onNodeWithContentDescription(nameB)
         image.performTouchInput {
             pinch(
@@ -117,21 +117,34 @@ class PagerViewerDoDTest {
             )
         }
         compose.waitForIdle()
+        // A horizontal drag on the zoomed page is consumed as a pan, never a page change.
         compose.onRoot().performTouchInput { swipeRight() }
         compose.waitForIdle()
-        waitForText("2 of 2") // still page 2: the zoomed page consumed the drag as a pan
 
-        // Double-tap resets zoom → swiping works again and returns to page 1.
+        // Double-tap resets zoom (1×) → chrome returns and the pager position proves the
+        // zoomed swipe above did NOT change the page: we are still on page 2 of 2.
         image.performTouchInput { doubleClick() }
         compose.waitForIdle()
+        waitForText("2 / 2")
+
+        // Now un-zoomed, a swipe pages back to the first item.
         compose.onRoot().performTouchInput { swipeRight() }
-        waitForText("1 of 2")
-        waitForText(nameA)
+        waitForText("1 / 2")
+        waitForContentDescription(nameA)
     }
 
     private fun waitForText(text: String) {
         compose.waitUntil(15_000) {
             compose.onAllNodesWithText(text, substring = true).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    private fun waitForContentDescription(description: String) {
+        compose.waitUntil(15_000) {
+            compose
+                .onAllNodesWithContentDescription(description)
+                .fetchSemanticsNodes()
+                .isNotEmpty()
         }
     }
 

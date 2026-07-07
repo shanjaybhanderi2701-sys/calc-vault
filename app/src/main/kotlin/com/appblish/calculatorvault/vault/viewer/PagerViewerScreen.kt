@@ -2,6 +2,9 @@ package com.appblish.calculatorvault.vault.viewer
 
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -21,7 +24,11 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -32,6 +39,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -40,10 +48,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -60,7 +70,6 @@ import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
-import com.appblish.calculatorvault.vault.ui.VaultTopBar
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
@@ -69,16 +78,32 @@ import java.io.File
 import android.graphics.Color as AndroidColor
 
 /**
- * Gallery-grade full-screen viewer (APP-225 board feedback, P0-2): a [HorizontalPager]
- * across every item of the context the user opened the item from (folder or category
- * root), starting at the tapped item. Photos support pinch-to-zoom, double-tap-to-zoom
- * and pan; the pager only swipes at 1x so a zoomed pan never fights it. Video/audio pages
- * keep the Media3/ExoPlayer stage — only the settled page's blob is ever decrypted, and
- * swiping away releases the player and deletes the cleartext temp file (spec §7).
+ * CalcVault Phase B · Wave 1 · W1-E1 — full-screen photo-vault viewer (spec §2.1, design
+ * sign-off [APP-253] §4). A [HorizontalPager] across the album's items (the context the
+ * user opened the tapped item from), rendered full-bleed over a true-black canvas with
+ * floating chrome:
  *
- * Restore/Delete keep the single-item viewer's actions: Delete routes through the shared
- * delete-choice modal (D-4); both simply shrink the page set, so the pager advances to
- * the next item naturally and an emptied context invokes [onEmpty] (default: [onBack]).
+ *  - **Top bar** — back · centered `[ n / total ]` position · rotate · info.
+ *  - **Bottom bar** — Unhide · Delete · Move (spec §1 terminology lock: the gallery-exit
+ *    verb is *Unhide*, never "Restore"; "Restore" is Bin→vault only).
+ *
+ * **Gesture priority (hard rule, spec §2.1):** photos pinch-zoom (1×–5×), double-tap-zoom
+ * to 2.5× centred on the tap and pan while zoomed; the pager only swipes at scale 1.0
+ * (`userScrollEnabled = !zoomed`) and pan is only consumed while zoomed (`canPan`), so a
+ * zoomed pan and a page swipe never fight. A single tap toggles the chrome; zooming force-
+ * hides it. Rotate is a **live in-session** 90°/tap transform (persistence is Wave 3, W3-E)
+ * and resets when the settled page changes.
+ *
+ * **Hard rules enforced:** the whole app window carries `FLAG_SECURE` (MainActivity), so
+ * the viewer inherits it. Decrypt-to-view is strictly in memory for photos
+ * ([PageContent.Bytes], decoded off-main); video/audio stream to an app-private cache temp
+ * that the VM sweeps — no decrypted byte ever reaches browsable storage (Unhide via W1-E2
+ * is the only exit). Only the settled page is ever decrypted and the grid's cached
+ * thumbnail pipeline is untouched, so opening/closing the viewer never re-decrypts the grid.
+ *
+ * The bottom-bar Move/Info actions surface as callbacks wired by W1-E2; Delete routes
+ * through the shared delete-choice modal (D-4). Deletes/unhides simply shrink the page set
+ * (the pager advances naturally); an emptied context invokes [onEmpty].
  */
 @Composable
 fun PagerViewerScreen(
@@ -86,6 +111,8 @@ fun PagerViewerScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     onEmpty: () -> Unit = onBack,
+    onMove: (VaultItem) -> Unit = {},
+    onInfo: (VaultItem) -> Unit = {},
 ) {
     val colors = VaultTheme.colors
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -95,13 +122,15 @@ fun PagerViewerScreen(
         if (state.empty) onEmpty()
     }
 
-    Box(modifier = modifier.fillMaxSize().background(colors.canvas)) {
+    Box(modifier = modifier.fillMaxSize().background(ViewerCanvas)) {
         if (state.loaded && state.pages.isNotEmpty()) {
             ViewerPager(
                 state = state,
                 activePage = activePage,
                 viewModel = viewModel,
                 onBack = onBack,
+                onMove = onMove,
+                onInfo = onInfo,
             )
         } else {
             // Context still loading (or just emptied and about to navigate back).
@@ -119,35 +148,43 @@ private fun ViewerPager(
     activePage: ActivePage?,
     viewModel: PagerViewerViewModel,
     onBack: () -> Unit,
+    onMove: (VaultItem) -> Unit,
+    onInfo: (VaultItem) -> Unit,
 ) {
     val pagerState = rememberPagerState(initialPage = state.startIndex) { state.pages.size }
     var zoomed by remember { mutableStateOf(false) }
+    var chromeVisible by remember { mutableStateOf(true) }
+    // Live in-session rotation of the settled photo (0/90/180/270); Wave-1 does not persist
+    // it (W3-E). Reset whenever a new page settles so rotation never carries across photos.
+    var rotationDegrees by remember { mutableIntStateOf(0) }
     var showDeleteChoice by remember { mutableStateOf(false) }
 
-    // Decrypt only the settled page (spec §7): re-keying the VM's active page deletes the
+    // Decrypt only the settled page (spec §1/§7): re-keying the VM's active page deletes the
     // previous page's temp file / drops its bytes. Also re-runs when a delete shrinks the
     // list and a new item slides into the settled slot.
     LaunchedEffect(pagerState.settledPage, state.pages) {
         state.pages.getOrNull(pagerState.settledPage)?.let { viewModel.setActivePage(it.id) }
     }
-    // A newly settled page always starts un-zoomed (zoom never carries across pages).
+    // A newly settled page always starts un-zoomed and un-rotated.
     LaunchedEffect(pagerState.settledPage) {
         zoomed = false
+        rotationDegrees = 0
+    }
+    // Zooming hides the chrome so it never floats over an inspected photo (design §4).
+    LaunchedEffect(zoomed) {
+        if (zoomed) chromeVisible = false
     }
 
     val currentItem = state.pages.getOrNull(pagerState.currentPage.coerceIn(0, state.pages.lastIndex))
-    Column(modifier = Modifier.fillMaxSize()) {
-        VaultTopBar(
-            title = currentItem?.originalName.orEmpty(),
-            subtitle = currentItem?.let { "${pagerState.currentPage + 1} of ${state.pages.size} · ${it.dateLabel}" },
-            onBack = onBack,
-        )
+    val position = "${pagerState.currentPage + 1} / ${state.pages.size}"
+
+    Box(modifier = Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pagerState,
             // Zoomed pan must not fight the pager: swiping is only a pager gesture at 1x.
             userScrollEnabled = !zoomed,
             key = { index -> state.pages[index].id },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier.fillMaxSize(),
         ) { page ->
             val item = state.pages[page]
             val isCurrent = pagerState.settledPage == page
@@ -160,14 +197,41 @@ private fun ViewerPager(
                         PageContent.Loading
                     },
                 isCurrent = isCurrent,
+                rotationDegrees = if (isCurrent) rotationDegrees else 0,
                 onZoomedChanged = { if (isCurrent) zoomed = it },
+                // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
+                onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
             )
         }
-        PagerActionBar(
-            onRestore = { currentItem?.let { viewModel.restore(it.id) } },
-            onDelete = { showDeleteChoice = true },
-        )
+
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter),
+        ) {
+            ViewerTopBar(
+                position = position,
+                onBack = onBack,
+                onRotate = { rotationDegrees = (rotationDegrees + 90) % 360 },
+                onInfo = { currentItem?.let(onInfo) },
+            )
+        }
+
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.BottomCenter),
+        ) {
+            ViewerBottomBar(
+                onUnhide = { currentItem?.let { viewModel.restore(it.id) } },
+                onDelete = { showDeleteChoice = true },
+                onMove = { currentItem?.let(onMove) },
+            )
+        }
     }
+
     if (showDeleteChoice) {
         DeleteChoiceDialog(
             itemCount = 1,
@@ -190,7 +254,9 @@ private fun ViewerPage(
     item: VaultItem,
     content: PageContent,
     isCurrent: Boolean,
+    rotationDegrees: Int,
     onZoomedChanged: (Boolean) -> Unit,
+    onToggleChrome: () -> Unit,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -216,7 +282,9 @@ private fun ViewerPage(
                             item = item,
                             bytes = content.bytes,
                             isCurrent = isCurrent,
+                            rotationDegrees = rotationDegrees,
                             onZoomedChanged = onZoomedChanged,
+                            onToggleChrome = onToggleChrome,
                         )
                 }
         }
@@ -239,7 +307,9 @@ private fun ImagePage(
     item: VaultItem,
     bytes: ByteArray,
     isCurrent: Boolean,
+    rotationDegrees: Int,
     onZoomedChanged: (Boolean) -> Unit,
+    onToggleChrome: () -> Unit,
 ) {
     val colors = VaultTheme.colors
     // Decode off the main thread (board complaint P0-2: no jank, no silent blank).
@@ -264,16 +334,19 @@ private fun ImagePage(
                 bitmap = result.bitmap,
                 contentDescription = item.originalName,
                 isCurrent = isCurrent,
+                rotationDegrees = rotationDegrees,
                 onZoomedChanged = onZoomedChanged,
+                onToggleChrome = onToggleChrome,
             )
     }
 }
 
 /**
  * Full-bleed image with pinch-to-zoom (1x..[MAX_ZOOM]), double-tap-to-zoom
- * ([DOUBLE_TAP_ZOOM], centered on the tap; double-tap again resets) and pan clamped to
- * the zoomed bounds. Pan is only consumed while zoomed (`canPan`), so 1x drags reach the
- * pager; [onZoomedChanged] lets the screen disable pager swiping while zoomed. Leaving
+ * ([DOUBLE_TAP_ZOOM], centered on the tap; double-tap again resets), pan clamped to the
+ * zoomed bounds, and a live in-session [rotationDegrees] transform. Pan is only consumed
+ * while zoomed (`canPan`), so 1x drags reach the pager; [onZoomedChanged] lets the screen
+ * disable pager swiping while zoomed. A single tap forwards to [onToggleChrome]. Leaving
  * the settled page resets to 1x.
  */
 @OptIn(ExperimentalFoundationApi::class)
@@ -282,7 +355,9 @@ private fun ZoomableImage(
     bitmap: ImageBitmap,
     contentDescription: String,
     isCurrent: Boolean,
+    rotationDegrees: Int,
     onZoomedChanged: (Boolean) -> Unit,
+    onToggleChrome: () -> Unit,
 ) {
     var scale by remember { mutableFloatStateOf(1f) }
     var offset by remember { mutableStateOf(Offset.Zero) }
@@ -324,6 +399,7 @@ private fun ZoomableImage(
                 .onSizeChanged { containerSize = it }
                 .pointerInput(Unit) {
                     detectTapGestures(
+                        onTap = { onToggleChrome() },
                         onDoubleTap = { tap ->
                             if (scale > MIN_ZOOM) {
                                 scale = MIN_ZOOM
@@ -341,6 +417,7 @@ private fun ZoomableImage(
                     scaleY = scale
                     translationX = offset.x
                     translationY = offset.y
+                    rotationZ = rotationDegrees.toFloat()
                 },
     )
 }
@@ -395,9 +472,9 @@ private fun ErrorPage() {
             modifier = Modifier.size(48.dp),
         )
         Text(
-            text = "Couldn't open this file",
+            text = "Couldn't open this photo",
             style = VaultTheme.typography.bodyMedium,
-            color = colors.textSecondary,
+            color = ViewerOnCanvasMuted,
             textAlign = TextAlign.Center,
         )
     }
@@ -406,7 +483,6 @@ private fun ErrorPage() {
 /** Neutral category-glyph page for non-renderable kinds (e.g. a PDF in Files). */
 @Composable
 private fun GlyphPage(item: VaultItem) {
-    val colors = VaultTheme.colors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(VaultTheme.spacing.md),
@@ -421,7 +497,7 @@ private fun GlyphPage(item: VaultItem) {
         Text(
             text = item.originalName,
             style = VaultTheme.typography.bodyMedium,
-            color = colors.textSecondary,
+            color = ViewerOnCanvasMuted,
             textAlign = TextAlign.Center,
         )
     }
@@ -433,7 +509,6 @@ private fun ContactPage(
     item: VaultItem,
     bytes: ByteArray,
 ) {
-    val colors = VaultTheme.colors
     val vcard = remember(bytes) { bytes.toString(Charsets.UTF_8) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -454,7 +529,7 @@ private fun ContactPage(
         Text(
             text = item.originalName,
             style = VaultTheme.typography.headlineSmall,
-            color = colors.textPrimary,
+            color = ViewerOnCanvas,
             textAlign = TextAlign.Center,
         )
         Text(
@@ -464,46 +539,90 @@ private fun ContactPage(
                 .joinToString("\n")
                 .ifBlank { "Hidden contact" },
             style = VaultTheme.typography.bodySmall,
-            color = colors.textSecondary,
+            color = ViewerOnCanvasMuted,
             textAlign = TextAlign.Center,
         )
     }
 }
 
 /**
- * Bottom action bar: Restore + Delete only, matching the single-item viewer (S18 — no
- * Share/export in Phase 1; spec §8 vocabulary "Restore", never "unhide").
+ * Floating top bar over the top scrim (design §4): back · centered `[ n / total ]` pager
+ * position · rotate · info. No solid fill — the photo stays the hero; the scrim only lends
+ * the glyphs legibility over any image.
  */
 @Composable
-private fun PagerActionBar(
-    onRestore: () -> Unit,
+private fun ViewerTopBar(
+    position: String,
+    onBack: () -> Unit,
+    onRotate: () -> Unit,
+    onInfo: () -> Unit,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(ViewerScrim, Color.Transparent)))
+                .padding(horizontal = VaultTheme.spacing.sm, vertical = VaultTheme.spacing.sm),
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Back", tint = ViewerOnCanvas)
+        }
+        Text(
+            text = position,
+            style = VaultTheme.typography.labelLarge,
+            color = ViewerOnCanvas,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.weight(1f),
+        )
+        IconButton(onClick = onRotate) {
+            Icon(Icons.Filled.Refresh, contentDescription = "Rotate", tint = ViewerOnCanvas)
+        }
+        IconButton(onClick = onInfo) {
+            Icon(Icons.Filled.Info, contentDescription = "Info", tint = ViewerOnCanvas)
+        }
+    }
+}
+
+/**
+ * Floating bottom bar over the bottom scrim (design §4): three single-purpose targets —
+ * **Unhide** (gallery-exit; spec §1 terminology lock), **Delete** (Error tint on glyph +
+ * label only) and **Move** (relocate the index entry to another album, W1-E2). If a fourth
+ * action is ever needed it becomes an overflow — targets are never truncated.
+ */
+@Composable
+private fun ViewerBottomBar(
+    onUnhide: () -> Unit,
     onDelete: () -> Unit,
+    onMove: () -> Unit,
 ) {
     val colors = VaultTheme.colors
     Row(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().background(colors.surface).padding(vertical = VaultTheme.spacing.sm),
+        modifier =
+            Modifier
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(Color.Transparent, ViewerScrim)))
+                .padding(vertical = VaultTheme.spacing.sm),
     ) {
-        // Restore: decrypt back to public storage so it returns to the gallery.
-        PagerAction(label = "Restore", tint = colors.textPrimary, onClick = onRestore) {
-            Icon(Icons.Filled.Refresh, contentDescription = "Restore", tint = colors.textPrimary)
-        }
-        PagerAction(label = "Delete", tint = colors.destructive, onClick = onDelete) {
-            Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = colors.destructive)
-        }
+        // Unhide: decrypt this blob back out to the gallery (original-or-chosen, W1-E2).
+        ViewerAction(label = "Unhide", tint = ViewerOnCanvas, icon = Icons.Filled.Share, onClick = onUnhide)
+        ViewerAction(label = "Delete", tint = colors.destructive, icon = Icons.Filled.Delete, onClick = onDelete)
+        // Move: relocate the encrypted index entry to another vault album (stays encrypted).
+        ViewerAction(label = "Move", tint = ViewerOnCanvas, icon = Icons.Filled.KeyboardArrowRight, onClick = onMove)
     }
 }
 
 @Composable
-private fun PagerAction(
+private fun ViewerAction(
     label: String,
     tint: Color,
+    icon: ImageVector,
     onClick: () -> Unit,
-    icon: @Composable () -> Unit,
 ) {
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        IconButton(onClick = onClick) { icon() }
+        IconButton(onClick = onClick) { Icon(icon, contentDescription = label, tint = tint) }
         Text(text = label, style = VaultTheme.typography.labelMedium, color = tint)
     }
 }
@@ -511,3 +630,10 @@ private fun PagerAction(
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 5f
 private const val DOUBLE_TAP_ZOOM = 2.5f
+
+// Viewer chrome colors (design §3 VaultViewerTokens): a true-black canvas so the photo is
+// the hero, on-canvas glyphs/text in white, and a 50%-ink scrim behind the floating bars.
+private val ViewerCanvas = Color(0xFF000000)
+private val ViewerOnCanvas = Color(0xFFFFFFFF)
+private val ViewerOnCanvasMuted = Color(0xB3FFFFFF)
+private val ViewerScrim = Color(0x80000000)
