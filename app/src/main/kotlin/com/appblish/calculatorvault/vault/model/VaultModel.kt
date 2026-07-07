@@ -44,10 +44,74 @@ data class VaultItem(
     val mimeType: String? = null,
     // Public-storage RELATIVE_PATH the original lived in at hide time (e.g. "DCIM/Camera/"),
     // captured from MediaStore so un-hide can write the decrypted bytes back to the same
-    // gallery album. Persisted. Null when unknown → un-hide falls back to a per-category
-    // default public folder (see MediaSink.defaultRelativePath).
+    // gallery album. Persisted. Null when unknown → un-hide falls back to Downloads and
+    // reports it (see MediaSink.writeBack + [UnhideDisposition]).
     val relativePath: String? = null,
+    // Pixel dimensions of the original, captured at hide time from the source bounds so the
+    // Property dialog can report "W × H" without ever decrypting the blob. 0 == unknown
+    // (older items / non-image categories) → the Property dialog shows a muted "—".
+    val widthPx: Int = 0,
+    val heightPx: Int = 0,
+    // Original last-modified time (epoch millis) read from MediaStore at hide time. Distinct
+    // from [sortKey], which is the added-to-vault time. 0 == unknown → Property shows "—".
+    val dateModifiedMs: Long = 0L,
 )
+
+/**
+ * Where an un-hide writes the decrypted bytes. [Original] targets the album the file was
+ * hidden from (from the encrypted index); [Chosen] targets a caller-picked public
+ * RELATIVE_PATH. Either way, if the primary destination is missing/unwritable the
+ * repository falls back to Downloads and reports it — spec §1.4: never fail silently.
+ */
+sealed interface UnhideDestination {
+    data object Original : UnhideDestination
+
+    data class Chosen(
+        val relativePath: String,
+    ) : UnhideDestination
+}
+
+/** How a single item actually landed when un-hidden (drives the honest result snackbar). */
+enum class UnhideDisposition {
+    /** Written to the requested destination (original album or chosen folder). */
+    REQUESTED,
+
+    /** Requested destination was unavailable; saved to the fallback (Downloads) instead. */
+    FALLBACK,
+
+    /** Nothing could be written; the encrypted vault copy was kept (never lost). */
+    FAILED,
+}
+
+/** Per-item un-hide outcome: what happened and, for a fallback, where it actually landed. */
+data class UnhideOutcome(
+    val itemId: String,
+    val disposition: UnhideDisposition,
+    val destinationLabel: String? = null,
+)
+
+/**
+ * Aggregate result of an un-hide over one or more items. Surfaces the counts the design's
+ * §7 snackbar needs — "Unhid N", "saved M to {dest}", total-failure — without the UI
+ * having to re-derive them.
+ */
+data class UnhideResult(
+    val outcomes: List<UnhideOutcome> = emptyList(),
+) {
+    val requested: Int get() = outcomes.count { it.disposition == UnhideDisposition.REQUESTED }
+    val fellBack: Int get() = outcomes.count { it.disposition == UnhideDisposition.FALLBACK }
+    val failed: Int get() = outcomes.count { it.disposition == UnhideDisposition.FAILED }
+
+    /** Items that left the vault (landed somewhere), whether at the requested dest or fallback. */
+    val unhidden: Int get() = requested + fellBack
+
+    /** True when nothing at all could be written — the one case that warrants a modal, not a snackbar. */
+    val totalFailure: Boolean get() = outcomes.isNotEmpty() && unhidden == 0
+
+    /** The fallback destination label, if any item fell back (all fallbacks share one dir). */
+    val fallbackDestination: String?
+        get() = outcomes.firstOrNull { it.disposition == UnhideDisposition.FALLBACK }?.destinationLabel
+}
 
 /** A user-created folder within a category (Create Folder from the FAB menu). */
 data class VaultFolder(

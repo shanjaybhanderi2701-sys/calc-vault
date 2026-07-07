@@ -1,6 +1,10 @@
 package com.appblish.calculatorvault.vault
 
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.UnhideDestination
+import com.appblish.calculatorvault.vault.model.UnhideDisposition
+import com.appblish.calculatorvault.vault.model.UnhideOutcome
+import com.appblish.calculatorvault.vault.model.UnhideResult
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -85,7 +89,41 @@ interface VaultContentRepository {
      * the vault (its only copy is never lost). This is the board's "watch it return to
      * the gallery" beat — the inverse of [hide].
      */
-    suspend fun unhide(itemIds: Set<String>): Int
+    suspend fun unhide(itemIds: Set<String>): Int = unhideTo(itemIds, UnhideDestination.Original).unhidden
+
+    /**
+     * Un-hide [itemIds] to [destination] and report, per item, whether it landed at the
+     * requested destination, fell back to Downloads (original/chosen dir unavailable), or
+     * failed entirely (blob kept in the vault — spec §1.4, never lose the only copy). This
+     * is the result-bearing form the Unhide dialog uses so it can show the honest §7
+     * snackbar ("Unhid N", "saved M to {dest}"). Default impl delegates to [unhide] so
+     * preview/in-memory fakes need not model destinations, reporting every success as
+     * [UnhideDisposition.REQUESTED].
+     */
+    suspend fun unhideTo(
+        itemIds: Set<String>,
+        destination: UnhideDestination,
+    ): UnhideResult {
+        val ids = itemIds.toList()
+        val done = unhide(itemIds)
+        return UnhideResult(
+            ids.take(done).map { UnhideOutcome(it, UnhideDisposition.REQUESTED) } +
+                ids.drop(done).map { UnhideOutcome(it, UnhideDisposition.FAILED) },
+        )
+    }
+
+    /**
+     * Permanently destroy the *vault* items [itemIds]: securely wipe each encrypted blob
+     * (overwrite before unlink) and remove its index entry — the 2-step-confirmed
+     * "Delete permanently" path (spec §1.5). Distinct from [deleteForever], which operates
+     * on items already sitting in the recycle bin. Default impl removes the index entries;
+     * the device repository adds the secure blob wipe.
+     */
+    suspend fun permanentlyDelete(itemIds: Set<String>) {
+        // In-memory fakes hold no blob; dropping the index entry is a full delete for them.
+        moveToRecycleBin(itemIds)
+        deleteForever(itemIds)
+    }
 
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)

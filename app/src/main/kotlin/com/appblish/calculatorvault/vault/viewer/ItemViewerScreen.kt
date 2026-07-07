@@ -9,7 +9,6 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -18,8 +17,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -48,7 +48,8 @@ import java.io.File
  * ([bytes]) streamed back through
  * [com.appblish.calculatorvault.vault.crypto.VaultCrypto]; while decryption is in flight
  * (or if the blob is missing) it shows a neutral placeholder. A shared bottom bar offers
- * Share / Delete (→ recycle bin).
+ * the W1-E2 single-photo actions — Unhide · Move · Property · Delete — each routed to its
+ * design §5–§9 dialog by the caller (see [PhotoActionsHost]).
  */
 @Composable
 fun ItemViewerScreen(
@@ -57,8 +58,9 @@ fun ItemViewerScreen(
     onBack: () -> Unit,
     onDelete: () -> Unit,
     modifier: Modifier = Modifier,
-    onShare: () -> Unit = {},
     onUnhide: () -> Unit = {},
+    onMove: () -> Unit = {},
+    onProperty: () -> Unit = {},
 ) {
     val colors = VaultTheme.colors
     Column(modifier = modifier.fillMaxSize().background(colors.canvas)) {
@@ -71,7 +73,7 @@ fun ItemViewerScreen(
                 else -> ImageStage(item, bytes) // Photos + Files preview
             }
         }
-        ViewerActionBar(onShare = onShare, onUnhide = onUnhide, onDelete = onDelete)
+        ViewerActionBar(onUnhide = onUnhide, onMove = onMove, onDelete = onDelete, onProperty = onProperty)
     }
 }
 
@@ -222,25 +224,28 @@ private fun ContactStage(
 
 @Composable
 private fun ViewerActionBar(
-    onShare: () -> Unit,
     onUnhide: () -> Unit,
+    onMove: () -> Unit,
     onDelete: () -> Unit,
+    onProperty: () -> Unit,
 ) {
     val colors = VaultTheme.colors
+    // Design §4 bottom bar: Unhide · Delete · Move, with Property on the info affordance.
     Row(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().background(colors.surface).padding(vertical = VaultTheme.spacing.sm),
     ) {
-        IconButton(onClick = onShare) {
-            Icon(Icons.Filled.Share, contentDescription = "Share", tint = colors.textPrimary)
-        }
-        Spacer(Modifier.size(VaultTheme.spacing.xxl))
         // Un-hide: decrypt back to public storage so it returns to the gallery.
         IconButton(onClick = onUnhide) {
             Icon(Icons.Filled.Refresh, contentDescription = "Unhide", tint = colors.textPrimary)
         }
-        Spacer(Modifier.size(VaultTheme.spacing.xxl))
+        IconButton(onClick = onMove) {
+            Icon(Icons.Filled.Folder, contentDescription = "Move", tint = colors.textPrimary)
+        }
+        IconButton(onClick = onProperty) {
+            Icon(Icons.Filled.Info, contentDescription = "Property", tint = colors.textPrimary)
+        }
         IconButton(onClick = onDelete) {
             Icon(Icons.Filled.Delete, contentDescription = "Delete", tint = colors.destructive)
         }

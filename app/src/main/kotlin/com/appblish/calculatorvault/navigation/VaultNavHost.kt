@@ -1,8 +1,16 @@
 package com.appblish.calculatorvault.navigation
 
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -40,6 +48,10 @@ import com.appblish.calculatorvault.vault.RecycleBinScreen
 import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.VaultSession
 import com.appblish.calculatorvault.vault.VaultShellScreen
+import com.appblish.calculatorvault.vault.actions.PhotoAction
+import com.appblish.calculatorvault.vault.actions.PhotoActionCallbacks
+import com.appblish.calculatorvault.vault.actions.PhotoActionsHost
+import com.appblish.calculatorvault.vault.actions.rememberPhotoActionsController
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
@@ -268,20 +280,46 @@ fun VaultNavHost() {
                 )
             val item by vm.item.collectAsStateWithLifecycle()
             val bytes by vm.decrypted.collectAsStateWithLifecycle()
-            item?.let { current ->
-                ItemViewerScreen(
-                    item = current,
-                    bytes = bytes,
-                    onBack = { navController.popBackStack() },
-                    onDelete = {
-                        vm.delete()
-                        navController.popBackStack()
-                    },
-                    onUnhide = {
-                        vm.unhide()
-                        navController.popBackStack()
-                    },
-                )
+            val albums by vm.albums.collectAsStateWithLifecycle()
+            val albumName by vm.albumName.collectAsStateWithLifecycle()
+            val message by vm.message.collectAsStateWithLifecycle()
+            val controller = rememberPhotoActionsController()
+            val snackbarHostState = remember { SnackbarHostState() }
+            // Surface the §7 result copy, then pop only when a terminal action emptied the
+            // item (Unhide / Delete / Permanent). Move keeps the item, so the viewer stays.
+            LaunchedEffect(message) {
+                val text = message ?: return@LaunchedEffect
+                snackbarHostState.showSnackbar(text)
+                vm.consumeMessage()
+                if (vm.item.value == null) navController.popBackStack()
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                item?.let { current ->
+                    ItemViewerScreen(
+                        item = current,
+                        bytes = bytes,
+                        onBack = { navController.popBackStack() },
+                        onDelete = { controller.open(PhotoAction.DELETE) },
+                        onUnhide = { controller.open(PhotoAction.UNHIDE) },
+                        onMove = { controller.open(PhotoAction.MOVE) },
+                        onProperty = { controller.open(PhotoAction.PROPERTY) },
+                    )
+                    PhotoActionsHost(
+                        controller = controller,
+                        item = current,
+                        albumName = albumName,
+                        albums = albums,
+                        callbacks =
+                            PhotoActionCallbacks(
+                                onMove = { folderId -> vm.move(folderId) },
+                                onCreateFolder = { name -> vm.createFolder(name) },
+                                onUnhide = { destination -> vm.unhide(destination) },
+                                onMoveToBin = { vm.delete() },
+                                onPermanentDelete = { vm.permanentlyDelete() },
+                            ),
+                    )
+                }
+                SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
             }
         }
 
