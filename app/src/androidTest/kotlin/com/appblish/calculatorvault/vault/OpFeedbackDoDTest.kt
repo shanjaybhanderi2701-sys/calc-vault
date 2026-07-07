@@ -31,8 +31,9 @@ import org.junit.runner.RunWith
  *
  *  1. A genuine end-to-end hide through [HideImportViewModel] + [MediaSource] (real
  *     MediaStore fixture → real encrypted vault) publishes the "1 hidden" summary the
- *     category screen renders, and stages the public original for the delete-consent
- *     round-trip.
+ *     category screen renders, and — under All Files Access (APP-248) — removes the public
+ *     original directly (no delete-consent staging: [HideImportState.pendingDeleteUris]
+ *     stays empty and the MediaStore row is gone).
  *  2. A bulk (2-item) repository hide publishes live [BulkOpProgress] — the flow behind
  *     both the picker's inline progress bar and the foreground-service notification.
  *  3. The composed [CategoryScreen] actually renders a pending summary to the user (the
@@ -69,12 +70,13 @@ class OpFeedbackDoDTest {
     }
 
     @Test
-    fun endToEndHidePublishesResultSummaryAndStagesDeleteConsent() =
+    fun endToEndHidePublishesResultSummaryAndDeletesOriginalDirectly() =
         runBlocking<Unit> {
             val repo = EncryptedVaultContentRepository(context)
             repo.unlock()
             DoDTestSupport.awaitUnlock(repo)
             DoDTestSupport.insertPublicImage(context, nameA, relativePath, DoDTestSupport.sampleJpegBytes())
+            assertThat(DoDTestSupport.imageRowCount(context, nameA)).isEqualTo(1)
 
             val viewModel =
                 HideImportViewModel(VaultCategory.PHOTOS, repository = repo, mediaSource = MediaSource(context))
@@ -100,9 +102,12 @@ class OpFeedbackDoDTest {
             // P2-3 result summary: published for the category screen the user pops back to.
             val summary = withTimeout(15_000) { HideImportViewModel.hideSummary.filterNotNull().first() }
             assertThat(summary).isEqualTo("1 hidden")
-            // The public original is staged for the MediaStore delete-consent request.
-            val settled = withTimeout(15_000) { viewModel.state.first { it.pendingDeleteUris.isNotEmpty() } }
-            assertThat(settled.pendingDeleteUris).hasSize(1)
+            // APP-248: with All Files Access the original is removed directly — the flow
+            // completes (done) with NO delete-consent staging (empty pendingDeleteUris) and
+            // the public MediaStore row is already gone (no dialog needed).
+            val settled = withTimeout(15_000) { viewModel.state.first { it.done } }
+            assertThat(settled.pendingDeleteUris).isEmpty()
+            assertThat(DoDTestSupport.imageRowCount(context, nameA)).isEqualTo(0)
         }
 
     @Test
