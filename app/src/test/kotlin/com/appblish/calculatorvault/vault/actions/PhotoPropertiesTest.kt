@@ -68,7 +68,7 @@ class PhotoPropertiesTest {
     @Test
     fun `unknown fields render as an em-dash, never a blank or a lie`() {
         val bare =
-            photo(mime = null, relativePath = null, size = 0L, width = 0, height = 0, modified = 0L)
+            photo(name = "capture", mime = null, relativePath = null, size = 0L, width = 0, height = 0, modified = 0L)
         val map = PhotoProperties.rows(bare, albumName = null).associate { it.label to it.value }
         assertThat(map["Format"]).isEqualTo(PhotoProperties.UNKNOWN)
         assertThat(map["Original"]).isEqualTo(PhotoProperties.UNKNOWN)

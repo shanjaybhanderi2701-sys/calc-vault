@@ -59,6 +59,7 @@ class PhotoActionsEncryptedTest {
             val wipeId = stored.first { it.originalName == "second.jpg" }.id
 
             val vaultDir = VaultStorage.vaultDir(context)
+
             fun blobs() = vaultDir.listFiles { f -> f.isFile && f.name.matches(UUID_REGEX) }.orEmpty()
             assertThat(blobs()).hasLength(2)
 
@@ -81,7 +82,11 @@ class PhotoActionsEncryptedTest {
             assertThat(movedItem.folderId).isEqualTo(folder.id)
 
             // --- Permanent delete: secure wipe + index removal ------------------------------
-            val wipeBlobName = reloaded.allItems().first().first { it.id == wipeId }.encryptedPath!!
+            val wipeBlobName = reloaded
+                .allItems()
+                .first()
+                .first { it.id == wipeId }
+                .encryptedPath!!
             val wipeBlob = File(vaultDir, wipeBlobName)
             assertThat(wipeBlob.exists()).isTrue()
 

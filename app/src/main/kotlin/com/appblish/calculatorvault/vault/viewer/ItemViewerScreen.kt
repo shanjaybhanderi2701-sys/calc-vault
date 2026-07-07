@@ -17,8 +17,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -241,7 +241,7 @@ private fun ViewerActionBar(
             Icon(Icons.Filled.Refresh, contentDescription = "Unhide", tint = colors.textPrimary)
         }
         IconButton(onClick = onMove) {
-            Icon(Icons.Filled.Folder, contentDescription = "Move", tint = colors.textPrimary)
+            Icon(Icons.Filled.List, contentDescription = "Move", tint = colors.textPrimary)
         }
         IconButton(onClick = onProperty) {
             Icon(Icons.Filled.Info, contentDescription = "Property", tint = colors.textPrimary)

@@ -16,7 +16,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -46,7 +46,7 @@ import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 
-/**
+/*
  * The four single-photo action surfaces of Wave-1 W1-E2 (design §5–§9), built only from
  * the vault design tokens: Move-to sheet, Unhide dialog, Delete dialog (2-step), Property
  * dialog. Every surface is stateless — the caller ([PhotoActionsHost]) owns which one is
@@ -116,13 +116,20 @@ fun MoveToSheet(
                 ) {
                     PillButton(
                         text = "Cancel",
-                        onClick = { creating = false; newName = "" },
+                        onClick = {
+                            creating = false
+                            newName = ""
+                        },
                         style = PillButtonStyle.Secondary,
                         modifier = Modifier.weight(1f),
                     )
                     PillButton(
                         text = "Create",
-                        onClick = { onCreateFolder(newName.trim()); creating = false; newName = "" },
+                        onClick = {
+                            onCreateFolder(newName.trim())
+                            creating = false
+                            newName = ""
+                        },
                         enabled = newName.isNotBlank(),
                         modifier = Modifier.weight(1f),
                     )
@@ -143,7 +150,13 @@ fun MoveToSheet(
                 }
             }
 
-            Box(Modifier.fillMaxWidth().padding(vertical = spacing.sm).heightIn(min = 1.dp).background(colors.divider))
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = spacing.sm)
+                    .heightIn(min = 1.dp)
+                    .background(colors.divider)
+            )
 
             if (albums.isEmpty()) {
                 Text(
@@ -178,7 +191,7 @@ fun MoveToSheet(
                                         .background(colors.surfaceVariant),
                             ) {
                                 Icon(
-                                    Icons.Filled.Folder,
+                                    Icons.Filled.List,
                                     contentDescription = null,
                                     tint = if (isCurrent) colors.textDisabled else colors.textSecondary,
                                 )
