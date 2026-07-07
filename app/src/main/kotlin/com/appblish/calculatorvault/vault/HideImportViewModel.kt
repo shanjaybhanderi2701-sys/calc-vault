@@ -315,7 +315,11 @@ class HideImportViewModel(
             // summary (failures = requested − stored). The screen pops on completion, so
             // the CategoryScreen the user returns to renders it (see [hideSummary]).
             publishHideSummary(hideSummaryText(hidden = stored.size, failed = chosen.size - stored.size))
-            val deletable = chosen.mapNotNull { it.contentUri.takeIf { uri -> uri.isNotBlank() } }
+            // Only items the repository could NOT remove directly still carry a sourceUri
+            // (APP-248): with All Files Access it deletes the public original itself, so this
+            // list is empty and no MediaStore delete-consent dialog is shown. The scoped-
+            // storage delete-request runs only as the fallback (pre-R / unknown path).
+            val deletable = stored.mapNotNull { it.sourceUri?.takeIf { uri -> uri.isNotBlank() } }
             when {
                 deletable.isEmpty() ->
                     _state.update {
@@ -420,11 +424,19 @@ class HideImportViewModel(
             pendingHideSummary.value = text
         }
 
-        /** P2-3 summary copy: "N hidden" on full success, "N hidden, M failed" otherwise. */
+        /**
+         * P2-3 summary copy: "N hidden" on full success, "N hidden, M failed" otherwise.
+         * On failure it appends the first failure's diagnostic cause (APP-248) so a board
+         * user can see *why* nothing was hidden instead of a silent count.
+         */
         internal fun hideSummaryText(
             hidden: Int,
             failed: Int,
-        ): String = if (failed > 0) "$hidden hidden, $failed failed" else "$hidden hidden"
+        ): String {
+            if (failed <= 0) return "$hidden hidden"
+            val reason = BulkOpProgress.lastFailureReason?.let { ": $it" } ?: ""
+            return "$hidden hidden, $failed failed$reason"
+        }
 
         private fun initialState(
             category: VaultCategory,

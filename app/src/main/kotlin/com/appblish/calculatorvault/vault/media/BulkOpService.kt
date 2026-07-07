@@ -56,6 +56,30 @@ object BulkOpProgress {
     fun finish() {
         state.value = null
     }
+
+    /**
+     * Diagnostic reason for the FIRST failure in the current batch (APP-248): the hide
+     * pipeline otherwise swallows per-item errors (catch → skip) and a locked vault
+     * (return empty), so a board user who sees "N failed" has no way to tell WHY — a
+     * blocker for diagnosing a device-specific failure we cannot reproduce on the CI
+     * emulators. The repository clears this at the start of a batch and records the first
+     * failure's short cause; [HideImportViewModel.hideSummaryText] appends it to the
+     * "N failed" copy so the reason is visible on-device. First-write-wins so the summary
+     * names the root failure, not a cascade.
+     */
+    @Volatile
+    var lastFailureReason: String? = null
+        private set
+
+    /** Record the first failure reason of the current batch (later calls are ignored). */
+    fun reportFailure(reason: String) {
+        if (lastFailureReason == null) lastFailureReason = reason
+    }
+
+    /** Clear the diagnostic reason at the start of a fresh batch. */
+    fun clearFailure() {
+        lastFailureReason = null
+    }
 }
 
 /**

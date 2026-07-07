@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault
 
 import android.content.Context
 import android.net.Uri
+import android.os.Environment
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
@@ -54,9 +55,11 @@ import java.util.UUID
  * both are present, so callers can invoke it eagerly and re-invoke it once the primer grants
  * access. All mutating flows mirror an in-memory snapshot persisted back to `index.enc`.
  *
- * Removal of the *public* original is completed by the hide/import UI via a MediaStore
- * delete-request (user-consented on API 30+), so [hide] returns the stored items still
- * carrying their [VaultItem.sourceUri]; the persisted copies never retain it.
+ * Removal of the *public* original: under **All Files Access** [hide] deletes it directly
+ * (no consent dialog, board directive APP-248) and returns the stored item with a null
+ * [VaultItem.sourceUri]. Only when a direct delete is not possible (pre-R / unknown path)
+ * does the returned item keep its [VaultItem.sourceUri] so the hide/import UI can complete
+ * removal via a MediaStore delete-request; the persisted copies never retain it.
  */
 class EncryptedVaultContentRepository(
     context: Context,
@@ -68,6 +71,11 @@ class EncryptedVaultContentRepository(
     // The data key, available only after a successful [unlock]. Null == vault locked.
     @Volatile
     private var crypto: VaultCrypto? = null
+
+    // Cause of the most recent failed key derivation, kept for the on-device hide
+    // diagnostic (APP-248) so a locked-at-hide-time failure is not silent.
+    @Volatile
+    private var lastUnlockError: String? = null
 
     private val unlockScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
@@ -118,7 +126,9 @@ class EncryptedVaultContentRepository(
                 try {
                     VaultKeyFile(VaultStorage.keyFile(appContext)).unlockOrCreate(passphrase)
                 } catch (e: Exception) {
-                    // Wrong passphrase / unreadable key file: leave the vault locked.
+                    // Wrong passphrase / unreadable key file: leave the vault locked. Keep the
+                    // cause for the on-device hide diagnostic (APP-248).
+                    lastUnlockError = "${e.javaClass.simpleName}: ${e.message}"
                     android.util.Log.w("VaultUnlock", "unlock failed: ${e.javaClass.simpleName}: ${e.message}")
                     return@withLock null
                 }
@@ -132,6 +142,18 @@ class EncryptedVaultContentRepository(
             cipher
         }
     }
+
+    /**
+     * Human-readable reason the vault could not be unlocked at hide time, for the on-device
+     * diagnostic (APP-248): distinguishes a missing session, missing All Files Access, and a
+     * key-derivation error so a board user can report exactly why "0 hidden, N failed".
+     */
+    private fun lockDiagnostic(): String =
+        when {
+            VaultSession.passphrase == null -> "vault locked (no session)"
+            !StoragePermissions.hasAllFilesAccess(appContext) -> "no all-files access"
+            else -> lastUnlockError?.let { "unlock error: $it" } ?: "vault locked"
+        }
 
     override fun lock() {
         // Drop the data key and every cached item so a subsequent [unlock] re-derives from
@@ -169,13 +191,21 @@ class EncryptedVaultContentRepository(
 
     override suspend fun hide(items: List<VaultItem>): List<VaultItem> =
         withContext(Dispatchers.IO) {
+            // Fresh batch: drop any diagnostic reason from a previous run (APP-248).
+            BulkOpProgress.clearFailure()
             // Derive the data key *before* encrypting. hide() can be reached moments after
             // the All-Files-Access grant returns, while the eager unlock() is still burning
             // PBKDF2 on another thread (APP-248): without this await the cipher would still
             // be null and every item would be caught and reported as "failed". A null here
             // means the vault genuinely cannot unlock (no session / no permission) — there
             // is nowhere to hide into, so return an empty result rather than a phantom batch.
-            val cipher = awaitUnlocked() ?: return@withContext emptyList()
+            val cipher =
+                awaitUnlocked() ?: run {
+                    // Surface WHY the vault could not unlock so a board user can report it
+                    // (the failure is otherwise silent — see BulkOpProgress.lastFailureReason).
+                    BulkOpProgress.reportFailure(lockDiagnostic())
+                    return@withContext emptyList()
+                }
             withBulkOp("Hiding files", items.size) {
                 val stored = mutableListOf<VaultItem>()
                 for ((index, staged) in items.withIndex()) {
@@ -188,7 +218,10 @@ class EncryptedVaultContentRepository(
                             encryptSource(staged, blob, cipher)
                         } catch (e: Exception) {
                             // Skip an unreadable source rather than aborting the whole batch;
-                            // the original is left in place (nothing to un-hide).
+                            // the original is left in place (nothing to un-hide). Record the
+                            // first failure's cause for the on-device diagnostic (APP-248).
+                            BulkOpProgress.reportFailure("${e.javaClass.simpleName}: ${e.message}")
+                            android.util.Log.w("VaultHide", "encrypt failed for ${staged.originalName}", e)
                             blob.delete()
                             BulkOpProgress.update(index + 1)
                             continue
@@ -213,8 +246,12 @@ class EncryptedVaultContentRepository(
                         itemsState.value = itemsState.value + item
                         persist()
                     }
-                    // Return value keeps the source Uri so the UI can delete the public copy.
-                    stored += item.copy(sourceUri = staged.sourceUri)
+                    // Board directive (APP-248): with All Files Access, remove the public
+                    // original right here via a direct file delete — no MediaStore consent
+                    // dialog. Only when that is not possible do we hand the Uri back so the
+                    // UI can run the scoped-storage delete-request as a fallback.
+                    val removed = deleteOriginalDirectly(staged)
+                    stored += item.copy(sourceUri = if (removed) null else staged.sourceUri)
                     BulkOpProgress.update(index + 1)
                 }
                 stored
@@ -227,20 +264,76 @@ class EncryptedVaultContentRepository(
         blob: File,
         cipher: VaultCrypto,
     ): Long {
-        val uri = staged.sourceUri
-        val input =
-            if (uri != null) {
-                resolver.openInputStream(Uri.parse(uri))
-                    ?: error("Cannot open source $uri")
-            } else {
-                // No public source (e.g. a synthesized contact vCard passed as name bytes):
-                // encrypt the original name so the blob is still a real ciphertext.
-                staged.originalName.toByteArray().inputStream()
-            }
-        input.use { source ->
+        openSource(staged).use { source ->
             blob.outputStream().use { sink -> cipher.encrypt(source, sink) }
         }
         return blob.length()
+    }
+
+    /**
+     * Open the staged original's bytes. **All Files Access first** (board directive APP-248):
+     * when we hold `MANAGE_EXTERNAL_STORAGE` and know the original's public path, read the
+     * file **directly** via [java.io.File] rather than `openInputStream` on its MediaStore
+     * `content://` Uri. On several devices/OEMs that Uri read is refused when the app holds
+     * only All Files Access and no `READ_MEDIA_*` runtime grant (we dropped those, APP-219) —
+     * which threw for every item and surfaced as "0 hidden, N failed". The direct file path
+     * needs only All Files Access, which the picker already required to list these items.
+     * Falls back to the content Uri (then to the name bytes for synthetic sources).
+     */
+    private fun openSource(staged: VaultItem): java.io.InputStream {
+        originalFile(staged)?.let { file ->
+            if (file.isFile) {
+                return file.inputStream()
+            }
+        }
+        val uri = staged.sourceUri
+        return if (uri != null) {
+            resolver.openInputStream(Uri.parse(uri)) ?: error("Cannot open source $uri")
+        } else {
+            // No public source (e.g. a synthesized contact vCard passed as name bytes):
+            // encrypt the original name so the blob is still a real ciphertext.
+            staged.originalName.toByteArray().inputStream()
+        }
+    }
+
+    /**
+     * Resolve the staged original to its public-storage [File] from its
+     * [VaultItem.relativePath] (e.g. "DCIM/Camera/") + [VaultItem.originalName], or null when
+     * we lack All Files Access or the path is unknown (sample/preview/contacts rows). Same
+     * external-storage root MediaSink already uses for legacy write-back.
+     */
+    private fun originalFile(staged: VaultItem): File? {
+        if (!StoragePermissions.hasAllFilesAccess(appContext)) return null
+        val rel = staged.relativePath
+            ?.trim()
+            ?.trim('/')
+            ?.takeIf { it.isNotEmpty() } ?: return null
+        val name = staged.originalName.takeIf { it.isNotBlank() } ?: return null
+        return File(File(Environment.getExternalStorageDirectory(), rel), name)
+    }
+
+    /**
+     * Remove the public original after it has been vaulted. **All Files Access path** deletes
+     * the file directly (and clears its now-stale MediaStore row) with **no** per-file
+     * consent dialog — that `MediaStore.createDeleteRequest` dialog is the scoped-storage
+     * fallback for apps *without* broad access, which the board flagged as not our flow
+     * (APP-248). Returns true when the original is gone; false means the caller must fall back
+     * to the UI's delete-request path (e.g. pre-R, or path unknown).
+     */
+    private fun deleteOriginalDirectly(staged: VaultItem): Boolean {
+        if (!StoragePermissions.hasAllFilesAccess(appContext)) return false
+        // Primary: resolver.delete on the item's own MediaStore Uri. Under All Files Access
+        // this removes both the row AND the underlying file with no RecoverableSecurity
+        // Exception / consent dialog, and uses MediaStore's authoritative path (more reliable
+        // than a reconstructed one). Return true only when it actually removed a row.
+        staged.sourceUri?.let { uri ->
+            val rows = runCatching { resolver.delete(Uri.parse(uri), null, null) }.getOrDefault(0)
+            if (rows > 0) return true
+        }
+        // Fallback: delete the reconstructed public File directly. Returns true only when a
+        // real file was present and removed — never a phantom "gone" for a missing path, so a
+        // still-present original correctly falls back to the UI delete-request.
+        return originalFile(staged)?.let { runCatching { it.isFile && it.delete() }.getOrDefault(false) } ?: false
     }
 
     override suspend fun createFolder(

@@ -148,4 +148,42 @@ class HidePipelineDoDTest {
             assertThat(repo.isUnlocked()).isTrue()
             assertThat(repo.allItems().first()).hasSize(1)
         }
+
+    /**
+     * APP-248 (board directive: "we have to only go through All File Access"). With All Files
+     * Access held, [hide] must delete the public original **itself**, via a direct file
+     * delete — no `MediaStore.createDeleteRequest` consent dialog. Proven here by asserting
+     * that WITHOUT any manual `contentResolver.delete`, the MediaStore row is already gone
+     * after `hide`, and the returned item carries **no** `sourceUri` (so the UI shows no
+     * delete-consent dialog). Also exercises the direct file *read* path (openSource reads the
+     * public File, not its content:// Uri) — the fix for the device-specific "0 hidden".
+     */
+    @Test
+    fun hideDeletesOriginalDirectlyWithAllFilesAccessNoConsentDialog() =
+        runBlocking {
+            val original = DoDTestSupport.sampleJpegBytes()
+            val sourceUri = DoDTestSupport.insertPublicImage(context, displayName, relativePath, original)
+            assertThat(DoDTestSupport.imageRowCount(context, displayName)).isEqualTo(1)
+
+            val repo = EncryptedVaultContentRepository(context)
+            val staged =
+                VaultItem(
+                    id = "staged",
+                    category = VaultCategory.PHOTOS,
+                    originalName = displayName,
+                    dateLabel = "Today",
+                    sortKey = System.currentTimeMillis(),
+                    sourceUri = sourceUri.toString(),
+                    mimeType = "image/jpeg",
+                    relativePath = relativePath,
+                )
+
+            val stored = repo.hide(listOf(staged)).single()
+
+            // (1) The original is gone from MediaStore WITHOUT any manual delete — the repo
+            // removed it directly under All Files Access.
+            assertThat(DoDTestSupport.imageRowCount(context, displayName)).isEqualTo(0)
+            // (2) The returned item carries no sourceUri, so the UI shows no consent dialog.
+            assertThat(stored.sourceUri).isNull()
+        }
 }
