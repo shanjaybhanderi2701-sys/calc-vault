@@ -181,13 +181,15 @@ class EncryptedVaultContentRepository(
     override fun allItems(): Flow<List<VaultItem>> = itemsState.map { all -> all.sortedByDescending { it.sortKey } }
 
     override fun folders(category: VaultCategory): Flow<List<VaultFolder>> =
-        foldersState.map { all -> all.filter { it.category == category } }
+        foldersState.map { all -> all.filter { it.category == category && !it.inBin } }
 
     override fun categoryCounts(): Flow<Map<VaultCategory, Int>> =
         itemsState.map { all -> VaultCategory.entries.associateWith { cat -> all.count { it.category == cat } } }
 
     override fun folderCounts(): Flow<Map<VaultCategory, Int>> =
-        foldersState.map { all -> VaultCategory.entries.associateWith { cat -> all.count { it.category == cat } } }
+        foldersState.map { all ->
+            VaultCategory.entries.associateWith { cat -> all.count { it.category == cat && !it.inBin } }
+        }
 
     override fun recent(limit: Int): Flow<List<VaultItem>> =
         itemsState.map { all -> all.sortedByDescending { it.sortKey }.take(limit) }
@@ -354,7 +356,15 @@ class EncryptedVaultContentRepository(
         name: String,
     ): VaultFolder =
         mutex.withLock {
-            val folder = VaultFolder(id = "f${UUID.randomUUID()}", category = category, name = name)
+            val now = System.currentTimeMillis()
+            val folder =
+                VaultFolder(
+                    id = "f${UUID.randomUUID()}",
+                    category = category,
+                    name = name,
+                    createdAt = now,
+                    modifiedAt = now,
+                )
             foldersState.value = foldersState.value + folder
             persist()
             folder
@@ -363,10 +373,96 @@ class EncryptedVaultContentRepository(
     override suspend fun moveToFolder(
         itemIds: Set<String>,
         folderId: String?,
-    ) = mutex.withLock {
-        itemsState.value = itemsState.value.map { if (it.id in itemIds) it.copy(folderId = folderId) else it }
-        persist()
+    ) = withContext(Dispatchers.IO) {
+        // Off the main thread (spec §1.6): persist() rewrites the encrypted index file.
+        mutex.withLock {
+            itemsState.value = itemsState.value.map { if (it.id in itemIds) it.copy(folderId = folderId) else it }
+            persist()
+        }
     }
+
+    override suspend fun renameFolder(
+        folderId: String,
+        name: String,
+    ) = withContext(Dispatchers.IO) {
+        // A label write in the encrypted index ONLY (spec §1.2): the member blobs keep
+        // their UUID names and no public folder is created — persist() rewrites index.enc
+        // and nothing else. Off the main thread even for this single write (spec §1.6).
+        mutex.withLock {
+            foldersState.value =
+                foldersState.value.map {
+                    if (it.id == folderId) it.copy(name = name, modifiedAt = System.currentTimeMillis()) else it
+                }
+            persist()
+        }
+    }
+
+    override suspend fun deleteFolderLabels(
+        folderIds: Set<String>,
+        keepForBinRestore: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            removeLabels(folderIds, keepForBinRestore)
+            persist()
+        }
+    }
+
+    /**
+     * Label bookkeeping shared by [deleteFolderLabels] and the bin-side cleanups: an album
+     * some bin entry still references survives as an [VaultFolder.inBin] tombstone when
+     * [keepForBinRestore] (design F-3 — a bin restore brings the album back whole);
+     * everything else is dropped. Must run under [mutex]; caller persists.
+     */
+    private fun removeLabels(
+        folderIds: Set<String>,
+        keepForBinRestore: Boolean,
+    ) {
+        val referenced = binState.value.mapTo(mutableSetOf()) { it.item.folderId }
+        foldersState.value =
+            foldersState.value.mapNotNull { folder ->
+                when {
+                    folder.id !in folderIds -> folder
+                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true)
+                    else -> null
+                }
+            }
+    }
+
+    /** Drop [VaultFolder.inBin] tombstones no surviving bin entry references. Under [mutex]; caller persists. */
+    private fun pruneOrphanTombstones() {
+        val referenced = binState.value.mapTo(mutableSetOf()) { it.item.folderId }
+        foldersState.value = foldersState.value.filterNot { it.inBin && it.id !in referenced }
+    }
+
+    override suspend fun mergeFolders(
+        sourceFolderIds: Set<String>,
+        targetFolderId: String,
+    ): Int =
+        withContext(Dispatchers.IO) {
+            val sources = sourceFolderIds - targetFolderId
+            if (sources.isEmpty()) return@withContext 0
+            val memberIds =
+                itemsState.value
+                    .filter { it.folderId in sources }
+                    .mapTo(mutableSetOf()) { it.id }
+            // Index-entry relocation only — no blob is touched or decrypted (spec §3.2).
+            // Still a tracked bulk op (spec §1.6) so a big merge shows the same progress/
+            // service surface as every other contents-touching album action.
+            withBulkOp("Moving items", memberIds.size) {
+                mutex.withLock {
+                    itemsState.value =
+                        itemsState.value.map { if (it.id in memberIds) it.copy(folderId = targetFolderId) else it }
+                    removeLabels(sources, keepForBinRestore = false)
+                    foldersState.value =
+                        foldersState.value.map {
+                            if (it.id == targetFolderId) it.copy(modifiedAt = System.currentTimeMillis()) else it
+                        }
+                    persist()
+                }
+                BulkOpProgress.update(memberIds.size)
+            }
+            memberIds.size
+        }
 
     override suspend fun unhide(itemIds: Set<String>): Int = unhideTo(itemIds, UnhideDestination.Original).unhidden
 
@@ -440,8 +536,10 @@ class EncryptedVaultContentRepository(
             withBulkOp("Restoring items", itemIds.size) {
                 mutex.withLock {
                     val byId = binState.value.associateBy { it.item.id }
-                    val folderIds = foldersState.value.mapTo(mutableSetOf()) { it.id }
+                    val liveFolderIds = foldersState.value.filterNot { it.inBin }.mapTo(mutableSetOf()) { it.id }
+                    val tombstoneIds = foldersState.value.filter { it.inBin }.mapTo(mutableSetOf()) { it.id }
                     val restored = mutableListOf<VaultItem>()
+                    val resurrect = mutableSetOf<String>()
                     for ((index, id) in itemIds.withIndex()) {
                         val entry = byId[id]
                         // An entry whose blob has vanished must not "restore" into a broken
@@ -452,20 +550,25 @@ class EncryptedVaultContentRepository(
                             BulkOpProgress.update(index + 1)
                             continue
                         }
-                        // Back to its album; a folder deleted while the item sat in the bin
-                        // falls back to the category root rather than an orphaned id.
+                        // Back to its album. An album that went to the bin with it comes back
+                        // whole (its inBin tombstone flips live — design F-3); an album deleted
+                        // outright while the item sat in the bin falls back to the category
+                        // root rather than an orphaned id.
                         val item = entry.item
                         restored +=
-                            if (item.folderId != null && item.folderId !in folderIds) {
-                                item.copy(folderId = null)
-                            } else {
-                                item
+                            when {
+                                item.folderId == null || item.folderId in liveFolderIds -> item
+                                item.folderId in tombstoneIds -> item.also { resurrect += it.folderId!! }
+                                else -> item.copy(folderId = null)
                             }
                         BulkOpProgress.update(index + 1)
                     }
                     val restoredIds = restored.mapTo(mutableSetOf()) { it.id }
+                    foldersState.value =
+                        foldersState.value.map { if (it.id in resurrect) it.copy(inBin = false) else it }
                     itemsState.value = itemsState.value + restored
                     binState.value = binState.value.filterNot { it.item.id in restoredIds }
+                    pruneOrphanTombstones()
                     persist()
                     restored.size
                 }
@@ -482,6 +585,7 @@ class EncryptedVaultContentRepository(
                 mutex.withLock {
                     val (removed, kept) = binState.value.partition { it.item.id in itemIds }
                     binState.value = kept
+                    pruneOrphanTombstones()
                     persist()
                     removed
                 }
@@ -523,6 +627,7 @@ class EncryptedVaultContentRepository(
                 mutex.withLock {
                     val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
                     binState.value = kept
+                    pruneOrphanTombstones()
                     persist()
                     expired
                 }
@@ -850,6 +955,9 @@ class EncryptedVaultContentRepository(
             put("category", category.name)
             put("name", name)
             put("itemCount", itemCount)
+            put("createdAt", createdAt)
+            put("modifiedAt", modifiedAt)
+            put("inBin", inBin)
         }
 
     private fun JSONObject.toVaultFolder(): VaultFolder =
@@ -858,6 +966,9 @@ class EncryptedVaultContentRepository(
             category = VaultCategory.valueOf(getString("category")),
             name = getString("name"),
             itemCount = optInt("itemCount", 0),
+            createdAt = optLong("createdAt", 0L),
+            modifiedAt = optLong("modifiedAt", 0L),
+            inBin = optBoolean("inBin", false),
         )
 
     private fun JSONObject.optNullableString(key: String): String? = if (isNull(key)) null else optString(key, null)

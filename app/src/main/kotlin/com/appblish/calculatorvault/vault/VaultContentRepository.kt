@@ -10,6 +10,7 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import java.io.File
 
@@ -82,6 +83,118 @@ interface VaultContentRepository {
         itemIds: Set<String>,
         folderId: String?,
     )
+
+    // --- Album-level actions (W2-E, spec §3). An "album" is a [VaultFolder]: nothing but
+    // an encrypted-index label plus the items pointing at it, so every operation below is
+    // index arithmetic over the photo-level primitives — no blob is renamed or decrypted.
+
+    /**
+     * Rename the album [folderId] — a **label write in the encrypted index only** (spec
+     * §1.2/§3.1): no blob is renamed (blobs stay UUIDs) and no readable public folder is
+     * ever created. Stamps the album's modified time. Unknown ids are a no-op. Default
+     * no-op so minimal fakes keep compiling.
+     */
+    suspend fun renameFolder(
+        folderId: String,
+        name: String,
+    ) {}
+
+    /**
+     * Remove the album labels [folderIds] from every album surface. With
+     * [keepForBinRestore] a non-empty-of-bin-entries album is retained as an
+     * [VaultFolder.inBin] tombstone so a Recycle-Bin restore can resurrect the album whole
+     * (design F-3); otherwise (and for albums nothing in the bin references) the record is
+     * dropped for good. Label bookkeeping only — contents are the caller's business.
+     * Default no-op so minimal fakes keep compiling.
+     */
+    suspend fun deleteFolderLabels(
+        folderIds: Set<String>,
+        keepForBinRestore: Boolean = false,
+    ) {}
+
+    /**
+     * Merge the contents of [sourceFolderIds] into [targetFolderId] (spec §3.2): every
+     * member item's index entry relocates to the target, then each fully-emptied source
+     * label is removed. An index-entry relocation only — nothing is decrypted, no blob
+     * moves. The target is never a source (filtered here as a guard; the UI also disables
+     * it). Returns how many items moved, for the "N moved" summary.
+     */
+    suspend fun mergeFolders(
+        sourceFolderIds: Set<String>,
+        targetFolderId: String,
+    ): Int {
+        val sources = sourceFolderIds - targetFolderId
+        if (sources.isEmpty()) return 0
+        val memberIds =
+            allItems()
+                .first()
+                .filter { it.folderId in sources }
+                .mapTo(mutableSetOf()) { it.id }
+        moveToFolder(memberIds, targetFolderId)
+        // moveToFolder is an atomic index rewrite, so the sources are now empty; a source
+        // whose members sit in the recycle bin keeps its tombstone path via the flag.
+        deleteFolderLabels(sources, keepForBinRestore = false)
+        return memberIds.size
+    }
+
+    /**
+     * Un-hide whole albums (spec §3.3): every photo in [folderIds] decrypts out to
+     * [destination] under the photo-level rules — per-file fallback to Downloads, never
+     * silent, blob kept on failure — then each fully-emptied album label is removed. On a
+     * partial failure the album **remains, holding exactly the failed photos** (design §6);
+     * only an album whose every member left the vault loses its label.
+     */
+    suspend fun unhideFolders(
+        folderIds: Set<String>,
+        destination: UnhideDestination,
+    ): UnhideResult {
+        val memberIds =
+            allItems()
+                .first()
+                .filter { it.folderId in folderIds }
+                .mapTo(mutableSetOf()) { it.id }
+        val result = unhideTo(memberIds, destination)
+        val stillHeld =
+            allItems()
+                .first()
+                .mapTo(mutableSetOf()) { it.folderId }
+        deleteFolderLabels(folderIds.filterNot { it in stillHeld }.toSet(), keepForBinRestore = false)
+        return result
+    }
+
+    /**
+     * Album delete → Recycle Bin (spec §3.4, soft path): contents move to the bin still
+     * encrypted **keeping their album grouping**, and the emptied labels become
+     * [VaultFolder.inBin] tombstones so a bin restore brings the album back whole (design
+     * F-3). Returns how many items were binned (0 for empty albums, whose labels are
+     * simply removed).
+     */
+    suspend fun moveFoldersToRecycleBin(folderIds: Set<String>): Int {
+        val memberIds =
+            allItems()
+                .first()
+                .filter { it.folderId in folderIds }
+                .mapTo(mutableSetOf()) { it.id }
+        moveToRecycleBin(memberIds)
+        deleteFolderLabels(folderIds, keepForBinRestore = true)
+        return memberIds.size
+    }
+
+    /**
+     * Album delete → Permanent (spec §3.4, hard path, behind the 2-step confirm): secure
+     * blob wipe + index-entry removal for every photo in [folderIds], then the labels are
+     * dropped for good. Returns how many items were destroyed for the "X erased" summary.
+     */
+    suspend fun permanentlyDeleteFolders(folderIds: Set<String>): Int {
+        val memberIds =
+            allItems()
+                .first()
+                .filter { it.folderId in folderIds }
+                .mapTo(mutableSetOf()) { it.id }
+        val destroyed = permanentlyDelete(memberIds)
+        deleteFolderLabels(folderIds, keepForBinRestore = false)
+        return destroyed
+    }
 
     /**
      * Un-hide (restore to public storage) the vault items [itemIds]: decrypt each blob,

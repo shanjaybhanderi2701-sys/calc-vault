@@ -265,19 +265,21 @@ private fun CategoryTile(
 }
 
 /**
- * Deck copy: "300 Photos / 8 Folders", both nouns properly pluralized ("1 Folder", never
- * "1 Folders" — APP-234 spec §1.3). Always the category's own noun — docx image27's
- * Videos tile subtitle reading "Photos" is a docx-internal typo we do not copy (S8).
+ * Deck copy: "300 Photos / 8 Albums", both nouns properly pluralized ("1 Album", never
+ * "1 Albums" — APP-234 spec §1.3). Container noun is **"Albums"** — the W2-E §1
+ * terminology lock (APP-218) deliberately supersedes the shipped "Folders" copy. Always
+ * the category's own noun — docx image27's Videos tile subtitle reading "Photos" is a
+ * docx-internal typo we do not copy (S8).
  */
 internal fun categorySubtitle(
     category: VaultCategory,
     items: Int,
     folders: Int,
-): String = "${pluralize(items, category.label)} / ${pluralize(folders, "Folders")}"
+): String = "${pluralize(items, category.label)} / ${pluralize(folders, "Albums")}"
 
 /**
  * "$count $pluralLabel" with the trailing "s" dropped when [count] == 1. Every label this
- * screen pluralizes is a regular plural ("Photos", "Videos", "Audios", "Folders", "items").
+ * screen pluralizes is a regular plural ("Photos", "Videos", "Audios", "Albums", "items").
  */
 internal fun pluralize(
     count: Int,

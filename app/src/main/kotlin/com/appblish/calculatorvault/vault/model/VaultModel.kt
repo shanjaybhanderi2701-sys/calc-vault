@@ -123,12 +123,30 @@ data class UnhideResult(
         get() = outcomes.firstOrNull { it.disposition == UnhideDisposition.FALLBACK }?.destinationLabel
 }
 
-/** A user-created folder within a category (Create Folder from the FAB menu). */
+/**
+ * A user-created album within a category (Create Album from the FAB menu; container
+ * terminology is "Album" everywhere per APP-218 — the type keeps its historical name so
+ * persisted indexes keep decoding). The album is nothing but this index record: its name
+ * is an encrypted-index label, never a filesystem folder, and its contents are the items
+ * whose [VaultItem.folderId] points here.
+ *
+ * [createdAt]/[modifiedAt] back the Album property dialog (W2-E §8): added-to-vault time
+ * of the label and the latest label change (create/rename). 0 == unknown (legacy index) →
+ * the dialog shows "—". Content-level "modified" is computed from the items themselves.
+ *
+ * [inBin] marks an album whose delete-to-Bin ran (W2-E §7, design F-3): the label is
+ * hidden from every album surface but retained so a Recycle-Bin restore can bring the
+ * album back whole instead of dumping loose photos. The record is dropped for good once
+ * no bin entry references it.
+ */
 data class VaultFolder(
     val id: String,
     val category: VaultCategory,
     val name: String,
     val itemCount: Int = 0,
+    val createdAt: Long = 0L,
+    val modifiedAt: Long = 0L,
+    val inBin: Boolean = false,
 )
 
 /**

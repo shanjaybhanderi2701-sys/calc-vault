@@ -34,6 +34,8 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowUp
@@ -43,7 +45,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -64,6 +65,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -74,10 +76,15 @@ import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
-import com.appblish.calculatorvault.ui.components.VaultModal
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.actions.AlbumNameDialog
 import com.appblish.calculatorvault.vault.actions.AlbumOption
+import com.appblish.calculatorvault.vault.actions.AlbumProperties
+import com.appblish.calculatorvault.vault.actions.DeleteDialog
+import com.appblish.calculatorvault.vault.actions.DeleteStep
 import com.appblish.calculatorvault.vault.actions.MoveToSheet
+import com.appblish.calculatorvault.vault.actions.NEW_ALBUM_PREFILL
+import com.appblish.calculatorvault.vault.actions.PropertyDialog
 import com.appblish.calculatorvault.vault.actions.UnhideChoice
 import com.appblish.calculatorvault.vault.actions.UnhideDialog
 import com.appblish.calculatorvault.vault.actions.treeUriToRelativePath
@@ -96,7 +103,9 @@ import com.appblish.calculatorvault.vault.ui.icon
  * system back walks folder → grid → pop. Multi-select (W1-E3) enters on long-press, extends
  * by tap-toggle, long-press-drag range select and Select All, and offers the bulk actions
  * Move / Unhide / Delete (D-3 summary snackbar, shared D-4 delete-choice dialog); the FAB
- * pops the S11 bubble menu (Create Folder / Hide …).
+ * pops the S11 bubble menu (Create album / Hide …). Album multi-select (W2-E §9) enters
+ * on a root-tile long-press with the album bulk set: Rename (N=1) / Move / Unhide /
+ * Delete / Property.
  */
 @Composable
 fun CategoryScreen(
@@ -115,6 +124,13 @@ fun CategoryScreen(
     var showDeleteChoice by remember { mutableStateOf(false) }
     var showMoveSheet by remember { mutableStateOf(false) }
     var showUnhideDialog by remember { mutableStateOf(false) }
+    // Album-level action surfaces (W2-E §4–§8), reached from the root grid's album
+    // selection bar. The delete flow tracks its own 2-step state; null == closed.
+    var showRenameAlbum by remember { mutableStateOf(false) }
+    var showAlbumMoveSheet by remember { mutableStateOf(false) }
+    var showAlbumUnhideDialog by remember { mutableStateOf(false) }
+    var showAlbumProperty by remember { mutableStateOf(false) }
+    var albumDeleteStep by remember { mutableStateOf<DeleteStep?>(null) }
     var unhideChoice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
     var chosenUnhideFolder by remember { mutableStateOf<String?>(null) }
     val unhideFolderPicker =
@@ -130,9 +146,13 @@ fun CategoryScreen(
         }
 
     // Back inside a folder clears the selection first, then returns to the folder grid;
-    // only at the root does back propagate to the nav host and pop the screen.
-    BackHandler(enabled = state.selectionMode || state.inFolder) {
-        if (state.selectionMode) viewModel.clearSelection() else viewModel.closeFolder()
+    // only at the root (with no album selection live) does back propagate to the nav host.
+    BackHandler(enabled = state.selectionMode || state.albumSelectionMode || state.inFolder) {
+        when {
+            state.selectionMode -> viewModel.clearSelection()
+            state.albumSelectionMode -> viewModel.clearAlbumSelection()
+            else -> viewModel.closeFolder()
+        }
     }
 
     // D-3 (generalized for P2-3): one snackbar per operation — restore, recycle, delete,
@@ -184,6 +204,44 @@ fun CategoryScreen(
                                 },
                             ),
                     )
+                state.albumSelectionMode ->
+                    // W2-E §9 album selection bar: the same shipped W1 component, with the
+                    // album bulk set — Select All · Rename (identity-editing, so it *hides*
+                    // at N>1 rather than disabling) · Move · Unhide · Delete · Property.
+                    MultiSelectActionBar(
+                        selectedCount = state.selectedAlbumIds.size,
+                        closeIcon = Icons.Filled.Close,
+                        onClose = viewModel::clearAlbumSelection,
+                        actions =
+                            buildList {
+                                add(
+                                    SelectionAction(Icons.Filled.CheckCircle, "Select all") {
+                                        viewModel.selectAllAlbums()
+                                    },
+                                )
+                                if (state.selectedAlbumIds.size == 1) {
+                                    add(SelectionAction(Icons.Filled.Edit, "Rename") { showRenameAlbum = true })
+                                }
+                                add(SelectionAction(Icons.Filled.ArrowForward, "Move") { showAlbumMoveSheet = true })
+                                add(
+                                    // Disabled-by-no-op when the selection holds zero photos
+                                    // (design §6: nothing to unhide — no dialog).
+                                    SelectionAction(Icons.Filled.Refresh, "Unhide") {
+                                        if (state.selectedAlbumItemCount > 0) {
+                                            unhideChoice = UnhideChoice.ORIGINAL
+                                            chosenUnhideFolder = null
+                                            showAlbumUnhideDialog = true
+                                        }
+                                    },
+                                )
+                                add(
+                                    SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
+                                        albumDeleteStep = DeleteStep.CHOICE
+                                    },
+                                )
+                                add(SelectionAction(Icons.Filled.Info, "Property") { showAlbumProperty = true })
+                            },
+                    )
                 state.inFolder ->
                     VaultTopBar(
                         title = state.openFolderTitle,
@@ -201,12 +259,16 @@ fun CategoryScreen(
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {
-                    // S10 root: folders only — items live inside their folder screens.
+                    // S10 root: albums only — items live inside their album screens. Long-
+                    // press enters album selection (W2-E §9); taps then toggle membership.
                     !state.inFolder ->
                         FolderTileGrid(
                             tiles = state.folderTiles,
                             category = state.category,
-                            onOpen = viewModel::openFolder,
+                            selectionMode = state.albumSelectionMode,
+                            selectedIds = state.selectedAlbumIds,
+                            onOpen = { id -> if (!viewModel.tappedAlbum(id)) viewModel.openFolder(id) },
+                            onLongPress = viewModel::startAlbumSelection,
                             onAdd = onHide,
                             loadCover = { itemId -> viewModel.thumbnail(context, itemId) },
                         )
@@ -248,7 +310,9 @@ fun CategoryScreen(
             }
         }
 
-        if (!state.selectionMode) {
+        // The FAB hides in either selection mode — creating an album mid-selection is a
+        // mode error (design §9).
+        if (!state.selectionMode && !state.albumSelectionMode) {
             CategoryFabMenu(
                 category = state.category,
                 expanded = fabExpanded,
@@ -265,13 +329,152 @@ fun CategoryScreen(
         )
     }
 
+    // §1.1 create-album dialog (APP-218 fold-in): "New album" prefilled + pre-selected,
+    // ✕-clear, CANCEL/OK, inline empty/duplicate errors.
     if (showCreateFolder) {
-        CreateFolderModal(
+        AlbumNameDialog(
+            title = "New album",
+            initialName = NEW_ALBUM_PREFILL,
+            existingNames = albumNames(state),
             onConfirm = { name ->
                 viewModel.createFolder(name)
                 showCreateFolder = false
             },
             onDismiss = { showCreateFolder = false },
+        )
+    }
+
+    // §4 rename-album dialog: same label-editor family, prefilled with the current name;
+    // an unchanged name dismisses as a no-op (no error, no write).
+    if (showRenameAlbum) {
+        val tile = state.selectedAlbumTiles.singleOrNull()
+        if (tile == null) {
+            showRenameAlbum = false
+        } else {
+            AlbumNameDialog(
+                title = "Rename album",
+                initialName = tile.name,
+                existingNames = albumNames(state) - tile.name,
+                onConfirm = { name ->
+                    if (name != tile.name) viewModel.renameAlbum(tile.id, name)
+                    viewModel.clearAlbumSelection()
+                    showRenameAlbum = false
+                },
+                onDismiss = { showRenameAlbum = false },
+            )
+        }
+    }
+
+    // §5 album move-to sheet: merge the selected albums' contents into a target album.
+    // Sources are disabled with a "This album" chip; the merge consequence is stated the
+    // moment a target is picked, before confirm.
+    if (showAlbumMoveSheet) {
+        val selectedTiles = state.selectedAlbumTiles
+        MoveToSheet(
+            itemCount = state.selectedAlbumItemCount,
+            albums =
+                state.folderTiles
+                    .filterNot { it.id == CategoryState.RECENT_FOLDER_ID }
+                    .map { AlbumOption(id = it.id, name = it.name, count = it.itemCount) },
+            currentFolderId = null,
+            title =
+                if (selectedTiles.size == 1) {
+                    "Move \"${selectedTiles.single().name}\" to…"
+                } else {
+                    "Move ${selectedTiles.size} albums to…"
+                },
+            disabledIds = selectedTiles.mapTo(mutableSetOf<String?>()) { it.id },
+            disabledBadge = "This album",
+            noteForTarget = { target -> albumMergeNote(selectedTiles, target.name) },
+            onDismiss = { showAlbumMoveSheet = false },
+            onCreateFolder = viewModel::createFolder,
+            onMove = { folderId ->
+                if (folderId != null) viewModel.moveSelectedAlbums(folderId)
+                showAlbumMoveSheet = false
+            },
+        )
+    }
+
+    // §6 album unhide dialog: plural "Original locations" semantics — each photo returns
+    // to its own path — with the always-visible per-file fallback promise.
+    if (showAlbumUnhideDialog) {
+        val selectedTiles = state.selectedAlbumTiles
+        val photoCount = state.selectedAlbumItemCount
+        UnhideDialog(
+            itemCount = photoCount,
+            originalPath = null,
+            choice = unhideChoice,
+            chosenFolderLabel = chosenUnhideFolder,
+            title =
+                if (selectedTiles.size == 1) {
+                    "Unhide \"${selectedTiles.single().name}\""
+                } else {
+                    "Unhide ${selectedTiles.size} albums"
+                },
+            bodyText =
+                "${if (photoCount == 1) "1 photo" else "$photoCount photos"} will leave the vault. " +
+                    "Where should we put them?",
+            originalTitle = "Original locations",
+            originalSubtitle = "Each photo returns to where it came from",
+            fallbackNote = "If an original folder isn't available, we'll save those photos to Downloads and tell you.",
+            onChoiceChange = { unhideChoice = it },
+            onPickFolder = { unhideFolderPicker.launch(null) },
+            onConfirm = { destination ->
+                viewModel.unhideSelectedAlbums(destination)
+                showAlbumUnhideDialog = false
+            },
+            onDismiss = { showAlbumUnhideDialog = false },
+        )
+    }
+
+    // §7 album delete — 2-step: Bin (safe default; contents stay encrypted and the album
+    // grouping is kept for a whole-album restore) vs Permanent (secure wipe) behind a
+    // second, Error-tinted confirm. Copy spells out album + contents so "delete the
+    // album" is never read as "the photos survive somewhere".
+    albumDeleteStep?.let { step ->
+        val selectedTiles = state.selectedAlbumTiles
+        val photoCount = state.selectedAlbumItemCount
+        DeleteDialog(
+            itemCount = photoCount,
+            step = step,
+            choiceTitle =
+                if (selectedTiles.size == 1) {
+                    "Delete \"${selectedTiles.single().name}\"?"
+                } else {
+                    "Delete ${selectedTiles.size} albums?"
+                },
+            choiceMessage = albumDeleteChoiceMessage(selectedTiles.size, photoCount),
+            permanentBody = albumDeletePermanentBody(selectedTiles, photoCount),
+            onMoveToBin = {
+                viewModel.recycleSelectedAlbums()
+                albumDeleteStep = null
+            },
+            onChoosePermanent = { albumDeleteStep = DeleteStep.CONFIRM_PERMANENT },
+            onConfirmPermanent = {
+                viewModel.deleteSelectedAlbumsForever()
+                albumDeleteStep = null
+            },
+            onDismiss = { albumDeleteStep = null },
+        )
+    }
+
+    // §8 album property dialog: every value from the encrypted index — zero decryption.
+    if (showAlbumProperty) {
+        val selectedAlbums = state.albums.filter { it.id in state.selectedAlbumIds }
+        val itemsByFolder = state.items.groupBy { it.folderId }
+        PropertyDialog(
+            title =
+                if (selectedAlbums.size == 1) "Album details" else "Details — ${selectedAlbums.size} albums",
+            rows =
+                if (selectedAlbums.size == 1) {
+                    AlbumProperties.rows(selectedAlbums.single(), itemsByFolder[selectedAlbums.single().id].orEmpty())
+                } else {
+                    AlbumProperties.aggregateRows(
+                        selectedAlbums,
+                        selectedAlbums.associate { it.id to itemsByFolder[it.id].orEmpty() },
+                    )
+                },
+            onDismiss = { showAlbumProperty = false },
         )
     }
 
@@ -335,6 +538,65 @@ private fun CategoryFolderTile.toAlbumOption(): AlbumOption =
         name = name,
         count = itemCount,
     )
+
+/** Every real album name on the grid (duplicate checks for the label-editor dialogs). */
+private fun albumNames(state: CategoryState): Set<String> =
+    state.folderTiles
+        .filterNot { it.id == CategoryState.RECENT_FOLDER_ID }
+        .mapTo(mutableSetOf()) { it.name }
+
+/**
+ * §5 merge note — the album-level consequence stated before confirm: "91 photos will move
+ * into Screenshots. \"Camera\" will be removed." (N>1: "…\"a\", \"b\" and 2 more will be
+ * removed.").
+ */
+private fun albumMergeNote(
+    sources: List<CategoryFolderTile>,
+    targetName: String,
+): String {
+    val photos = sources.sumOf { it.itemCount }
+    val photosText = if (photos == 1) "1 photo" else "$photos photos"
+    val names = sources.map { "\"${it.name}\"" }
+    val removal =
+        when {
+            names.size == 1 -> "${names[0]} will be removed."
+            names.size == 2 -> "${names[0]} and ${names[1]} will be removed."
+            else -> "${names[0]}, ${names[1]} and ${names.size - 2} more will be removed."
+        }
+    return "$photosText will move into $targetName. $removal"
+}
+
+/** §7 step-1 body: album + contents semantics; an empty selection skips the scary copy. */
+private fun albumDeleteChoiceMessage(
+    albumCount: Int,
+    photoCount: Int,
+): String =
+    when {
+        photoCount == 0 ->
+            if (albumCount == 1) "This album is empty." else "These albums are empty."
+        albumCount == 1 ->
+            "The album and its ${if (photoCount == 1) "1 photo" else "$photoCount photos"} move to the " +
+                "Recycle Bin, recoverable for 30 days."
+        else ->
+            "$albumCount albums and their $photoCount photos move to the Recycle Bin, recoverable for 30 days."
+    }
+
+/** §7 step-2 body: encrypted-model wording, naming the album at N=1. */
+private fun albumDeletePermanentBody(
+    sources: List<CategoryFolderTile>,
+    photoCount: Int,
+): String =
+    when {
+        sources.size == 1 && photoCount == 0 ->
+            "This securely erases \"${sources.single().name}\" from the vault. It cannot be recovered."
+        sources.size == 1 ->
+            "This securely erases \"${sources.single().name}\" and its " +
+                "${if (photoCount == 1) "1 photo" else "$photoCount photos"} from the vault. " +
+                "They cannot be recovered."
+        else ->
+            "This securely erases ${sources.size} albums and their $photoCount photos from the vault. " +
+                "They cannot be recovered."
+    }
 
 /**
  * The one original path shared by every selected item, or null when the selection spans
@@ -443,36 +705,56 @@ private fun FolderSortMenu(
 private fun FolderTileGrid(
     tiles: List<CategoryFolderTile>,
     category: VaultCategory,
+    selectionMode: Boolean,
+    selectedIds: Set<String>,
     onOpen: (String) -> Unit,
+    onLongPress: (String) -> Unit,
     onAdd: () -> Unit,
     loadCover: suspend (String) -> ImageBitmap?,
 ) {
     val spacing = VaultTheme.spacing
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
-        modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg),
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .padding(horizontal = spacing.lg)
+                .testTag("album-grid"),
         contentPadding = PaddingValues(vertical = spacing.md),
     ) {
         items(tiles, key = { it.id }) { tile ->
             FolderTileCard(
                 tile = tile,
                 category = category,
+                selected = tile.id in selectedIds,
                 onClick = { onOpen(tile.id) },
+                onLongPress = { onLongPress(tile.id) },
                 loadCover = loadCover,
             )
         }
-        item(key = "__add__") {
-            AddFolderTile(onClick = onAdd)
+        // Creating/hiding mid-selection is a mode error (design §9) — the "+" tile follows
+        // the FAB and hides while album selection is live.
+        if (!selectionMode) {
+            item(key = "__add__") {
+                AddFolderTile(onClick = onAdd)
+            }
         }
     }
 }
 
-/** One folder tile: rounded square cover (placeholder glyph when empty), name, count. */
+/**
+ * One album tile: rounded square cover (placeholder glyph when empty), name, count.
+ * Selected (W2-E §9): check at the cover's top-start over an accent wash — never dimmed,
+ * the name + count must stay legible while selected.
+ */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FolderTileCard(
     tile: CategoryFolderTile,
     category: VaultCategory,
+    selected: Boolean,
     onClick: () -> Unit,
+    onLongPress: () -> Unit,
     loadCover: suspend (String) -> ImageBitmap?,
 ) {
     val colors = VaultTheme.colors
@@ -482,7 +764,11 @@ private fun FolderTileCard(
     }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.padding(spacing.xs).clickable(onClick = onClick),
+        modifier =
+            Modifier
+                .padding(spacing.xs)
+                .testTag("album-tile-${tile.id}")
+                .combinedClickable(onClick = onClick, onLongClick = onLongPress),
     ) {
         Box(
             modifier =
@@ -506,6 +792,15 @@ private fun FolderTileCard(
                 tint = category.color(),
                 modifier = Modifier.size(32.dp),
             )
+            if (selected) {
+                Box(modifier = Modifier.fillMaxSize().background(colors.accent.copy(alpha = 0.14f)))
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = "Selected",
+                    tint = colors.accent,
+                    modifier = Modifier.align(Alignment.TopStart).padding(spacing.xs).size(20.dp),
+                )
+            }
         }
         Text(
             text = tile.name,
@@ -628,7 +923,7 @@ private fun EmptyFolderState(category: VaultCategory) {
 
 /**
  * S11 FAB action menu: the solid green FAB flips its `+` to an `×` and pops a dark
- * speech-bubble card anchored above it, with two glyph rows — "Create Folder" and the
+ * speech-bubble card anchored above it, with two glyph rows — "Create album" and the
  * per-category hide action. The bubble's pointer tail is approximated by proximity (no
  * bespoke shape asset); glyphs come from material-icons-core, the only icon artifact.
  */
@@ -656,7 +951,8 @@ private fun CategoryFabMenu(
             ) {
                 Column(modifier = Modifier.padding(vertical = spacing.xs)) {
                     FabMenuRow(
-                        label = "Create Folder",
+                        // "Album" terminology lock (W2-E §1, APP-218 fold-in).
+                        label = "Create album",
                         icon = Icons.Filled.Add,
                         onClick = {
                             onExpandedChange(false)
@@ -718,29 +1014,4 @@ private fun FabMenuRow(
             modifier = Modifier.padding(start = spacing.md),
         )
     }
-}
-
-/** S12 create-folder dialog: "Create a new folder" / "Enter folder name" / Cancel · Create. */
-@Composable
-private fun CreateFolderModal(
-    onConfirm: (String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var name by remember { mutableStateOf("") }
-    VaultModal(
-        title = "Create a new folder",
-        confirmLabel = "Create",
-        onConfirm = { onConfirm(name) },
-        onDismiss = onDismiss,
-        confirmEnabled = name.isNotBlank(),
-        content = {
-            OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                singleLine = true,
-                placeholder = { Text("Enter folder name") },
-                modifier = Modifier.fillMaxWidth().padding(top = 4.dp),
-            )
-        },
-    )
 }

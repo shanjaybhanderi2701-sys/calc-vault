@@ -25,6 +25,7 @@ import kotlinx.coroutines.sync.withLock
  */
 class InMemoryVaultContentRepository(
     seed: Boolean = true,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : VaultContentRepository {
     private val mutex = Mutex()
     private var nextId = 0L
@@ -43,7 +44,7 @@ class InMemoryVaultContentRepository(
     override fun allItems(): Flow<List<VaultItem>> = itemsState.map { all -> all.sortedByDescending { it.sortKey } }
 
     override fun folders(category: VaultCategory): Flow<List<VaultFolder>> =
-        foldersState.map { all -> all.filter { it.category == category } }
+        foldersState.map { all -> all.filter { it.category == category && !it.inBin } }
 
     override fun categoryCounts(): Flow<Map<VaultCategory, Int>> =
         itemsState.map { all ->
@@ -52,7 +53,7 @@ class InMemoryVaultContentRepository(
 
     override fun folderCounts(): Flow<Map<VaultCategory, Int>> =
         foldersState.map { all ->
-            VaultCategory.entries.associateWith { cat -> all.count { it.category == cat } }
+            VaultCategory.entries.associateWith { cat -> all.count { it.category == cat && !it.inBin } }
         }
 
     override fun recent(limit: Int): Flow<List<VaultItem>> =
@@ -81,10 +82,55 @@ class InMemoryVaultContentRepository(
         name: String,
     ): VaultFolder =
         mutex.withLock {
-            val folder = VaultFolder(id = "f${nextId++}", category = category, name = name)
+            val now = clock()
+            val folder =
+                VaultFolder(id = "f${nextId++}", category = category, name = name, createdAt = now, modifiedAt = now)
             foldersState.value = foldersState.value + folder
             folder
         }
+
+    override suspend fun renameFolder(
+        folderId: String,
+        name: String,
+    ) = mutex.withLock {
+        foldersState.value =
+            foldersState.value.map {
+                if (it.id == folderId) it.copy(name = name, modifiedAt = clock()) else it
+            }
+    }
+
+    override suspend fun deleteFolderLabels(
+        folderIds: Set<String>,
+        keepForBinRestore: Boolean,
+    ) = mutex.withLock {
+        removeLabels(folderIds, keepForBinRestore)
+    }
+
+    /**
+     * Label bookkeeping shared by [deleteFolderLabels] and the bin-side cleanups. Must run
+     * under [mutex]. An album some bin entry still references survives as an
+     * [VaultFolder.inBin] tombstone when [keepForBinRestore]; everything else is dropped.
+     */
+    private fun removeLabels(
+        folderIds: Set<String>,
+        keepForBinRestore: Boolean,
+    ) {
+        val referenced = binState.value.mapTo(mutableSetOf()) { it.item.folderId }
+        foldersState.value =
+            foldersState.value.mapNotNull { folder ->
+                when {
+                    folder.id !in folderIds -> folder
+                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true)
+                    else -> null
+                }
+            }
+    }
+
+    /** Drop [VaultFolder.inBin] tombstones no surviving bin entry references. Under [mutex]. */
+    private fun pruneOrphanTombstones() {
+        val referenced = binState.value.mapTo(mutableSetOf()) { it.item.folderId }
+        foldersState.value = foldersState.value.filterNot { it.inBin && it.id !in referenced }
+    }
 
     override suspend fun moveToFolder(
         itemIds: Set<String>,
@@ -123,8 +169,29 @@ class InMemoryVaultContentRepository(
     override suspend fun restore(itemIds: Set<String>): Int =
         mutex.withLock {
             val (restored, kept) = binState.value.partition { it.item.id in itemIds }
-            itemsState.value = itemsState.value + restored.map { it.item }
+            // A restored item whose album went to the bin with it resurrects the album
+            // (tombstone flips live — design F-3, the album comes back whole); an album
+            // deleted outright while the item sat in the bin falls back to the root.
+            val liveIds = foldersState.value.filterNot { it.inBin }.mapTo(mutableSetOf()) { it.id }
+            val tombstoneIds = foldersState.value.filter { it.inBin }.mapTo(mutableSetOf()) { it.id }
+            val resurrect = restored.mapNotNullTo(mutableSetOf()) {
+                it.item.folderId?.takeIf { id ->
+                    id in tombstoneIds
+                }
+            }
+            foldersState.value =
+                foldersState.value.map { if (it.id in resurrect) it.copy(inBin = false) else it }
+            itemsState.value = itemsState.value +
+                restored.map { entry ->
+                    val folderId = entry.item.folderId
+                    if (folderId != null && folderId !in liveIds && folderId !in resurrect) {
+                        entry.item.copy(folderId = null)
+                    } else {
+                        entry.item
+                    }
+                }
             binState.value = kept
+            pruneOrphanTombstones()
             restored.size
         }
 
@@ -132,6 +199,7 @@ class InMemoryVaultContentRepository(
         mutex.withLock {
             val (removed, kept) = binState.value.partition { it.item.id in itemIds }
             binState.value = kept
+            pruneOrphanTombstones()
             removed.size
         }
 
@@ -148,6 +216,7 @@ class InMemoryVaultContentRepository(
         mutex.withLock {
             val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
             binState.value = kept
+            pruneOrphanTombstones()
             expired.size
         }
 

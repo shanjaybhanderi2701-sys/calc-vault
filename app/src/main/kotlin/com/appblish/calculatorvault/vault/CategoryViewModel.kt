@@ -72,12 +72,25 @@ data class CategoryState(
     val folderSort: FolderSort = FolderSort.DATE_DESC,
     val selectedIds: Set<String> = emptySet(),
     val selectionMode: Boolean = false,
+    // Album multi-select on the root grid (W2-E §9): long-press an album tile to enter,
+    // tap-toggle, Select All — deliberately no drag-range (album grids are small).
+    val selectedAlbumIds: Set<String> = emptySet(),
+    val albumSelectionMode: Boolean = false,
+    // The raw album records behind the tiles — the Album property dialog reads its
+    // Created/Modified stamps from these index records (spec §1.3, design §8).
+    val albums: List<VaultFolder> = emptyList(),
     // The pending one-per-operation summary notice (D-3, generalized for P2-3): restore /
     // recycle-bin / permanent-delete outcomes plus the hide picker's "N hidden" hand-off.
     // The screen shows it as a snackbar and consumes it. Null when nothing is pending.
     val opNotice: String? = null,
 ) {
     val inFolder: Boolean get() = openFolderId != null
+
+    /** The selected album tiles, in display order (drives dialog copy + property rows). */
+    val selectedAlbumTiles: List<CategoryFolderTile> get() = folderTiles.filter { it.id in selectedAlbumIds }
+
+    /** Total photos across the selected albums ("91 photos will leave the vault…"). */
+    val selectedAlbumItemCount: Int get() = selectedAlbumTiles.sumOf { it.itemCount }
 
     /** Items of the open folder; the "Recent" pseudo-folder maps to folder-less items. */
     val folderItems: List<VaultItem> get() =
@@ -127,6 +140,10 @@ class CategoryViewModel(
         val dragBase: Set<String> = emptySet(),
         val openFolderId: String? = null,
         val sort: FolderSort = FolderSort.DATE_DESC,
+        // Album selection on the root grid (W2-E §9), independent of the item selection
+        // inside an open folder — the two modes can never be live at once (different views).
+        val albumIds: Set<String> = emptySet(),
+        val albumActive: Boolean = false,
     )
 
     // One notice per mutation (D-3, generalized for P2-3), merged from the two shared
@@ -145,6 +162,7 @@ class CategoryViewModel(
         ) { items, folders, loc, notice ->
             // Drop selections that no longer exist (e.g. after a recycle-bin move).
             val validIds = loc.ids.filter { id -> items.any { it.id == id } }.toSet()
+            val validAlbumIds = loc.albumIds.filter { id -> folders.any { it.id == id } }.toSet()
             CategoryState(
                 category = category,
                 items = items,
@@ -153,6 +171,9 @@ class CategoryViewModel(
                 folderSort = loc.sort,
                 selectedIds = validIds,
                 selectionMode = loc.active && validIds.isNotEmpty(),
+                selectedAlbumIds = validAlbumIds,
+                albumSelectionMode = loc.albumActive && validAlbumIds.isNotEmpty(),
+                albums = folders,
                 opNotice = notice,
             )
         }.stateIn(
@@ -163,7 +184,15 @@ class CategoryViewModel(
 
     /** Open [folderId]'s contents (S17). Clears any selection from a previous folder. */
     fun openFolder(folderId: String) {
-        local.update { it.copy(openFolderId = folderId, ids = emptySet(), active = false) }
+        local.update {
+            it.copy(
+                openFolderId = folderId,
+                ids = emptySet(),
+                active = false,
+                albumIds = emptySet(),
+                albumActive = false
+            )
+        }
     }
 
     /** Back from a folder's contents to the root folder grid. */
@@ -265,6 +294,66 @@ class CategoryViewModel(
         local.update { it.copy(ids = emptySet(), active = false, dragAnchorId = null, dragBase = emptySet()) }
     }
 
+    // --- Album selection on the root grid (W2-E §9) --------------------------------
+
+    /**
+     * Long-press an album tile enters album selection mode with that album selected
+     * (design §9). The synthetic "Recent" pseudo-folder is not an album — it has no label
+     * in the index to rename/move/delete — so it never participates in selection.
+     */
+    fun startAlbumSelection(folderId: String) {
+        if (folderId == CategoryState.RECENT_FOLDER_ID) return
+        local.update { it.copy(albumIds = it.albumIds + folderId, albumActive = true) }
+    }
+
+    /** Tap while album-selecting toggles membership; deselect-to-zero exits the mode. */
+    fun toggleAlbum(folderId: String) {
+        if (folderId == CategoryState.RECENT_FOLDER_ID) return
+        local.update { current ->
+            if (!current.albumActive) return@update current
+            val ids = if (folderId in current.albumIds) current.albumIds - folderId else current.albumIds + folderId
+            current.copy(albumIds = ids, albumActive = ids.isNotEmpty())
+        }
+    }
+
+    /**
+     * Route an album-tile tap: toggling while selection mode is live, opening otherwise.
+     * Returns true when the tap was consumed as a selection toggle.
+     */
+    fun tappedAlbum(folderId: String): Boolean {
+        val current = local.value
+        if (current.albumActive && current.albumIds.isNotEmpty()) {
+            toggleAlbum(folderId)
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Select All over the root grid's real albums (never the "Recent" pseudo-folder);
+     * when everything is already selected the one control clears instead — the same
+     * toggle contract as the item-level Select All (W1-E3).
+     */
+    fun selectAllAlbums() {
+        val all =
+            state.value.folderTiles
+                .map { it.id }
+                .filterNot { it == CategoryState.RECENT_FOLDER_ID }
+                .toSet()
+        if (all.isEmpty()) return
+        local.update {
+            if (it.albumIds.containsAll(all)) {
+                it.copy(albumIds = emptySet(), albumActive = false)
+            } else {
+                it.copy(albumIds = all, albumActive = true)
+            }
+        }
+    }
+
+    fun clearAlbumSelection() {
+        local.update { it.copy(albumIds = emptySet(), albumActive = false) }
+    }
+
     /**
      * The open folder's item ids in *display* order — the same date-section grouping the
      * grid renders ([groupMediaByDate]) — so a drag range matches what the user sees, not
@@ -347,6 +436,97 @@ class CategoryViewModel(
         viewModelScope.launch { repository.createFolder(category, trimmed) }
     }
 
+    // --- Album-level actions (W2-E §4–§8) -------------------------------------------
+
+    /**
+     * Rename an album (§4): a single, instant, index-label-only write — no progress UI and
+     * deliberately no snackbar (the renamed tile *is* the confirmation, per the "object is
+     * the interface" rule). Duplicate/empty guards live in the dialog; unchanged names are
+     * dismissed by the screen as a no-op before reaching here.
+     */
+    fun renameAlbum(
+        folderId: String,
+        name: String,
+    ) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        viewModelScope.launch { repository.renameFolder(folderId, trimmed) }
+    }
+
+    /**
+     * Merge the selected albums' contents into [targetFolderId] (§5): index-entry
+     * relocation only, sources removed once emptied. Summary is album-aware for N>1
+     * ("2 albums · 141 photos moved") per design §10.
+     */
+    fun moveSelectedAlbums(targetFolderId: String) {
+        val destination = folderLabel(targetFolderId)
+        mutateAlbumSelection { ids ->
+            val albumCount = ids.size
+            val moved = repository.mergeFolders(ids, targetFolderId)
+            if (albumCount > 1) {
+                "$albumCount albums · ${photosLabel(moved)} moved to $destination"
+            } else {
+                "${photosLabel(moved)} moved to $destination"
+            }
+        }
+    }
+
+    /**
+     * Whole-album unhide (§6): every photo decrypts out under the photo-level fallback
+     * rules; a fully-emptied album's label is removed, a partial failure keeps the album
+     * holding exactly the failed photos. Summary via the shared honest builder.
+     */
+    fun unhideSelectedAlbums(destination: UnhideDestination) =
+        mutateAlbumSelection { ids -> UnhideMessages.summary(repository.unhideFolders(ids, destination)) }
+
+    /**
+     * Album delete → Recycle Bin (§7 soft path): contents to the bin still encrypted,
+     * keeping their album grouping (F-3); the label becomes a bin tombstone. An empty
+     * album just loses its label — no service run, honest summary either way.
+     */
+    fun recycleSelectedAlbums() =
+        mutateAlbumSelection { ids ->
+            val albumCount = ids.size
+            val binned = repository.moveFoldersToRecycleBin(ids)
+            when {
+                binned == 0 -> if (albumCount == 1) "Album removed" else "$albumCount albums removed"
+                albumCount > 1 -> "$albumCount albums · ${photosLabel(binned)} moved to Recycle Bin"
+                else -> "Album · ${photosLabel(binned)} moved to Recycle Bin"
+            }
+        }
+
+    /**
+     * Album delete → Permanent (§7 hard path, behind the 2-step confirm): secure wipe of
+     * every blob + index entries + labels. The summary counts what was actually destroyed
+     * and calls out any miss — never over-reports (W1-E3 DoD).
+     */
+    fun deleteSelectedAlbumsForever() {
+        val expected = state.value.selectedAlbumItemCount
+        mutateAlbumSelection { ids ->
+            val albumCount = ids.size
+            val erased = repository.permanentlyDeleteFolders(ids)
+            val failed = (expected - erased).coerceAtLeast(0)
+            val albums = if (albumCount == 1) "1 album" else "$albumCount albums"
+            when {
+                expected == 0 -> if (albumCount == 1) "Album deleted" else "$albumCount albums deleted"
+                failed > 0 -> "$albums · $erased erased, $failed failed"
+                else -> "$albums · $erased erased"
+            }
+        }
+    }
+
+    /**
+     * Run a bulk album mutation through [BulkOps] — app-scoped like [mutateSelection], so
+     * navigating away never cancels a half-done batch and the summary lands on the shared
+     * notice slot (design §10: a summary appears for every album bulk op).
+     */
+    private fun mutateAlbumSelection(block: suspend (Set<String>) -> String?) {
+        val ids = local.value.albumIds
+        if (ids.isEmpty()) return
+        clearAlbumSelection()
+        BulkOps.run { block(ids) }
+    }
+
     /** Display name of a move destination; null folderId = the category root ("Recent"). */
     private fun folderLabel(folderId: String?): String =
         when (folderId) {
@@ -373,6 +553,9 @@ class CategoryViewModel(
     private companion object {
         /** Pluralized count for the P2-3 operation summaries ("1 item" / "3 items"). */
         fun countLabel(count: Int): String = if (count == 1) "1 item" else "$count items"
+
+        /** Pluralized photo count for the album-aware W2-E summaries ("1 photo" / "91 photos"). */
+        fun photosLabel(count: Int): String = if (count == 1) "1 photo" else "$count photos"
 
         /**
          * Build the root grid's tiles: every real folder (count/cover derived from the

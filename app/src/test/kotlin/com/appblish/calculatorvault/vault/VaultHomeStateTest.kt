@@ -47,13 +47,15 @@ class VaultHomeStateTest {
     }
 
     @Test
-    fun `dual-count subtitles pluralize both nouns`() {
+    fun `dual-count subtitles pluralize both nouns with the Album container noun`() {
+        // Container noun is "Albums" — the W2-E §1 terminology lock (APP-218) supersedes
+        // the shipped "Folders" copy on the home count label.
         assertThat(categorySubtitle(VaultCategory.VIDEOS, items = 0, folders = 1))
-            .isEqualTo("0 Videos / 1 Folder")
+            .isEqualTo("0 Videos / 1 Album")
         assertThat(categorySubtitle(VaultCategory.PHOTOS, items = 1, folders = 8))
-            .isEqualTo("1 Photo / 8 Folders")
+            .isEqualTo("1 Photo / 8 Albums")
         assertThat(categorySubtitle(VaultCategory.AUDIOS, items = 300, folders = 0))
-            .isEqualTo("300 Audios / 0 Folders")
+            .isEqualTo("300 Audios / 0 Albums")
     }
 
     @Test

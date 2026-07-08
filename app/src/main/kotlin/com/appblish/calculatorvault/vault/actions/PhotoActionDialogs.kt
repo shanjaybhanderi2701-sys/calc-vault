@@ -21,7 +21,6 @@ import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -35,6 +34,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
@@ -78,6 +79,13 @@ fun MoveToSheet(
     onCreateFolder: (String) -> Unit,
     onMove: (folderId: String?) -> Unit,
     modifier: Modifier = Modifier,
+    // Album-level deltas (W2-E design §5) — the defaults keep the shipped W1 photo sheet:
+    // a bespoke header ("Move "Camera" to…"), extra disabled rows (every album being
+    // moved, badged "This album"), and the merge note revealed once a target is picked.
+    title: String? = null,
+    disabledIds: Set<String?> = emptySet(),
+    disabledBadge: String = "Current",
+    noteForTarget: ((AlbumOption) -> String)? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -85,7 +93,9 @@ fun MoveToSheet(
     var selectedFolderId by remember { mutableStateOf<String?>(null) }
     var hasSelection by remember { mutableStateOf(false) }
     var creating by remember { mutableStateOf(false) }
-    var newName by remember { mutableStateOf("") }
+    var newName by remember {
+        mutableStateOf(TextFieldValue(NEW_ALBUM_PREFILL, selection = TextRange(0, NEW_ALBUM_PREFILL.length)))
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -95,20 +105,26 @@ fun MoveToSheet(
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = spacing.lg).padding(bottom = spacing.xl)) {
             Text(
-                text = if (itemCount == 1) "Move photo to…" else "Move $itemCount photos to…",
+                text = title ?: if (itemCount == 1) "Move photo to…" else "Move $itemCount photos to…",
                 style = VaultTheme.typography.titleMedium,
                 color = colors.textPrimary,
                 modifier = Modifier.padding(bottom = spacing.md),
             )
 
-            // Create-new-folder — pinned first, accent-tinted, inline-expands to a field.
+            // Create-new-album — pinned first, accent-tinted, inline-expands to the §1.1
+            // prefilled-"New album" field (terminology lock, APP-218 fold-in).
             if (creating) {
-                OutlinedTextField(
+                val trimmed = newName.text.trim()
+                val duplicate = albums.any { it.name.trim().equals(trimmed, ignoreCase = true) }
+                AlbumNameField(
                     value = newName,
                     onValueChange = { newName = it },
-                    singleLine = true,
-                    label = { Text("Enter folder name") },
-                    modifier = Modifier.fillMaxWidth(),
+                    error =
+                        when {
+                            trimmed.isEmpty() -> "Enter an album name"
+                            duplicate -> "An album with this name already exists"
+                            else -> null
+                        },
                 )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(spacing.md),
@@ -118,7 +134,8 @@ fun MoveToSheet(
                         text = "Cancel",
                         onClick = {
                             creating = false
-                            newName = ""
+                            newName =
+                                TextFieldValue(NEW_ALBUM_PREFILL, selection = TextRange(0, NEW_ALBUM_PREFILL.length))
                         },
                         style = PillButtonStyle.Secondary,
                         modifier = Modifier.weight(1f),
@@ -126,11 +143,12 @@ fun MoveToSheet(
                     PillButton(
                         text = "Create",
                         onClick = {
-                            onCreateFolder(newName.trim())
+                            onCreateFolder(trimmed)
                             creating = false
-                            newName = ""
+                            newName =
+                                TextFieldValue(NEW_ALBUM_PREFILL, selection = TextRange(0, NEW_ALBUM_PREFILL.length))
                         },
-                        enabled = newName.isNotBlank(),
+                        enabled = trimmed.isNotEmpty() && !duplicate,
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -146,7 +164,7 @@ fun MoveToSheet(
                 ) {
                     Icon(Icons.Filled.Add, contentDescription = null, tint = colors.accent)
                     Spacer(Modifier.width(spacing.md))
-                    Text("Create new folder", style = VaultTheme.typography.bodyLarge, color = colors.accent)
+                    Text("Create new album", style = VaultTheme.typography.bodyLarge, color = colors.accent)
                 }
             }
 
@@ -168,7 +186,7 @@ fun MoveToSheet(
             } else {
                 LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp)) {
                     items(albums, key = { it.id ?: "__root__" }) { album ->
-                        val isCurrent = album.id == currentFolderId
+                        val isCurrent = album.id == currentFolderId || album.id in disabledIds
                         val isSelected = hasSelection && album.id == selectedFolderId && !isCurrent
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -204,7 +222,7 @@ fun MoveToSheet(
                                     color = if (isCurrent) colors.textDisabled else colors.textPrimary,
                                 )
                                 Text(
-                                    text = if (isCurrent) "Current" else "${album.count}",
+                                    text = if (isCurrent) disabledBadge else "${album.count}",
                                     style = VaultTheme.typography.labelMedium,
                                     color = colors.textSecondary,
                                 )
@@ -217,6 +235,23 @@ fun MoveToSheet(
                 }
             }
 
+            // §5 merge note ("promise up front"): the consequence of an album merge is
+            // stated the moment a target is picked — never a surprise after confirm.
+            val note =
+                if (noteForTarget != null && hasSelection) {
+                    albums.firstOrNull { it.id == selectedFolderId }?.let(noteForTarget)
+                } else {
+                    null
+                }
+            if (note != null) {
+                Text(
+                    text = "ⓘ $note",
+                    style = VaultTheme.typography.labelMedium,
+                    color = colors.textSecondary,
+                    modifier = Modifier.padding(top = spacing.md),
+                )
+            }
+
             PillButton(
                 text = "Move here",
                 onClick = { onMove(selectedFolderId) },
@@ -226,6 +261,9 @@ fun MoveToSheet(
         }
     }
 }
+
+/** The §1.1 create-dialog prefill (APP-218 terminology lock): typed-over on first keystroke. */
+const val NEW_ALBUM_PREFILL = "New album"
 
 // ---------------------------------------------------------------------------
 // §7 · Unhide dialog
@@ -244,13 +282,22 @@ fun UnhideDialog(
     onPickFolder: () -> Unit,
     onConfirm: (UnhideDestination) -> Unit,
     onDismiss: () -> Unit,
+    // Album-level deltas (W2-E design §6) — defaults keep the shipped W1 photo dialog.
+    // An album is not one place, so the album variant retitles the dialog, adds the
+    // "N photos will leave the vault" lead-in, and pluralizes the original-destination
+    // row ("Original locations" / "Each photo returns to where it came from").
+    title: String? = null,
+    bodyText: String? = null,
+    originalTitle: String = "Original location",
+    originalSubtitle: String? = null,
+    fallbackNote: String = "If the original folder isn't available, we'll save to Downloads and tell you.",
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
     val confirmEnabled = choice == UnhideChoice.ORIGINAL || chosenFolderLabel != null
 
     VaultModal(
-        title = if (itemCount == 1) "Unhide photo" else "Unhide $itemCount photos",
+        title = title ?: if (itemCount == 1) "Unhide photo" else "Unhide $itemCount photos",
         confirmLabel = "Unhide",
         confirmEnabled = confirmEnabled,
         onConfirm = {
@@ -265,15 +312,15 @@ fun UnhideDialog(
         onDismiss = onDismiss,
         content = {
             Text(
-                text = "Where should we put them?",
+                text = bodyText ?: "Where should we put them?",
                 style = VaultTheme.typography.bodyMedium,
                 color = colors.textSecondary,
                 modifier = Modifier.padding(bottom = spacing.md),
             )
             RadioRow(
                 selected = choice == UnhideChoice.ORIGINAL,
-                title = "Original location",
-                subtitle = originalPath?.trim('/')?.ifBlank { null } ?: "Original folder",
+                title = originalTitle,
+                subtitle = originalSubtitle ?: originalPath?.trim('/')?.ifBlank { null } ?: "Original folder",
                 onClick = { onChoiceChange(UnhideChoice.ORIGINAL) },
             )
             RadioRow(
@@ -286,7 +333,7 @@ fun UnhideDialog(
                 },
             )
             Text(
-                text = "If the original folder isn't available, we'll save to Downloads and tell you.",
+                text = fallbackNote,
                 style = VaultTheme.typography.labelMedium,
                 color = colors.textSecondary,
                 modifier = Modifier.padding(top = spacing.md),
@@ -334,6 +381,12 @@ fun DeleteDialog(
     onChoosePermanent: () -> Unit,
     onConfirmPermanent: () -> Unit,
     onDismiss: () -> Unit,
+    // Album-level deltas (W2-E design §7) — defaults keep the shipped W1 photo dialog.
+    // The album variant spells out album + contents semantics ("The album and its 91
+    // photos move to the Recycle Bin…") so "delete the album" is never misread.
+    choiceTitle: String? = null,
+    choiceMessage: String? = null,
+    permanentBody: String? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -342,8 +395,10 @@ fun DeleteDialog(
     when (step) {
         DeleteStep.CHOICE ->
             VaultModal(
-                title = if (itemCount == 1) "Delete photo?" else "Delete $itemCount photos?",
-                message = "Items in the Recycle Bin stay recoverable for 30 days, then delete forever.",
+                title = choiceTitle ?: if (itemCount == 1) "Delete photo?" else "Delete $itemCount photos?",
+                message =
+                    choiceMessage
+                        ?: "Items in the Recycle Bin stay recoverable for 30 days, then delete forever.",
                 confirmLabel = "Move to Recycle Bin",
                 onConfirm = onMoveToBin,
                 onDismiss = onDismiss,
@@ -370,7 +425,10 @@ fun DeleteDialog(
                         Spacer(Modifier.width(spacing.sm))
                         Text(
                             text =
-                                "This securely erases $itemCount $noun from the vault. They cannot be recovered.",
+                                permanentBody ?: (
+                                    "This securely erases $itemCount $noun from the vault. " +
+                                        "They cannot be recovered."
+                                ),
                             style = VaultTheme.typography.bodyMedium,
                             color = colors.textPrimary,
                         )
