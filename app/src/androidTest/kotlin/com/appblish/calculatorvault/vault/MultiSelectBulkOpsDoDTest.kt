@@ -3,19 +3,25 @@ package com.appblish.calculatorvault.vault
 import android.content.ContentUris
 import android.os.Build
 import android.provider.MediaStore
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.junit4.createComposeRule
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
+import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
+import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 import com.appblish.calculatorvault.vault.actions.UnhideMessages
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
@@ -41,12 +47,14 @@ import java.security.MessageDigest
  * W1-E3 Definition-of-Done (spec §7), proven mechanically on the CI matrix — no manual
  * emulator screenshots:
  *
- *  1. **Drag-select + Select All correctness** on the composed [CategoryScreen]: a real
- *     long-press-drag touch sequence sweeps a contiguous range, Select All grabs the whole
- *     folder, and the aggregate bar's count tracks both.
- *  2. **Bulk delete via the aggregate bar, surviving navigate-away-and-back**: the batch
- *     runs app-scoped (not viewModelScope), so disposing the screen mid-op loses nothing —
- *     on return the grid is empty and the "N items deleted" summary snackbar still shows.
+ *  1. **Drag-select correctness** through the real pointer pipeline: a genuine
+ *     long-press-drag touch sequence on [DateGroupedMediaGrid] sweeps a contiguous range
+ *     and a retreat releases only the swept tiles (hosted grid-only so tile coordinates
+ *     stay fixed while the gesture runs).
+ *  2. **Select All + bulk delete surviving navigate-away-and-back** on the composed
+ *     [CategoryScreen]: the batch runs app-scoped (not viewModelScope), so disposing the
+ *     screen mid-op loses nothing — on return the grid is empty and the "N items deleted"
+ *     summary snackbar still shows.
  *  3. **Bulk unhide through the real encrypted repository**: blobs stay ciphertext at rest
  *     (never JPEG magic), the batch publishes tracked [BulkOpProgress] (the foreground
  *     service's feed), a multi-megabyte item streams back byte-identical (digest compare —
@@ -87,27 +95,81 @@ class MultiSelectBulkOpsDoDTest {
     }
 
     // ---------------------------------------------------------------------------------
-    // 1 + 2 · Selection UX + bulk delete surviving navigate-away-and-back (composed UI)
+    // 1 · Drag-select correctness on the real grid + gesture layer (composed UI)
     // ---------------------------------------------------------------------------------
 
     @Test
-    fun dragSelectSelectAllAndBulkDeleteSurviveNavigateAwayAndBack() {
-        val repo = InMemoryVaultContentRepository(seed = false)
-        val stored =
-            runBlocking {
-                repo.hide(
-                    (0 until 6).map { i ->
-                        VaultItem(
-                            id = "p$i",
-                            category = VaultCategory.PHOTOS,
-                            originalName = "p$i.jpg",
-                            dateLabel = "Today",
-                            // Descending keys → display order is p0, p1, … p5.
-                            sortKey = (100 - i).toLong(),
-                        )
-                    },
+    fun longPressDragSweepsARangeAndRetreatReleasesSweptTiles() {
+        val (repo, stored) = seedSixPhotos()
+        val vm = CategoryViewModel(VaultCategory.PHOTOS, repo)
+        vm.openFolder(CategoryState.RECENT_FOLDER_ID)
+
+        // Host the real grid + real gesture wiring, isolated from the screen chrome so
+        // tile coordinates stay put while the gesture runs (the full screen swaps its
+        // header for the action bar mid-gesture, which shifts the grid).
+        compose.setContent {
+            CalculatorVaultTheme {
+                val state by vm.state.collectAsStateWithLifecycle()
+                DateGroupedMediaGrid(
+                    items = state.folderItems.map { MediaItem(it.id, it.dateLabel, it.sortKey) },
+                    selectionMode = state.selectionMode,
+                    selectedIds = state.selectedIds,
+                    checkIcon = Icons.Filled.Check,
+                    onItemClick = { vm.toggle(it.id) },
+                    onItemLongPress = { vm.startSelection(it.id) },
+                    dragSelect =
+                        GridDragSelectCallbacks(
+                            onDragStart = vm::beginDragSelect,
+                            onDragOver = vm::dragSelectOver,
+                            onDragEnd = vm::endDragSelect,
+                        ),
                 )
             }
+        }
+        compose.waitUntil(5_000) {
+            runCatching { compose.onNodeWithTag("media-tile-${stored[0].id}").fetchSemanticsNode() }.isSuccess
+        }
+
+        // Capture stable tile centers up front (grid-local coordinates).
+        val gridOrigin =
+            compose
+                .onNodeWithTag("media-grid")
+                .fetchSemanticsNode()
+                .boundsInRoot
+                .topLeft
+        val centers =
+            stored.take(3).map { item ->
+                compose
+                    .onNodeWithTag("media-tile-${item.id}")
+                    .fetchSemanticsNode()
+                    .boundsInRoot
+                    .center - gridOrigin
+            }
+
+        // Long-press p0 (grid detector anchors + enters selection), sweep to p2, retreat
+        // to p1, lift. Expected: p0..p1 selected — the retreat released p2 (S17 range
+        // semantics, proven through the real pointer pipeline).
+        compose.onNodeWithTag("media-grid").performTouchInput {
+            down(centers[0])
+            advanceEventTime(800) // hold past the long-press timeout without moving
+            moveTo(centers[1])
+            moveTo(centers[2])
+            moveTo(centers[1])
+            up()
+        }
+        compose.waitUntil(5_000) {
+            vm.state.value.selectedIds == setOf(stored[0].id, stored[1].id)
+        }
+        assertThat(vm.state.value.selectionMode).isTrue()
+    }
+
+    // ---------------------------------------------------------------------------------
+    // 2 · Select All + bulk delete surviving navigate-away-and-back (full screen)
+    // ---------------------------------------------------------------------------------
+
+    @Test
+    fun selectAllAndBulkDeleteSurviveNavigateAwayAndBack() {
+        val (repo, stored) = seedSixPhotos()
         val vm = CategoryViewModel(VaultCategory.PHOTOS, repo)
         vm.openFolder(CategoryState.RECENT_FOLDER_ID)
 
@@ -123,32 +185,15 @@ class MultiSelectBulkOpsDoDTest {
             runCatching { compose.onNodeWithTag("media-tile-${stored[0].id}").fetchSemanticsNode() }.isSuccess
         }
 
-        // --- Drag-select: long-press p0, sweep across its row to p2 → exactly 3 selected.
-        val gridOrigin = compose
-            .onNodeWithTag("media-grid")
-            .fetchSemanticsNode()
-            .boundsInRoot.topLeft
+        // Long-press enters selection mode (via the grid's drag detector) with 1 selected.
+        compose.onNodeWithTag("media-tile-${stored[0].id}").performTouchInput { longClick() }
+        compose.onNodeWithText("1 selected").assertExists()
 
-        fun tileCenter(id: String): Offset =
-            compose
-                .onNodeWithTag("media-tile-$id")
-                .fetchSemanticsNode()
-                .boundsInRoot
-                .center - gridOrigin
-        compose.onNodeWithTag("media-grid").performTouchInput {
-            down(tileCenter(stored[0].id))
-            advanceEventTime(800) // hold past the long-press timeout without moving
-            moveTo(tileCenter(stored[1].id))
-            moveTo(tileCenter(stored[2].id))
-            up()
-        }
-        compose.onNodeWithText("3 selected").assertExists()
-
-        // --- Select All grabs the entire folder and the count tracks it.
+        // Select All grabs the entire folder and the count tracks it.
         compose.onNodeWithContentDescription("Select all").performClick()
         compose.onNodeWithText("6 selected").assertExists()
 
-        // --- Bulk permanent delete, then immediately "navigate away" mid-batch.
+        // Bulk permanent delete, then immediately "navigate away" mid-batch.
         compose.onNodeWithContentDescription("Delete").performClick()
         compose.onNodeWithText("Delete permanently").performClick()
         screenVisible = false
@@ -157,12 +202,32 @@ class MultiSelectBulkOpsDoDTest {
         // The batch is app-scoped: it completes with no screen attached.
         compose.waitUntil(10_000) { runBlocking { repo.items(VaultCategory.PHOTOS).first().isEmpty() } }
 
-        // --- Come back: grid is empty and the pending summary snackbar still surfaces.
+        // Come back: grid is empty and the pending summary snackbar still surfaces.
         screenVisible = true
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText("6 items deleted").fetchSemanticsNodes().isNotEmpty()
         }
         compose.onNodeWithText("No Hidden Photos Yet").assertExists()
+    }
+
+    /** Six folder-less photos with descending sort keys → display order p0, p1, … p5. */
+    private fun seedSixPhotos(): Pair<InMemoryVaultContentRepository, List<VaultItem>> {
+        val repo = InMemoryVaultContentRepository(seed = false)
+        val stored =
+            runBlocking {
+                repo.hide(
+                    (0 until 6).map { i ->
+                        VaultItem(
+                            id = "p$i",
+                            category = VaultCategory.PHOTOS,
+                            originalName = "p$i.jpg",
+                            dateLabel = "Today",
+                            sortKey = (100 - i).toLong(),
+                        )
+                    },
+                )
+            }
+        return repo to stored
     }
 
     // ---------------------------------------------------------------------------------
