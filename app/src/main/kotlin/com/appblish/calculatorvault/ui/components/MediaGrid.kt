@@ -28,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 
@@ -63,6 +64,10 @@ fun groupMediaByDate(items: List<MediaItem>): List<MediaGroup> =
  * (a decrypted image/video frame for hidden items, or a MediaStore thumbnail for picker
  * sources); tiles show the neutral placeholder while the load is in flight or returns
  * null. With no [loadThumbnail] (Compose previews / tests) every tile is a placeholder.
+ *
+ * With [dragSelect] wired, a long-press-drag range-selects the swept tiles (W1-E3) — the
+ * handler is applied *inside* the grid's own padding so pointer positions line up with
+ * [LazyGridState.layoutInfo] item coordinates.
  */
 @Composable
 fun DateGroupedMediaGrid(
@@ -76,13 +81,15 @@ fun DateGroupedMediaGrid(
     columns: Int = 3,
     loadThumbnail: (suspend (MediaItem) -> ImageBitmap?)? = null,
     state: LazyGridState = rememberLazyGridState(),
+    dragSelect: GridDragSelectCallbacks? = null,
 ) {
     val spacing = VaultTheme.spacing
     val groups = groupMediaByDate(items)
+    val gridModifier = modifier.testTag("media-grid").fillMaxWidth().padding(horizontal = spacing.lg)
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
         state = state,
-        modifier = modifier.fillMaxWidth().padding(horizontal = spacing.lg),
+        modifier = if (dragSelect != null) gridModifier.gridDragSelect(state, dragSelect) else gridModifier,
     ) {
         groups.forEach { group ->
             item(span = { GridItemSpan(maxLineSpan) }) {
@@ -130,7 +137,8 @@ private fun MediaThumbnail(
                 .aspectRatio(1f)
                 .clip(VaultTheme.shapes.thumbnail)
                 .background(colors.surfaceVariant)
-                .combinedClickable(onClick = onClick, onLongClick = onLongPress),
+                .combinedClickable(onClick = onClick, onLongClick = onLongPress)
+                .testTag("media-tile-${item.id}"),
     ) {
         thumbnail?.let { bmp ->
             Image(

@@ -132,11 +132,13 @@ class InMemoryVaultContentRepository(
             binState.value = binState.value.filterNot { it.item.id in itemIds }
         }
 
-    override suspend fun permanentlyDelete(itemIds: Set<String>) =
+    override suspend fun permanentlyDelete(itemIds: Set<String>): Int =
         mutex.withLock {
             // Straight vault removal (the device impl also securely wipes each blob); the
             // demo store holds no blob, so dropping the index entry is the whole delete.
-            itemsState.value = itemsState.value.filterNot { it.id in itemIds }
+            val (removed, kept) = itemsState.value.partition { it.id in itemIds }
+            itemsState.value = kept
+            removed.size
         }
 
     override suspend fun purgeExpired(now: Long): Int =

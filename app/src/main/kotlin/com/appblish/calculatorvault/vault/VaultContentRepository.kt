@@ -118,13 +118,15 @@ interface VaultContentRepository {
      * Permanently destroy the *vault* items [itemIds]: securely wipe each encrypted blob
      * (overwrite before unlink) and remove its index entry — the 2-step-confirmed
      * "Delete permanently" path (spec §1.5). Distinct from [deleteForever], which operates
-     * on items already sitting in the recycle bin. Default impl removes the index entries;
-     * the device repository adds the secure blob wipe.
+     * on items already sitting in the recycle bin. Returns how many items were actually
+     * destroyed so bulk summaries can report honestly (W1-E3). Default impl removes the
+     * index entries; the device repository adds the secure blob wipe + foreground service.
      */
-    suspend fun permanentlyDelete(itemIds: Set<String>) {
+    suspend fun permanentlyDelete(itemIds: Set<String>): Int {
         // In-memory fakes hold no blob; dropping the index entry is a full delete for them.
         moveToRecycleBin(itemIds)
         deleteForever(itemIds)
+        return itemIds.size
     }
 
     /**

@@ -1,6 +1,9 @@
 package com.appblish.calculatorvault.vault
 
+import android.net.Uri
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
@@ -26,14 +29,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -66,11 +70,17 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.components.FastScrollbar
+import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
 import com.appblish.calculatorvault.ui.components.VaultModal
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.actions.AlbumOption
+import com.appblish.calculatorvault.vault.actions.MoveToSheet
+import com.appblish.calculatorvault.vault.actions.UnhideChoice
+import com.appblish.calculatorvault.vault.actions.UnhideDialog
+import com.appblish.calculatorvault.vault.actions.treeUriToRelativePath
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.ui.VaultTopBar
@@ -83,9 +93,10 @@ import com.appblish.calculatorvault.vault.ui.icon
  * folders as a 3-column tile grid (cover thumbnail, name, count) plus a "+" tile into the
  * hide flow, with a top-right ↑↓ folder sort (S16). Tapping a folder opens its items in
  * the date-grouped multi-select grid (S17) — root ↔ folder is internal ViewModel state, so
- * system back walks folder → grid → pop. Multi-select offers Share / Restore (D-3 summary
- * snackbar) / Delete (shared D-4 delete-choice dialog); the FAB pops the S11 bubble menu
- * (Create Folder / Hide …).
+ * system back walks folder → grid → pop. Multi-select (W1-E3) enters on long-press, extends
+ * by tap-toggle, long-press-drag range select and Select All, and offers the bulk actions
+ * Move / Unhide / Delete (D-3 summary snackbar, shared D-4 delete-choice dialog); the FAB
+ * pops the S11 bubble menu (Create Folder / Hide …).
  */
 @Composable
 fun CategoryScreen(
@@ -102,6 +113,21 @@ fun CategoryScreen(
     var fabExpanded by remember { mutableStateOf(false) }
     var showCreateFolder by remember { mutableStateOf(false) }
     var showDeleteChoice by remember { mutableStateOf(false) }
+    var showMoveSheet by remember { mutableStateOf(false) }
+    var showUnhideDialog by remember { mutableStateOf(false) }
+    var unhideChoice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
+    var chosenUnhideFolder by remember { mutableStateOf<String?>(null) }
+    val unhideFolderPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
+            val relPath = uri?.let(::treeUriToRelativePath)
+            if (relPath != null) {
+                chosenUnhideFolder = relPath
+                unhideChoice = UnhideChoice.CHOSEN
+            } else {
+                // User backed out without picking — fall back to the safe default choice.
+                unhideChoice = UnhideChoice.ORIGINAL
+            }
+        }
 
     // Back inside a folder clears the selection first, then returns to the folder grid;
     // only at the root does back propagate to the nav host and pop the screen.
@@ -130,17 +156,27 @@ fun CategoryScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             when {
                 state.selectionMode ->
+                    // W1-E3 aggregate action bar: count + Select All + the three bulk ops
+                    // (Move / Unhide / Delete), each batching the W1-E2 single-photo flow.
+                    // Share is deliberately absent — out of Phase B scope.
                     MultiSelectActionBar(
                         selectedCount = state.selectedIds.size,
                         closeIcon = Icons.Filled.Close,
                         onClose = viewModel::clearSelection,
                         actions =
                             listOf(
-                                SelectionAction(Icons.Filled.Share, "Share") { /* share intent — hardening phase */ },
-                                // Restore (spec §8 vocabulary): decrypt back to public
-                                // storage so the item returns to the gallery.
-                                SelectionAction(Icons.Filled.Refresh, "Restore") {
-                                    viewModel.restoreSelected()
+                                SelectionAction(Icons.Filled.CheckCircle, "Select all") {
+                                    viewModel.selectAllInFolder()
+                                },
+                                // §6: bulk move — same Move-to sheet as the viewer's action.
+                                SelectionAction(Icons.Filled.ArrowForward, "Move") {
+                                    showMoveSheet = true
+                                },
+                                // §7: bulk unhide — destination dialog, honest summary.
+                                SelectionAction(Icons.Filled.Refresh, "Unhide") {
+                                    unhideChoice = UnhideChoice.ORIGINAL
+                                    chosenUnhideFolder = null
+                                    showUnhideDialog = true
                                 },
                                 // D-4: Delete opens the shared choice dialog (bin vs forever).
                                 SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
@@ -187,6 +223,14 @@ fun CategoryScreen(
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
                             loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
                             state = mediaGridState,
+                            // W1-E3: long-press-drag sweeps a display-order range into the
+                            // selection; dragging back releases what this gesture added.
+                            dragSelect =
+                                GridDragSelectCallbacks(
+                                    onDragStart = viewModel::beginDragSelect,
+                                    onDragOver = viewModel::dragSelectOver,
+                                    onDragEnd = viewModel::endDragSelect,
+                                ),
                         )
                         FastScrollbar(
                             state = mediaGridState,
@@ -247,7 +291,62 @@ fun CategoryScreen(
             onDismiss = { showDeleteChoice = false },
         )
     }
+
+    // §6: bulk Move — the same Move-to sheet the viewer uses, fed the live folder tiles
+    // (the "Recent" pseudo-folder maps to the category root) so create-folder appears
+    // in-place the moment it lands.
+    if (showMoveSheet) {
+        MoveToSheet(
+            itemCount = state.selectedIds.size,
+            albums = state.folderTiles.map { tile -> tile.toAlbumOption() },
+            currentFolderId = state.openFolderId?.takeUnless { it == CategoryState.RECENT_FOLDER_ID },
+            onDismiss = { showMoveSheet = false },
+            onCreateFolder = viewModel::createFolder,
+            onMove = { folderId ->
+                viewModel.moveSelectedToFolder(folderId)
+                showMoveSheet = false
+            },
+        )
+    }
+
+    // §7: bulk Unhide — original-or-chosen destination with the Downloads fallback promise;
+    // the batch streams under the foreground service and reports "X done, Y failed".
+    if (showUnhideDialog) {
+        UnhideDialog(
+            itemCount = state.selectedIds.size,
+            originalPath = selectionCommonPath(state),
+            choice = unhideChoice,
+            chosenFolderLabel = chosenUnhideFolder,
+            onChoiceChange = { unhideChoice = it },
+            onPickFolder = { unhideFolderPicker.launch(null) },
+            onConfirm = { destination ->
+                viewModel.unhideSelected(destination)
+                showUnhideDialog = false
+            },
+            onDismiss = { showUnhideDialog = false },
+        )
+    }
 }
+
+/** A folder tile as a Move-to sheet row; the "Recent" pseudo-folder is the category root. */
+private fun CategoryFolderTile.toAlbumOption(): AlbumOption =
+    AlbumOption(
+        id = id.takeUnless { it == CategoryState.RECENT_FOLDER_ID },
+        name = name,
+        count = itemCount,
+    )
+
+/**
+ * The one original path shared by every selected item, or null when the selection spans
+ * folders — the bulk Unhide dialog then shows the generic "Original folder" subtitle
+ * rather than implying a single destination that is only true for some of the items.
+ */
+private fun selectionCommonPath(state: CategoryState): String? =
+    state.folderItems
+        .filter { it.id in state.selectedIds }
+        .map { it.relativePath }
+        .distinct()
+        .singleOrNull()
 
 private fun onItemClicked(
     state: CategoryState,

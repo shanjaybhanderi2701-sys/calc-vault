@@ -377,40 +377,47 @@ class EncryptedVaultContentRepository(
         withContext(Dispatchers.IO) {
             val cipher = crypto ?: return@withContext UnhideResult()
             val targets = itemsState.value.filter { it.id in itemIds }
-            val outcomes = mutableListOf<UnhideOutcome>()
-            for (item in targets) {
-                // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
-                // resolveBlob handles both those and any legacy absolute paths.
-                val blob = item.encryptedPath?.let(::resolveBlob)
-                if (blob == null || !blob.exists()) {
-                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
-                    continue
-                }
-                // Stream blob → decrypt → public storage without materializing the
-                // plaintext in memory (a vault video can be larger than the heap). Only on
-                // a confirmed write-back do we drop the vault copy — a failed decrypt or
-                // write leaves the encrypted original in place (never lose it), and
-                // MediaSink discards any partially written plaintext.
-                val result =
-                    mediaSink.writeBack(item, destination) { out ->
-                        blob.inputStream().use { source -> cipher.decrypt(source, out) }
+            // The whole batch runs as a tracked bulk op (spec §1.6 / W1-E3): foreground
+            // service + "Processing N of M" notification, per-item progress ticks.
+            withBulkOp("Unhiding files", targets.size) {
+                val outcomes = mutableListOf<UnhideOutcome>()
+                for ((index, item) in targets.withIndex()) {
+                    // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
+                    // resolveBlob handles both those and any legacy absolute paths.
+                    val blob = item.encryptedPath?.let(::resolveBlob)
+                    if (blob == null || !blob.exists()) {
+                        outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                        BulkOpProgress.update(index + 1)
+                        continue
                     }
-                if (result.uri == null) {
-                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
-                    continue
+                    // Stream blob → decrypt → public storage without materializing the
+                    // plaintext in memory (a vault video can be larger than the heap). Only on
+                    // a confirmed write-back do we drop the vault copy — a failed decrypt or
+                    // write leaves the encrypted original in place (never lose it), and
+                    // MediaSink discards any partially written plaintext.
+                    val result =
+                        mediaSink.writeBack(item, destination) { out ->
+                            blob.inputStream().use { source -> cipher.decrypt(source, out) }
+                        }
+                    if (result.uri == null) {
+                        outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                        BulkOpProgress.update(index + 1)
+                        continue
+                    }
+                    // Securely wipe then unlink — the decrypted copy now lives in the gallery,
+                    // so the vault blob must leave no recoverable ciphertext behind. Also evict
+                    // the encrypted thumb cache: the item is no longer hidden (APP-244).
+                    secureWipe(blob)
+                    dropThumb(item)
+                    mutex.withLock {
+                        itemsState.value = itemsState.value.filterNot { it.id == item.id }
+                        persist()
+                    }
+                    outcomes += UnhideOutcome(item.id, result.disposition, result.destinationLabel)
+                    BulkOpProgress.update(index + 1)
                 }
-                // Securely wipe then unlink — the decrypted copy now lives in the gallery,
-                // so the vault blob must leave no recoverable ciphertext behind. Also evict
-                // the encrypted thumb cache: the item is no longer hidden (APP-244).
-                secureWipe(blob)
-                dropThumb(item)
-                mutex.withLock {
-                    itemsState.value = itemsState.value.filterNot { it.id == item.id }
-                    persist()
-                }
-                outcomes += UnhideOutcome(item.id, result.disposition, result.destinationLabel)
+                UnhideResult(outcomes)
             }
-            UnhideResult(outcomes)
         }
 
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
@@ -441,15 +448,25 @@ class EncryptedVaultContentRepository(
             persist()
         }
 
-    override suspend fun permanentlyDelete(itemIds: Set<String>) =
+    override suspend fun permanentlyDelete(itemIds: Set<String>): Int =
         withContext(Dispatchers.IO) {
             mutex.withLock {
                 // Secure blob wipe + index-entry removal, straight from the vault (the
                 // 2-step-confirmed permanent path, spec §1.5). Never routes through the bin.
+                // Runs as a tracked bulk op (W1-E3): a large selection's overwrite pass is
+                // slow, so the foreground service keeps the half-wiped batch alive. Stored
+                // thumbs are dropped too — a deleted photo must leave no preview behind.
                 val (removed, kept) = itemsState.value.partition { it.id in itemIds }
-                removed.forEach { it.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) } }
+                withBulkOp("Deleting files", removed.size) {
+                    removed.forEachIndexed { index, item ->
+                        item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
+                        dropThumb(item)
+                        BulkOpProgress.update(index + 1)
+                    }
+                }
                 itemsState.value = kept
                 persist()
+                removed.size
             }
         }
 
