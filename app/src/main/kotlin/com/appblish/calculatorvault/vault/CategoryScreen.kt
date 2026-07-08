@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
@@ -97,6 +98,7 @@ import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.SortSheet
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
@@ -178,6 +180,24 @@ fun CategoryScreen(
             snackbarHostState.showSnackbar(notice, duration = SnackbarDuration.Long)
         } finally {
             viewModel.consumeOpNotice()
+        }
+    }
+
+    // APP-294 Share: launch the chooser for a prepared temp-copy session, purge on return;
+    // a failed prepare surfaces its own one-shot notice (never a silent no-op).
+    val shareRequest by viewModel.shareRequest.collectAsStateWithLifecycle()
+    val shareNotice by viewModel.shareNotice.collectAsStateWithLifecycle()
+    ShareSessionLauncher(
+        request = shareRequest,
+        onLaunched = viewModel::shareLaunched,
+        onFinished = viewModel::shareFinished,
+    )
+    LaunchedEffect(shareNotice) {
+        val notice = shareNotice ?: return@LaunchedEffect
+        try {
+            snackbarHostState.showSnackbar(notice)
+        } finally {
+            viewModel.consumeShareNotice()
         }
     }
 
@@ -358,8 +378,8 @@ fun CategoryScreen(
         }
 
         // APP-293 item 13: the labeled multi-select bottom tray — primaries up front
-        // (Unhide · Move · Delete; Share joins via the sibling Share issue), the rest in
-        // More — mirroring the viewer bottom bar. One tray per selection mode.
+        // (Unhide · Move · Delete · Share, per APP-294), the rest in More —
+        // mirroring the viewer bottom bar. One tray per selection mode.
         if (state.selectionMode) {
             SelectionActionTray(
                 actions =
@@ -377,6 +397,11 @@ fun CategoryScreen(
                         // D-4: Delete opens the shared choice dialog (bin vs forever).
                         SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
                             showDeleteChoice = true
+                        },
+                        // APP-294: share the selection via the vault-safe temp-copy
+                        // contract (decrypt → FileProvider → purge on return).
+                        SelectionAction(Icons.Filled.Share, "Share") {
+                            viewModel.shareSelected(context)
                         },
                     ),
                 overflow =

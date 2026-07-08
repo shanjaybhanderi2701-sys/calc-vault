@@ -13,6 +13,7 @@ import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.share.VaultShare
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -390,6 +391,59 @@ class PagerViewerViewModel(
         }
     }
 
+    // --- APP-294 · Share (vault-safe temp-copy contract, see [VaultShare]) -------------
+
+    private val _shareRequest = MutableStateFlow<VaultShare.Session?>(null)
+
+    /** A prepared share awaiting launch; the screen's ShareSessionLauncher consumes it. */
+    val shareRequest: StateFlow<VaultShare.Session?> = _shareRequest.asStateFlow()
+
+    // The launched-but-not-finished session, kept so the activity-result callback can
+    // purge its temp copies the moment the share flow returns (complete or cancelled).
+    private var liveShareSession: VaultShare.Session? = null
+
+    /**
+     * Share the settled page: stream-decrypt it to a scoped temp copy and surface the
+     * session via [shareRequest]. Reads the target from [activeItemId] + a fresh
+     * repository lookup (the [activeItem] flow only produces while collected — same
+     * rule as [setAsCover]). One share flow at a time; a decrypt failure is never
+     * silent ([message] shows "Couldn't share.").
+     */
+    fun share() {
+        if (liveShareSession != null || _shareRequest.value != null) return
+        val id = activeItemId.value ?: return
+        val context = appContext ?: return
+        viewModelScope.launch {
+            val item = repository.allItems().first().firstOrNull { it.id == id }
+            val session =
+                item?.let {
+                    withContext(Dispatchers.IO) { VaultShare.prepare(context, repository, listOf(it)) }
+                }
+            if (session == null) {
+                _message.value = "Couldn't share."
+            } else {
+                liveShareSession = session
+                _shareRequest.value = session
+            }
+        }
+    }
+
+    /** The screen launched the chooser; consume the request so it can never re-fire. */
+    fun shareLaunched() {
+        _shareRequest.value = null
+    }
+
+    /**
+     * The share flow returned (completed or cancelled) — delete the temp copy now, per
+     * the APP-294 contract. NonCancellable on IO so a simultaneous VM clear (back press
+     * racing the result) can't strand the cleartext until the process-restart purge.
+     */
+    fun shareFinished() {
+        val session = liveShareSession ?: return
+        liveShareSession = null
+        commitScope.launch { VaultShare.purge(session) }
+    }
+
     // --- W3-E §5 · Set as cover (viewer `⋯ More`) --------------------------------------
 
     /**
@@ -497,6 +551,10 @@ class PagerViewerViewModel(
         byteCacheSize = 0L
         mediaCache.clear()
         createdTempFiles.forEach { it.delete() }
+        // Share backstop: a VM clear mid-share (ON_STOP re-lock popping the viewer while
+        // the receiver is foreground) would lose the activity-result purge — purge here.
+        // An already-open receiver stream survives the unlink; a later open fails closed.
+        shareFinished()
         super.onCleared()
     }
 

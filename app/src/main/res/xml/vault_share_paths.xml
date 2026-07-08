@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  APP-294 Share provider whitelist — the ONLY tree the share FileProvider can resolve is
+  the app-private cacheDir/share/ session directory. The encrypted blobs, the index, and
+  the public .CalcVault/ folder live outside it, so a share URI can never reach the
+  vault's real storage path or ciphertext. Must stay in sync with VaultShare.SHARE_DIR.
+-->
+<paths>
+    <cache-path
+        name="vault_share"
+        path="share/" />
+</paths>

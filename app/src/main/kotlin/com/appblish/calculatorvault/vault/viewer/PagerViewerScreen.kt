@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -77,6 +78,7 @@ import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
@@ -127,10 +129,19 @@ fun PagerViewerScreen(
     val colors = VaultTheme.colors
     val state by viewModel.state.collectAsStateWithLifecycle()
     val activePage by viewModel.activePage.collectAsStateWithLifecycle()
+    val shareRequest by viewModel.shareRequest.collectAsStateWithLifecycle()
 
     LaunchedEffect(state.empty) {
         if (state.empty) onEmpty()
     }
+
+    // APP-294 Share: launches the chooser for a prepared temp-copy session and purges it
+    // the moment the share flow returns (completed or cancelled).
+    ShareSessionLauncher(
+        request = shareRequest,
+        onLaunched = viewModel::shareLaunched,
+        onFinished = viewModel::shareFinished,
+    )
 
     Box(modifier = modifier.fillMaxSize().background(ViewerCanvas)) {
         if (state.loaded && state.pages.isNotEmpty()) {
@@ -254,6 +265,8 @@ private fun ViewerPager(
                 onUnhide = { currentItem?.let(onUnhide) },
                 onDelete = { showDeleteChoice = true },
                 onMove = { currentItem?.let(onMove) },
+                // APP-294: Share the settled page via the vault-safe temp-copy contract.
+                onShare = { viewModel.share() },
                 // W3-E §5: the pre-agreed W1-D "4th action → ⋯ More" rule, executed. Null
                 // (hidden) when the photo has no album to cover (category root/"Recent").
                 onSetCover = if (currentItem?.folderId != null) ({ viewModel.setAsCover() }) else null,
@@ -716,6 +729,7 @@ private fun ViewerBottomBar(
     onUnhide: () -> Unit,
     onDelete: () -> Unit,
     onMove: () -> Unit,
+    onShare: () -> Unit,
     onSetCover: (() -> Unit)?,
 ) {
     val colors = VaultTheme.colors
@@ -735,6 +749,8 @@ private fun ViewerBottomBar(
         ViewerAction(label = "Delete", tint = colors.destructive, icon = Icons.Filled.Delete, onClick = onDelete)
         // Move: relocate the encrypted index entry to another vault album (stays encrypted).
         ViewerAction(label = "Move", tint = ViewerOnCanvas, icon = VaultActionIcons.MoveTo, onClick = onMove)
+        // Share: decrypt to a scoped temp copy, FileProvider-serve, purge on return (APP-294).
+        ViewerAction(label = "Share", tint = ViewerOnCanvas, icon = Icons.Filled.Share, onClick = onShare)
         if (onSetCover != null) {
             Box {
                 ViewerAction(
