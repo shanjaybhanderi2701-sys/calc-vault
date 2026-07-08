@@ -67,7 +67,11 @@ fun groupMediaByDate(items: List<MediaItem>): List<MediaGroup> =
  *
  * With [dragSelect] wired, a long-press-drag range-selects the swept tiles (W1-E3) — the
  * handler is applied *inside* the grid's own padding so pointer positions line up with
- * [LazyGridState.layoutInfo] item coordinates.
+ * [LazyGridState.layoutInfo] item coordinates. The grid-level detector then owns the
+ * long-press entirely: its onDragStart fires on the press itself (movement or not), so
+ * [onItemLongPress] is served through [GridDragSelectCallbacks.onDragStart] and the tiles
+ * drop their own long-click handler — a tile-level long-press consumes the pointer until
+ * up (tap-gesture semantics), which would cancel the grid's drag the moment it starts.
  */
 @Composable
 fun DateGroupedMediaGrid(
@@ -107,7 +111,9 @@ fun DateGroupedMediaGrid(
                     selectionMode = selectionMode,
                     checkIcon = checkIcon,
                     onClick = { onItemClick(item) },
-                    onLongPress = { onItemLongPress(item) },
+                    // See the grid KDoc: with drag-select active the grid detector owns
+                    // long-press; a tile-level long-click would cancel the drag.
+                    onLongPress = if (dragSelect == null) ({ onItemLongPress(item) }) else null,
                     loadThumbnail = loadThumbnail,
                 )
             }
@@ -123,7 +129,7 @@ private fun MediaThumbnail(
     selectionMode: Boolean,
     checkIcon: ImageVector,
     onClick: () -> Unit,
-    onLongPress: () -> Unit,
+    onLongPress: (() -> Unit)?,
     loadThumbnail: (suspend (MediaItem) -> ImageBitmap?)? = null,
 ) {
     val colors = VaultTheme.colors

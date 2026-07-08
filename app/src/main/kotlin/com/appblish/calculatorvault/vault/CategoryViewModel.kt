@@ -215,8 +215,9 @@ class CategoryViewModel(
     /**
      * A long-press-drag began on [itemId] (W1-E3): make it the range anchor and snapshot
      * the selection the gesture starts from, so dragging backwards only ever releases
-     * items this gesture itself swept up. Idempotent with [startSelection], which the
-     * tile's own long-press handler fires for the same touch.
+     * items this gesture itself swept up. With drag-select wired the grid detector owns
+     * long-press outright (tiles drop their own handler), so this is also what *enters*
+     * selection mode on a plain long-press — a no-movement press is just an empty drag.
      */
     fun beginDragSelect(itemId: String) {
         local.update {
