@@ -92,9 +92,9 @@ class HideImportViewModelTest {
 
         override suspend fun moveToRecycleBin(itemIds: Set<String>) = Unit
 
-        override suspend fun restore(itemIds: Set<String>) = Unit
+        override suspend fun restore(itemIds: Set<String>): Int = 0
 
-        override suspend fun deleteForever(itemIds: Set<String>) = Unit
+        override suspend fun deleteForever(itemIds: Set<String>): Int = 0
 
         override suspend fun purgeExpired(now: Long): Int = 0
 

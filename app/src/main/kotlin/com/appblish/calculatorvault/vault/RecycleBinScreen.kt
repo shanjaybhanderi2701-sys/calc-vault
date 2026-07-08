@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.vault
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,15 +22,23 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -40,15 +49,20 @@ import com.appblish.calculatorvault.ui.components.VaultModal
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.ui.VaultTopBar
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 
 /**
- * The recycle bin: soft-deleted items awaiting the 30-day auto-delete window. Each row
- * shows its "N days left"; multi-select drives **Restore** (back to category) and
- * **Delete forever** (irreversible, guarded by a red destructive confirm). Expired
- * entries are already purged by the ViewModel on open.
+ * The recycle bin (W1-E4): soft-deleted items awaiting the 30-day auto-delete window,
+ * their blobs still AES-encrypted in the vault store. Each row shows its "N days left"
+ * plus the cached encrypted thumbnail; multi-select drives **Restore** (index entry + blob
+ * back to its album) and **Delete forever** (secure blob wipe, guarded by a red
+ * destructive confirm). Both are bulk ops — off the main thread, foreground-service
+ * pattern, app-scoped so they survive navigating away — whose "X done, Y failed" summary
+ * lands in the snackbar (spec §1.6). Expired entries are already purged by the ViewModel
+ * on open.
  */
 @Composable
 fun RecycleBinScreen(
@@ -60,6 +74,19 @@ fun RecycleBinScreen(
     val colors = VaultTheme.colors
     var confirmDelete by remember { mutableStateOf(false) }
     val now = remember(state.entries) { viewModel.clock() }
+    val context = LocalContext.current.applicationContext
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    // One snackbar per bulk operation (D-3 / spec §1.6) — never silent, consumed even if
+    // the effect is cancelled mid-show. Long (~6s) so a failure count is readable.
+    LaunchedEffect(state.opNotice) {
+        val notice = state.opNotice ?: return@LaunchedEffect
+        try {
+            snackbarHostState.showSnackbar(notice, duration = SnackbarDuration.Long)
+        } finally {
+            viewModel.consumeOpNotice()
+        }
+    }
 
     Box(modifier = modifier.fillMaxSize().background(colors.canvas)) {
         Column(modifier = Modifier.fillMaxSize()) {
@@ -95,11 +122,13 @@ fun RecycleBinScreen(
                             selected = entry.item.id in state.selectedIds,
                             onClick = { viewModel.toggle(entry.item.id) },
                             onLongPress = { viewModel.toggle(entry.item.id) },
+                            loadThumbnail = { viewModel.thumbnail(context, it) },
                         )
                     }
                 }
             }
         }
+        SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
     }
 
     if (confirmDelete) {
@@ -125,10 +154,18 @@ private fun RecycleRow(
     selected: Boolean,
     onClick: () -> Unit,
     onLongPress: () -> Unit,
+    loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
     val daysLeft = RecycleBin.daysLeft(entry, now)
+    // Encrypted stored-thumb pipeline only (spec §1.7): the tile decrypts the ~KB thumb
+    // written at hide time, never the full blob. Null (still loading / no thumb, e.g.
+    // audio) falls back to the category glyph. Keyed on the item id alone — the loader
+    // lambda is recreated per recomposition and must not restart the producer.
+    val thumb by produceState<ImageBitmap?>(initialValue = null, entry.item.id) {
+        value = loadThumbnail?.invoke(entry.item)
+    }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier =
@@ -142,12 +179,22 @@ private fun RecycleRow(
             contentAlignment = Alignment.Center,
             modifier = Modifier.size(40.dp).clip(VaultTheme.shapes.thumbnail).background(colors.surfaceVariant),
         ) {
-            Icon(
-                imageVector = entry.item.category.icon(),
-                contentDescription = null,
-                tint = entry.item.category.color(),
-                modifier = Modifier.size(22.dp),
-            )
+            val bitmap = thumb
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.size(40.dp),
+                )
+            } else {
+                Icon(
+                    imageVector = entry.item.category.icon(),
+                    contentDescription = null,
+                    tint = entry.item.category.color(),
+                    modifier = Modifier.size(22.dp),
+                )
+            }
         }
         Spacer(Modifier.size(spacing.md))
         Column(modifier = Modifier.weight(1f)) {

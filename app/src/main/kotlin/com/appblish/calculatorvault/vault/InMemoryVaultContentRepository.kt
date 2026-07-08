@@ -120,16 +120,19 @@ class InMemoryVaultContentRepository(
             itemsState.value = kept
         }
 
-    override suspend fun restore(itemIds: Set<String>) =
+    override suspend fun restore(itemIds: Set<String>): Int =
         mutex.withLock {
             val (restored, kept) = binState.value.partition { it.item.id in itemIds }
             itemsState.value = itemsState.value + restored.map { it.item }
             binState.value = kept
+            restored.size
         }
 
-    override suspend fun deleteForever(itemIds: Set<String>) =
+    override suspend fun deleteForever(itemIds: Set<String>): Int =
         mutex.withLock {
-            binState.value = binState.value.filterNot { it.item.id in itemIds }
+            val (removed, kept) = binState.value.partition { it.item.id in itemIds }
+            binState.value = kept
+            removed.size
         }
 
     override suspend fun permanentlyDelete(itemIds: Set<String>): Int =
