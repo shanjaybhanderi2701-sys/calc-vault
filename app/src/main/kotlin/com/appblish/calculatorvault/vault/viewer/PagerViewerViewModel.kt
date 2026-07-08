@@ -324,13 +324,24 @@ class PagerViewerViewModel(
      * album is implicit (the photo's own); the changed home tile is off-screen, so the
      * snackbar *is* required here (contrast the pin's object-is-the-interface rule).
      * Idempotent: re-setting the current cover shows the same copy, writes nothing new.
+     *
+     * Reads the target from [activeItemId] + a fresh repository lookup — like every other
+     * §6–§9 action — rather than the [activeItem] StateFlow, which only produces while a
+     * subscriber is collecting it (the host's PhotoActionsHost); the `⋯ More` menu must
+     * work regardless of what else is observing.
      */
     fun setAsCover() {
-        val item = activeItem.value ?: return
-        val folderId = item.folderId ?: return
+        val id = activeItemId.value ?: return
         viewModelScope.launch {
+            val item = repository.allItems().first().firstOrNull { it.id == id }
+            val folderId = item?.folderId
+            if (folderId == null) {
+                // The bar hides `⋯ More` for a folder-less item, so this is defensive only.
+                _message.value = "Couldn't set cover — try again."
+                return@launch
+            }
             val ok =
-                runCatching { withContext(NonCancellable) { repository.setFolderCover(folderId, item.id) } }
+                runCatching { withContext(NonCancellable) { repository.setFolderCover(folderId, id) } }
                     .isSuccess
             _message.value = if (ok) "Set as album cover." else "Couldn't set cover — try again."
         }

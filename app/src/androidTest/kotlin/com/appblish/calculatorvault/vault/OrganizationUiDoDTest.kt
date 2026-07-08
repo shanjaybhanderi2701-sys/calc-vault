@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -101,6 +102,17 @@ class OrganizationUiDoDTest {
         }
     }
 
+    /**
+     * Wait for a tag that sits INSIDE a clickable tile — the album tile and cover tile use
+     * `combinedClickable`/`clickable`, which merges descendant semantics, so a child's
+     * testTag (pin badge, "Current" chip) only exists in the *unmerged* tree.
+     */
+    private fun awaitTagUnmerged(tag: String) {
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithTag(tag, useUnmergedTree = true).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
     /** Wait for [text] to exist (any count) — popup/menu content composes a frame late. */
     private fun awaitText(text: String) {
         compose.waitUntil(5_000) {
@@ -136,8 +148,9 @@ class OrganizationUiDoDTest {
         clickOverflowItem("Pin album")
 
         // The badge + reposition IS the confirmation (no snackbar): pinned Zulu now
-        // leads the grid despite Name·Ascending, and the index bit is set.
-        awaitTag("pin-badge-$zuluId")
+        // leads the grid despite Name·Ascending, and the index bit is set. The badge
+        // is a child of the clickable tile → assert it in the unmerged tree.
+        awaitTagUnmerged("pin-badge-$zuluId")
         compose.waitUntil(5_000) {
             vm.state.value.folderTiles
                 .firstOrNull()
@@ -216,9 +229,9 @@ class OrganizationUiDoDTest {
         awaitText("Choose cover")
         compose.onNodeWithText("Choose cover").assertExists()
 
-        // The current (fallback) cover — the newest photo — carries the "Current" chip.
-        awaitTag("cover-current-chip")
-        compose.onNodeWithTag("cover-current-chip").assertExists()
+        // The current (fallback) cover — the newest photo — carries the "Current" chip
+        // (a child of the clickable cover tile → unmerged tree).
+        awaitTagUnmerged("cover-current-chip")
 
         // Cancel first: back writes nothing.
         compose.onNodeWithContentDescription("Back").performClick()
