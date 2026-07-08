@@ -182,8 +182,12 @@ class AlbumMultiSelectDoDTest {
         compose.onNodeWithTag("album-tile-$cameraId").performTouchInput { longClick() }
         compose.onNodeWithText("1 selected").assertExists()
         // W3-E (W3-D §4): the N=1 identity actions moved into the selection bar's ⋯
-        // overflow — Rename · Pin album · Set as cover.
+        // overflow — Rename · Pin album · Set as cover. The DropdownMenu popup composes
+        // a frame after the anchor click, so await the item before clicking it.
         compose.onNodeWithContentDescription("More options").performClick()
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText("Rename").fetchSemanticsNodes().isNotEmpty()
+        }
         compose.onNodeWithText("Rename").performClick()
         compose.onNodeWithText("Rename album").assertExists()
 

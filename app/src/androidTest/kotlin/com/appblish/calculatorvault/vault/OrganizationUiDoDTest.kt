@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault
 
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -100,6 +101,25 @@ class OrganizationUiDoDTest {
         }
     }
 
+    /** Wait for [text] to exist (any count) — popup/menu content composes a frame late. */
+    private fun awaitText(text: String) {
+        compose.waitUntil(5_000) {
+            compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+        }
+    }
+
+    /**
+     * Open the selection-bar `⋯` overflow and click [label]. The Material3 DropdownMenu
+     * renders into a Popup whose content composes a frame after the anchor click, so the
+     * item must be awaited before it can be clicked (a slow emulator loses the race that
+     * `performClick`'s implicit `waitForIdle` would otherwise cover).
+     */
+    private fun clickOverflowItem(label: String) {
+        compose.onNodeWithContentDescription("More options").performClick()
+        awaitText(label)
+        compose.onNodeWithText(label).performClick()
+    }
+
     // ---------------------------------------------------------------------------------
     // 1 · Pin album via the N=1 overflow: badge + two-cluster reorder, state-aware label
     // ---------------------------------------------------------------------------------
@@ -113,8 +133,7 @@ class OrganizationUiDoDTest {
 
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
         compose.onNodeWithText("1 selected").assertExists()
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Pin album").performClick()
+        clickOverflowItem("Pin album")
 
         // The badge + reposition IS the confirmation (no snackbar): pinned Zulu now
         // leads the grid despite Name·Ascending, and the index bit is set.
@@ -137,6 +156,7 @@ class OrganizationUiDoDTest {
         // State-aware overflow: the pinned album offers only "Unpin album".
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
         compose.onNodeWithContentDescription("More options").performClick()
+        awaitText("Unpin album")
         compose.onNodeWithText("Unpin album").assertExists()
     }
 
@@ -192,15 +212,17 @@ class OrganizationUiDoDTest {
 
         // Open the picker from the album overflow.
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Set as cover").performClick()
+        clickOverflowItem("Set as cover")
+        awaitText("Choose cover")
         compose.onNodeWithText("Choose cover").assertExists()
 
         // The current (fallback) cover — the newest photo — carries the "Current" chip.
+        awaitTag("cover-current-chip")
         compose.onNodeWithTag("cover-current-chip").assertExists()
 
         // Cancel first: back writes nothing.
         compose.onNodeWithContentDescription("Back").performClick()
+        awaitTag("album-tile-$zuluId")
         runBlocking {
             assertThat(
                 repo
@@ -213,9 +235,9 @@ class OrganizationUiDoDTest {
 
         // Re-open, pick the OLDER photo, confirm → pointer written, back on the grid.
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Set as cover").performClick()
+        clickOverflowItem("Set as cover")
         val older = itemIds.first()
+        awaitTag("cover-tile-$older")
         compose.onNodeWithTag("cover-tile-$older").performClick()
         compose.onNodeWithTag("choose-cover-confirm").performClick()
         compose.waitUntil(5_000) {
@@ -247,8 +269,7 @@ class OrganizationUiDoDTest {
         compose.onNodeWithTag("media-tile-$older").performTouchInput { longClick() }
         compose.onNodeWithText("1 selected").assertExists()
 
-        compose.onNodeWithContentDescription("More options").performClick()
-        compose.onNodeWithText("Set as cover").performClick()
+        clickOverflowItem("Set as cover")
 
         compose.waitUntil(5_000) {
             runBlocking {
@@ -279,16 +300,18 @@ class OrganizationUiDoDTest {
                 PagerViewerScreen(viewModel = vm, onBack = {})
             }
         }
-        compose.waitUntil(5_000) {
+        // The settled page must be decrypted before the chrome's ⟳ will act (rotate
+        // targets decoded photos only). Generous timeouts — decode + debounce + the
+        // menu popup all compose on the slower emulator matrix.
+        compose.waitUntil(10_000) { vm.activePage.value?.content is PageContent.Bytes }
+        compose.waitUntil(10_000) {
             runCatching { compose.onNodeWithContentDescription("Rotate").fetchSemanticsNode() }.isSuccess
         }
-        // The settled page must be decrypted (rotate targets decoded photos only).
-        compose.waitUntil(5_000) { vm.activePage.value?.content is PageContent.Bytes }
 
         // Two taps = net 180°, committed after the 500ms idle debounce (W3-D §8).
         compose.onNodeWithContentDescription("Rotate").performClick()
         compose.onNodeWithContentDescription("Rotate").performClick()
-        compose.waitUntil(5_000) {
+        compose.waitUntil(10_000) {
             runBlocking {
                 repo
                     .allItems()
@@ -298,10 +321,13 @@ class OrganizationUiDoDTest {
             }
         }
 
-        // ⋯ More → Set as cover: the photo's own album is implicit (§5).
+        // ⋯ More → Set as cover: the photo's own album is implicit (§5). The bottom-bar
+        // overflow uses the "More" content description (vs the selection bar's "More
+        // options"); the popup item composes a frame late, so await it before clicking.
         compose.onNodeWithContentDescription("More").performClick()
+        awaitText("Set as cover")
         compose.onNodeWithText("Set as cover").performClick()
-        compose.waitUntil(5_000) {
+        compose.waitUntil(10_000) {
             runBlocking {
                 repo
                     .folders(VaultCategory.PHOTOS)
