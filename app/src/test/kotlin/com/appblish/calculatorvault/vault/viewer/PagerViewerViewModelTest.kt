@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault.viewer
 
 import com.appblish.calculatorvault.vault.CategoryState
 import com.appblish.calculatorvault.vault.InMemoryVaultContentRepository
+import com.appblish.calculatorvault.vault.VaultContentRepository
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.google.common.truth.Truth.assertThat
@@ -267,5 +268,43 @@ class PagerViewerViewModelTest {
             // Same id again (e.g. the pages list re-emitted): stays resolved, no Loading flip.
             viewModel.setActivePage(photo.id)
             assertThat(viewModel.activePage.value).isSameInstanceAs(first)
+        }
+
+    @Test
+    fun `swiping back to a viewed page reuses the in-session cache with no second decrypt`() =
+        runTest(dispatcher) {
+            // APP-293 P0-4: the viewer cache — decrypt each page once per session.
+            val repo = InMemoryVaultContentRepository(seed = false)
+            val stored = repo.hide(listOf(staged("first", sortKey = 2), staged("second", sortKey = 1)))
+            var decrypts = 0
+            val counting =
+                object : VaultContentRepository by repo {
+                    override suspend fun openDecrypted(itemId: String): ByteArray? {
+                        decrypts++
+                        return repo.openDecrypted(itemId)
+                    }
+                }
+            val viewModel =
+                PagerViewerViewModel(
+                    startItemId = stored[0].id,
+                    category = VaultCategory.PHOTOS,
+                    folderId = null,
+                    context = null,
+                    repository = counting,
+                )
+
+            viewModel.setActivePage(stored[0].id)
+            viewModel.activePage.first { it?.itemId == stored[0].id && it.content != PageContent.Loading }
+            viewModel.setActivePage(stored[1].id)
+            viewModel.activePage.first { it?.itemId == stored[1].id && it.content != PageContent.Loading }
+            assertThat(decrypts).isEqualTo(2)
+
+            // Swipe back: served from the in-session cache — instantly (no Loading state)
+            // and with no third decrypt.
+            viewModel.setActivePage(stored[0].id)
+            val back = viewModel.activePage.value
+            assertThat(back?.itemId).isEqualTo(stored[0].id)
+            assertThat(back?.content).isInstanceOf(PageContent.Bytes::class.java)
+            assertThat(decrypts).isEqualTo(2)
         }
 }

@@ -290,7 +290,11 @@ private fun FolderGrid(
             }
         }
         // P2-2: draggable fast-scroll thumb (renders only once the grid tops ~30 cells).
-        FastScrollbar(state = gridState, modifier = Modifier.align(Alignment.CenterEnd))
+        FastScrollbar(
+            state = gridState,
+            modifier = Modifier.align(Alignment.CenterEnd),
+            labelForIndex = { index -> albums.getOrNull(index)?.name },
+        )
     }
 }
 
@@ -433,7 +437,17 @@ private fun SectionedItemGrid(
             }
         }
         // P2-2: draggable fast-scroll thumb (renders only once the grid tops ~30 cells).
-        FastScrollbar(state = gridState, modifier = Modifier.align(Alignment.CenterEnd))
+        // Item 14 bubble: grid indices include the section headers, so the label table
+        // repeats each section's date once for its header row and once per item.
+        val indexLabels =
+            remember(groups) {
+                groups.flatMap { group -> List(group.items.size + 1) { group.dateLabel } }
+            }
+        FastScrollbar(
+            state = gridState,
+            modifier = Modifier.align(Alignment.CenterEnd),
+            labelForIndex = { index -> indexLabels.getOrNull(index) },
+        )
     }
 }
 

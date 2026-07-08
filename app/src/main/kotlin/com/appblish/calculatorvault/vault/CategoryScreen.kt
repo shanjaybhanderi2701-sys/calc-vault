@@ -328,6 +328,9 @@ fun CategoryScreen(
                         FastScrollbar(
                             state = mediaGridState,
                             modifier = Modifier.align(Alignment.CenterEnd),
+                            // Item 14: the drag bubble names the date the drag will land
+                            // on — the flat grid's index maps 1:1 onto display order.
+                            labelForIndex = { index -> state.folderItems.getOrNull(index)?.dateLabel },
                         )
                     }
                     else ->
@@ -1110,7 +1113,11 @@ private fun CategoryList(
             }
         }
         // P2-2: draggable fast-scroll for long folders (renders only past ~30 items).
-        FastScrollbar(state = listState, modifier = Modifier.align(Alignment.CenterEnd))
+        FastScrollbar(
+            state = listState,
+            modifier = Modifier.align(Alignment.CenterEnd),
+            labelForIndex = { index -> items.getOrNull(index)?.dateLabel },
+        )
     }
 }
 
