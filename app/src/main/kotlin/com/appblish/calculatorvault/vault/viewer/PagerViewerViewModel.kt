@@ -131,11 +131,11 @@ class PagerViewerViewModel(
     val activePage: StateFlow<ActivePage?> = _activePage.asStateFlow()
 
     // The currently settled page's item id — the target of every §6–§9 single-photo action.
-    private val _activeItemId = MutableStateFlow<String?>(null)
+    private val activeItemId = MutableStateFlow<String?>(null)
 
     /** The settled page's live [VaultItem] (drives the §6 Move sheet + §9 Property dialog). */
     val activeItem: StateFlow<VaultItem?> =
-        _activeItemId
+        activeItemId
             .flatMapLatest { id ->
                 if (id == null) {
                     MutableStateFlow(null)
@@ -190,7 +190,7 @@ class PagerViewerViewModel(
         tempFile?.delete()
         tempFile = null
         // Retarget the §6–§9 single-photo actions at the newly settled page.
-        _activeItemId.value = itemId
+        activeItemId.value = itemId
         _activePage.value = ActivePage(itemId, PageContent.Loading)
         decryptJob =
             viewModelScope.launch {
@@ -257,7 +257,7 @@ class PagerViewerViewModel(
 
     /** §6 · Move the active item's index entry to [folderId] (null = album root). */
     fun move(folderId: String?) {
-        val id = _activeItemId.value ?: return
+        val id = activeItemId.value ?: return
         viewModelScope.launch {
             withContext(NonCancellable) { repository.moveToFolder(setOf(id), folderId) }
             _message.value = "Moved."
@@ -277,7 +277,7 @@ class PagerViewerViewModel(
      * drop it from the vault. Reports the honest §7 result copy via [message].
      */
     fun unhide(destination: UnhideDestination = UnhideDestination.Original) {
-        val id = _activeItemId.value ?: return
+        val id = activeItemId.value ?: return
         viewModelScope.launch {
             val result = withContext(NonCancellable) { repository.unhideTo(setOf(id), destination) }
             _message.value = UnhideMessages.summary(result)
@@ -286,7 +286,7 @@ class PagerViewerViewModel(
 
     /** §8 · Soft delete the active item → recycle bin (recoverable). */
     fun delete() {
-        val id = _activeItemId.value ?: return
+        val id = activeItemId.value ?: return
         viewModelScope.launch {
             withContext(NonCancellable) { repository.moveToRecycleBin(setOf(id)) }
             _message.value = "Moved to Recycle Bin."
@@ -295,7 +295,7 @@ class PagerViewerViewModel(
 
     /** §8 · Secure permanent delete of the active item straight from the vault. */
     fun permanentlyDelete() {
-        val id = _activeItemId.value ?: return
+        val id = activeItemId.value ?: return
         viewModelScope.launch {
             withContext(NonCancellable) { repository.permanentlyDelete(setOf(id)) }
             _message.value = "Deleted permanently."
