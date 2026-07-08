@@ -292,25 +292,36 @@ class OrganizationUiDoDTest {
 
     @Test
     fun viewerRotateCommitsNetOrientationAndMoreMenuSetsCover() {
-        val (repo, _, zuluId, itemIds) = seed()
+        val (base, _, zuluId, itemIds) = seed()
         val older = itemIds.first()
+        // Serve a REAL decodable JPEG for the viewer so the page renders an actual image
+        // (not the empty-bytes ErrorPage): the rotate button gates on the settled page
+        // being decoded, so the render must genuinely land before the tap acts.
+        val repo =
+            object : VaultContentRepository by base {
+                override suspend fun openDecrypted(itemId: String): ByteArray? = DoDTestSupport.sampleJpegBytes()
+            }
         val vm = PagerViewerViewModel(older, VaultCategory.PHOTOS, zuluId, repository = repo)
         compose.setContent {
             CalculatorVaultTheme {
                 PagerViewerScreen(viewModel = vm, onBack = {})
             }
         }
-        // The settled page must be decrypted before the chrome's ⟳ will act (rotate
-        // targets decoded photos only). Generous timeouts — decode + debounce + the
-        // menu popup all compose on the slower emulator matrix.
-        compose.waitUntil(10_000) { vm.activePage.value?.content is PageContent.Bytes }
+        // Wait for the decoded image to actually render (the `[ n / total ]` position
+        // chrome proves the pager loaded a page and the settled content resolved).
         compose.waitUntil(10_000) {
             runCatching { compose.onNodeWithContentDescription("Rotate").fetchSemanticsNode() }.isSuccess
         }
+        compose.waitUntil(10_000) { vm.activePage.value?.content is PageContent.Bytes }
+        compose.waitForIdle()
 
-        // Two taps = net 180°, committed after the 500ms idle debounce (W3-D §8).
+        // Two taps = net 180°, committed after the 500ms idle debounce (W3-D §8). A
+        // waitForIdle between taps lets the collected activePage/rotation state settle so
+        // the second tap reads the first tap's result.
         compose.onNodeWithContentDescription("Rotate").performClick()
+        compose.waitForIdle()
         compose.onNodeWithContentDescription("Rotate").performClick()
+        compose.waitForIdle()
         compose.waitUntil(10_000) {
             runBlocking {
                 repo

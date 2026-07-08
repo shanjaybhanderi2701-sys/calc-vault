@@ -255,11 +255,13 @@ fun CategoryScreen(
                             },
                     )
                 state.albumSelectionMode ->
-                    // W2-E §9 album selection bar with the W3-D §4 extension: the bulk
-                    // actions stay direct (Select All · Move · Unhide · Delete ·
-                    // Property); the identity-editing N=1 set lives in the ⋯ overflow —
-                    // Rename · Pin album/Unpin album · Set as cover (this order) — and
-                    // the overflow hides entirely at N>1.
+                    // W2-E §9 album selection bar with the W3-D §4 extension. At N=1 the
+                    // per-album identity actions live in the ⋯ overflow — Rename · Pin/
+                    // Unpin album · Set as cover · Property — keeping the bar to four
+                    // direct icons (Select All · Move · Unhide · Delete) so the overflow
+                    // itself is never clipped off a narrow screen by the Surface bounds.
+                    // At N>1 the overflow hides and Property returns as a direct action
+                    // (aggregate details), still four/five icons — always within width.
                     MultiSelectActionBar(
                         selectedCount = state.selectedAlbumIds.size,
                         closeIcon = Icons.Filled.Close,
@@ -282,6 +284,7 @@ fun CategoryScreen(
                                             },
                                         )
                                     }
+                                    add(SelectionOverflowItem("Property") { showAlbumProperty = true })
                                 }
                             } ?: emptyList(),
                         actions =
@@ -308,7 +311,11 @@ fun CategoryScreen(
                                         albumDeleteStep = DeleteStep.CHOICE
                                     },
                                 )
-                                add(SelectionAction(Icons.Filled.Info, "Property") { showAlbumProperty = true })
+                                // At N=1 Property lives in the ⋯ overflow (above); it is a
+                                // direct icon only for the multi-album aggregate view.
+                                if (state.selectedAlbumIds.size > 1) {
+                                    add(SelectionAction(Icons.Filled.Info, "Property") { showAlbumProperty = true })
+                                }
                             },
                     )
                 state.inFolder ->
