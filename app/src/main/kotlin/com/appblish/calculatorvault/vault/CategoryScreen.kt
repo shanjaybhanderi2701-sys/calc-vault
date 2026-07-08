@@ -219,7 +219,7 @@ fun CategoryScreen(
                             selectionMode = state.selectionMode,
                             selectedIds = state.selectedIds,
                             checkIcon = Icons.Filled.Check,
-                            onItemClick = { media -> onItemClicked(state, viewModel, media.id, onOpenItem) },
+                            onItemClick = { media -> viewModel.tappedItem(media.id)?.let(onOpenItem) },
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
                             loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
                             state = mediaGridState,
@@ -241,7 +241,7 @@ fun CategoryScreen(
                         CategoryList(
                             items = state.folderItems,
                             selectedIds = state.selectedIds,
-                            onItemClick = { item -> onItemClicked(state, viewModel, item.id, onOpenItem) },
+                            onItemClick = { item -> viewModel.tappedItem(item.id)?.let(onOpenItem) },
                             onItemLongPress = { item -> viewModel.startSelection(item.id) },
                         )
                 }
@@ -347,19 +347,6 @@ private fun selectionCommonPath(state: CategoryState): String? =
         .map { it.relativePath }
         .distinct()
         .singleOrNull()
-
-private fun onItemClicked(
-    state: CategoryState,
-    viewModel: CategoryViewModel,
-    itemId: String,
-    onOpenItem: (VaultItem) -> Unit,
-) {
-    if (state.selectionMode) {
-        viewModel.toggle(itemId)
-    } else {
-        state.folderItems.firstOrNull { it.id == itemId }?.let(onOpenItem)
-    }
-}
 
 private fun VaultItem.toMediaItem(): MediaItem = MediaItem(id = id, dateLabel = dateLabel, sortKey = sortKey)
 

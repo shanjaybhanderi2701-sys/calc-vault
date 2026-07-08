@@ -185,13 +185,34 @@ class CategoryViewModel(
         local.update { it.copy(ids = it.ids + itemId, active = true) }
     }
 
-    /** Tap while selecting toggles membership; leaving the set empty exits the mode. */
+    /**
+     * Tap while selecting toggles membership; leaving the set empty exits the mode. Taps
+     * are ignored while a drag session is live: the up that *ends* a long-press gesture
+     * also fires the pressed tile's click, and without the guard it would instantly
+     * un-select the item the long-press just anchored.
+     */
     fun toggle(itemId: String) {
         local.update { current ->
-            if (!current.active) return@update current
+            if (!current.active || current.dragAnchorId != null) return@update current
             val ids = if (itemId in current.ids) current.ids - itemId else current.ids + itemId
             current.copy(ids = ids, active = ids.isNotEmpty())
         }
+    }
+
+    /**
+     * Route a tile tap from its always-fresh local state (never the composition's state
+     * snapshot, which can lag a just-fired long-press): during a live drag session the
+     * tap is gesture noise (see [toggle]); in selection mode it toggles; otherwise it
+     * returns the item for the screen to open in the viewer.
+     */
+    fun tappedItem(itemId: String): VaultItem? {
+        val current = local.value
+        if (current.dragAnchorId != null) return null
+        if (current.active && current.ids.isNotEmpty()) {
+            toggle(itemId)
+            return null
+        }
+        return state.value.folderItems.firstOrNull { it.id == itemId }
     }
 
     /**

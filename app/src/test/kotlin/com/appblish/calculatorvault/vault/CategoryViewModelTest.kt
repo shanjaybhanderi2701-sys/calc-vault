@@ -338,6 +338,30 @@ class CategoryViewModelTest {
         }
 
     @Test
+    fun `the tap ending a long-press gesture never un-selects the just-anchored item`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val stored = repo.hide(listOf(staged("a", sortKey = 1)))
+            val id = stored.single().id
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 1 }
+            vm.openFolder(CategoryState.RECENT_FOLDER_ID)
+            vm.state.first { it.inFolder }
+
+            // Long press anchors; the same gesture's up fires the tile click — noise.
+            vm.beginDragSelect(id)
+            assertThat(vm.tappedItem(id)).isNull()
+            vm.endDragSelect()
+            assertThat(vm.state.first { it.selectionMode }.selectedIds).containsExactly(id)
+
+            // After the gesture a real tap toggles normally…
+            assertThat(vm.tappedItem(id)).isNull()
+            assertThat(vm.state.first { !it.selectionMode }.selectedIds).isEmpty()
+            // …and with no selection active, a tap opens the item.
+            assertThat(vm.tappedItem(id)?.id).isEqualTo(id)
+        }
+
+    @Test
     fun `long-press on another item extends an active selection instead of resetting it`() =
         runTest(dispatcher) {
             val repo = RecordingRepository()
