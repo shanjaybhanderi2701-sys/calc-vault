@@ -1,7 +1,9 @@
 package com.appblish.calculatorvault.vault
 
+import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.RestoreSummary
+import com.appblish.calculatorvault.vault.model.SortPrefs
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.UnhideDisposition
 import com.appblish.calculatorvault.vault.model.UnhideOutcome
@@ -260,6 +262,64 @@ interface VaultContentRepository {
             failed = result.failed,
         )
     }
+
+    // --- Organization polish (W3-E, spec §2.2/§2.7/§3.6/§4.1). Every operation below is
+    // a single small write in the encrypted index — no blob is touched or decrypted.
+
+    /**
+     * The persisted grid sorts (W3-E §7): one vault-wide choice per grid type, stored in
+     * the encrypted index so they survive process death and lock/unlock. Defaults for
+     * fakes that don't model sorting.
+     */
+    fun sortPrefs(): Flow<SortPrefs> = flowOf(SortPrefs())
+
+    /** Persist the vault-wide photo-grid sort. Default no-op for minimal fakes. */
+    suspend fun setPhotoSort(sort: GridSort) {}
+
+    /** Persist the vault-wide album-grid sort. Default no-op for minimal fakes. */
+    suspend fun setAlbumSort(sort: GridSort) {}
+
+    /**
+     * Set or clear (null) the per-album photo-sort override — the "This album only"
+     * checkbox (spec §4.1's optional toggle, design G-8). Stored on the album label.
+     */
+    suspend fun setAlbumPhotoSortOverride(
+        folderId: String,
+        sort: GridSort?,
+    ) {}
+
+    /**
+     * Pin/unpin the album [folderId] on the home album grid (spec §3.6): one index bit,
+     * instant, zero decryption. Unknown ids are a no-op.
+     */
+    suspend fun setFolderPinned(
+        folderId: String,
+        pinned: Boolean,
+    ) {}
+
+    /**
+     * Point the album [folderId]'s cover at member item [itemId] (spec §2.7/§3.7), or
+     * clear it (null) to return to the newest-member fallback. An index pointer write
+     * only — covers render from the cached thumbnail pipeline, never a full-size decrypt.
+     * Re-setting the current cover is an idempotent no-op write.
+     */
+    suspend fun setFolderCover(
+        folderId: String,
+        itemId: String?,
+    ) {}
+
+    /**
+     * Persist [itemId]'s net display orientation (clockwise degrees, mod 360 — spec §2.2)
+     * and re-derive **that one item's** encrypted stored thumbnail so grids/covers show
+     * the rotation after navigate-away-and-back (W3-D §9: single-item invalidation only;
+     * the full-size blob is never decrypted for the thumbnail alone). Returns false when
+     * the orientation could not be persisted (drives the "Couldn't save rotation."
+     * snackbar); a thumbnail re-derivation miss alone is not a failure (stale-over-blank).
+     */
+    suspend fun setRotation(
+        itemId: String,
+        degrees: Int,
+    ): Boolean = true
 
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)

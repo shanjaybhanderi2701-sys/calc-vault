@@ -12,10 +12,14 @@ import com.appblish.calculatorvault.vault.actions.UnhideMessages
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.model.sortItems
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -114,16 +118,24 @@ class PagerViewerViewModel(
     private var latchedStartIndex: Int? = null
 
     val state: StateFlow<PagerViewerState> =
-        repository
-            .items(category)
-            .map { all -> all.filter(::inContext) }
-            .map { pages ->
-                if (latchedStartIndex == null && pages.isNotEmpty()) {
-                    // A missing start item (already deleted) falls back to the first page.
-                    latchedStartIndex = pages.indexOfFirst { it.id == startItemId }.coerceAtLeast(0)
-                }
-                PagerViewerState(pages = pages, startIndex = latchedStartIndex ?: 0, loaded = true)
-            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PagerViewerState())
+        combine(
+            repository.items(category),
+            repository.folders(category),
+            repository.sortPrefs(),
+        ) { all, folders, prefs ->
+            // The pager's page order equals the grid the user tapped (W3-E §7): the same
+            // effective photo sort — the open album's override when present, else the
+            // vault-wide persisted choice.
+            val effectiveSort =
+                folders.firstOrNull { it.id == folderId }?.photoSortOverride ?: prefs.photoSort
+            sortItems(all.filter(::inContext), effectiveSort)
+        }.map { pages ->
+            if (latchedStartIndex == null && pages.isNotEmpty()) {
+                // A missing start item (already deleted) falls back to the first page.
+                latchedStartIndex = pages.indexOfFirst { it.id == startItemId }.coerceAtLeast(0)
+            }
+            PagerViewerState(pages = pages, startIndex = latchedStartIndex ?: 0, loaded = true)
+        }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), PagerViewerState())
 
     private val _activePage = MutableStateFlow<ActivePage?>(null)
 
@@ -186,6 +198,9 @@ class PagerViewerViewModel(
      */
     fun setActivePage(itemId: String) {
         if (_activePage.value?.itemId == itemId) return
+        // Page change is a rotate-commit boundary (W3-D §8): flush the previous page's
+        // pending net orientation before this page takes over — never lost on swipe.
+        commitPendingRotation()
         decryptJob?.cancel()
         tempFile?.delete()
         tempFile = null
@@ -302,6 +317,70 @@ class PagerViewerViewModel(
         }
     }
 
+    // --- W3-E §5 · Set as cover (viewer `⋯ More`) --------------------------------------
+
+    /**
+     * Make the active page its album's cover — an index pointer write (spec §2.7). The
+     * album is implicit (the photo's own); the changed home tile is off-screen, so the
+     * snackbar *is* required here (contrast the pin's object-is-the-interface rule).
+     * Idempotent: re-setting the current cover shows the same copy, writes nothing new.
+     */
+    fun setAsCover() {
+        val item = activeItem.value ?: return
+        val folderId = item.folderId ?: return
+        viewModelScope.launch {
+            val ok =
+                runCatching { withContext(NonCancellable) { repository.setFolderCover(folderId, item.id) } }
+                    .isSuccess
+            _message.value = if (ok) "Set as album cover." else "Couldn't set cover — try again."
+        }
+    }
+
+    // --- W3-E §8 · Rotate persistence -----------------------------------------------
+
+    // The one un-committed rotation: the settled page's item id and its pending net
+    // orientation (mod 360). Commits per rotate.commitDebounce — 500ms idle, page
+    // change, or viewer exit, whichever first. Four taps = net 0 vs stored = no write.
+    private var pendingRotation: Pair<String, Int>? = null
+    private var rotationDebounce: Job? = null
+
+    /**
+     * The screen reports every rotate tap here with the resulting **net** orientation.
+     * Restarts the 500ms idle debounce; the commit itself is a single index write plus a
+     * one-thumbnail re-derivation in the repository.
+     */
+    fun noteRotation(
+        itemId: String,
+        netDegrees: Int,
+    ) {
+        pendingRotation = itemId to (((netDegrees % 360) + 360) % 360)
+        rotationDebounce?.cancel()
+        rotationDebounce =
+            viewModelScope.launch {
+                delay(ROTATE_COMMIT_DEBOUNCE_MS)
+                commitPendingRotation()
+            }
+    }
+
+    /**
+     * Flush the pending rotation now (debounce fire, page change, viewer exit). Launched
+     * on [commitScope] — not viewModelScope — so the exit-path commit still lands after
+     * the VM is cleared (one small index write + one thumb, off-main; W3-D §8).
+     */
+    private fun commitPendingRotation() {
+        val (itemId, degrees) = pendingRotation ?: return
+        pendingRotation = null
+        rotationDebounce?.cancel()
+        commitScope.launch {
+            val persisted = runCatching { repository.setRotation(itemId, degrees) }.getOrDefault(false)
+            if (!persisted) {
+                // Commit failure is rare and non-destructive: the in-session view stays
+                // rotated; surface the retryable miss (W3-D §8 failure copy).
+                _message.value = "Couldn't save rotation."
+            }
+        }
+    }
+
     /** True when [item] belongs to the opened context (mirrors CategoryState.folderItems). */
     private fun inContext(item: VaultItem): Boolean =
         when (folderId) {
@@ -326,7 +405,10 @@ class PagerViewerViewModel(
 
     // Backstop cleanup: page changes delete files eagerly, but a VM clear (back press,
     // process re-lock) must not strand cleartext in the cache — sweep everything created.
+    // Viewer exit is also the last rotate-commit boundary (W3-D §8): the flush runs on
+    // [commitScope] because viewModelScope is already cancelled here.
     override fun onCleared() {
+        commitPendingRotation()
         decryptJob?.cancel()
         createdTempFiles.forEach { it.delete() }
         super.onCleared()
@@ -334,5 +416,12 @@ class PagerViewerViewModel(
 
     private companion object {
         const val VIEWER_CACHE_DIR = "viewer"
+
+        /** rotate.commitDebounce (W3-D §3): 500ms idle, or page-change/exit first. */
+        const val ROTATE_COMMIT_DEBOUNCE_MS = 500L
+
+        // Process-scoped home for rotate commits so an exit-path flush survives the VM
+        // clear — mirrors BulkOps' app-scoped pattern for must-complete index writes.
+        val commitScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     }
 }

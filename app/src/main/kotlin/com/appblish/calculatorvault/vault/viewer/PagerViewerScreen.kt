@@ -3,6 +3,8 @@ package com.appblish.calculatorvault.vault.viewer
 import android.graphics.BitmapFactory
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -27,10 +29,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
@@ -154,8 +159,10 @@ private fun ViewerPager(
     val pagerState = rememberPagerState(initialPage = state.startIndex) { state.pages.size }
     var zoomed by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
-    // Live in-session rotation of the settled photo (0/90/180/270); Wave-1 does not persist
-    // it (W3-E). Reset whenever a new page settles so rotation never carries across photos.
+    // The settled photo's display rotation, seeded from its **persisted** net orientation
+    // (W3-E, spec §2.2) and accumulated per ⟳ tap. Kept un-modded so the 200ms turn
+    // animates forward through 360°; the VM commits it mod 360 (500ms idle / page change /
+    // exit — W3-D §8), so four taps net to the stored value and write nothing.
     var rotationDegrees by remember { mutableIntStateOf(0) }
     var showDeleteChoice by remember { mutableStateOf(false) }
 
@@ -165,10 +172,10 @@ private fun ViewerPager(
     LaunchedEffect(pagerState.settledPage, state.pages) {
         state.pages.getOrNull(pagerState.settledPage)?.let { viewModel.setActivePage(it.id) }
     }
-    // A newly settled page always starts un-zoomed and un-rotated.
+    // A newly settled page starts un-zoomed, showing its own persisted orientation.
     LaunchedEffect(pagerState.settledPage) {
         zoomed = false
-        rotationDegrees = 0
+        rotationDegrees = state.pages.getOrNull(pagerState.settledPage)?.rotationDegrees ?: 0
     }
     // Zooming hides the chrome so it never floats over an inspected photo; returning to 1×
     // brings it back (design §4: "keeps bars hidden until zoom returns to 1.0"). Keyed on
@@ -199,7 +206,8 @@ private fun ViewerPager(
                         PageContent.Loading
                     },
                 isCurrent = isCurrent,
-                rotationDegrees = if (isCurrent) rotationDegrees else 0,
+                // Non-settled pages show their own persisted orientation (peek/swipe-by).
+                rotationDegrees = if (isCurrent) rotationDegrees else item.rotationDegrees,
                 onZoomedChanged = { if (isCurrent) zoomed = it },
                 // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
                 onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
@@ -215,7 +223,16 @@ private fun ViewerPager(
             ViewerTopBar(
                 position = position,
                 onBack = onBack,
-                onRotate = { rotationDegrees = (rotationDegrees + 90) % 360 },
+                onRotate = {
+                    // Rotate targets the settled, decoded photo (a decode-error page has
+                    // nothing to rotate — W1-D §4 state). Net orientation goes to the VM,
+                    // which owns the debounced persist (W3-E §8).
+                    val settled = state.pages.getOrNull(pagerState.settledPage)
+                    if (settled != null && activePage?.content is PageContent.Bytes) {
+                        rotationDegrees += 90
+                        viewModel.noteRotation(settled.id, rotationDegrees)
+                    }
+                },
                 onInfo = { currentItem?.let(onInfo) },
             )
         }
@@ -230,6 +247,9 @@ private fun ViewerPager(
                 onUnhide = { currentItem?.let { viewModel.restore(it.id) } },
                 onDelete = { showDeleteChoice = true },
                 onMove = { currentItem?.let(onMove) },
+                // W3-E §5: the pre-agreed W1-D "4th action → ⋯ More" rule, executed. Null
+                // (hidden) when the photo has no album to cover (category root/"Recent").
+                onSetCover = if (currentItem?.folderId != null) ({ viewModel.setAsCover() }) else null,
             )
         }
     }
@@ -390,6 +410,17 @@ private fun ZoomableImage(
             offset = Offset.Zero
         }
     }
+    // Rotation resets zoom/pan to fit (W3-D §8) — rotating a zoomed crop disorients.
+    LaunchedEffect(rotationDegrees) {
+        scale = MIN_ZOOM
+        offset = Offset.Zero
+    }
+    // 200ms per-tap turn (W3-D §8); the un-modded degrees keep it spinning forward.
+    val animatedRotation by animateFloatAsState(
+        targetValue = rotationDegrees.toFloat(),
+        animationSpec = tween(durationMillis = 200),
+        label = "viewer-rotation",
+    )
 
     Image(
         bitmap = bitmap,
@@ -419,7 +450,7 @@ private fun ZoomableImage(
                     scaleY = scale
                     translationX = offset.x
                     translationY = offset.y
-                    rotationZ = rotationDegrees.toFloat()
+                    rotationZ = animatedRotation
                 },
     )
 }
@@ -587,18 +618,22 @@ private fun ViewerTopBar(
 }
 
 /**
- * Floating bottom bar over the bottom scrim (design §4): three single-purpose targets —
- * **Unhide** (gallery-exit; spec §1 terminology lock), **Delete** (Error tint on glyph +
- * label only) and **Move** (relocate the index entry to another album, W1-E2). If a fourth
- * action is ever needed it becomes an overflow — targets are never truncated.
+ * Floating bottom bar over the bottom scrim (design §4): the three shipped single-purpose
+ * targets — **Unhide** (gallery-exit; spec §1 terminology lock), **Delete** (Error tint on
+ * glyph + label only), **Move** (relocate the index entry to another album, W1-E2) — plus
+ * the W3-E fourth equal target **`⋯ More`**, executing W1-D §4's pre-agreed rule verbatim:
+ * a menu (`viewer.moreMenu`), never a truncation, holding the single Wave-3 item
+ * **Set as cover**. [onSetCover] null hides `⋯ More` entirely (no album to cover).
  */
 @Composable
 private fun ViewerBottomBar(
     onUnhide: () -> Unit,
     onDelete: () -> Unit,
     onMove: () -> Unit,
+    onSetCover: (() -> Unit)?,
 ) {
     val colors = VaultTheme.colors
+    var moreMenuOpen by remember { mutableStateOf(false) }
     Row(
         horizontalArrangement = Arrangement.SpaceEvenly,
         verticalAlignment = Alignment.CenterVertically,
@@ -613,6 +648,25 @@ private fun ViewerBottomBar(
         ViewerAction(label = "Delete", tint = colors.destructive, icon = Icons.Filled.Delete, onClick = onDelete)
         // Move: relocate the encrypted index entry to another vault album (stays encrypted).
         ViewerAction(label = "Move", tint = ViewerOnCanvas, icon = Icons.Filled.KeyboardArrowRight, onClick = onMove)
+        if (onSetCover != null) {
+            Box {
+                ViewerAction(
+                    label = "More",
+                    tint = ViewerOnCanvas,
+                    icon = Icons.Filled.MoreVert,
+                    onClick = { moreMenuOpen = true },
+                )
+                DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Set as cover") },
+                        onClick = {
+                            moreMenuOpen = false
+                            onSetCover()
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 

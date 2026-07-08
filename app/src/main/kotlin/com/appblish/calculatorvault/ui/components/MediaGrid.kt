@@ -86,23 +86,30 @@ fun DateGroupedMediaGrid(
     loadThumbnail: (suspend (MediaItem) -> ImageBitmap?)? = null,
     state: LazyGridState = rememberLazyGridState(),
     dragSelect: GridDragSelectCallbacks? = null,
+    // W3-E §7: with a user-chosen sort key active the date-section headers would lie
+    // (they group by hide date, which is none of the four sort keys), so the album grid
+    // renders flat, honoring [items]'s given order exactly. Grouped remains the default
+    // for the pickers/previews that still order by recency.
+    groupByDate: Boolean = true,
 ) {
     val spacing = VaultTheme.spacing
-    val groups = groupMediaByDate(items)
     val gridModifier = modifier.testTag("media-grid").fillMaxWidth().padding(horizontal = spacing.lg)
     LazyVerticalGrid(
         columns = GridCells.Fixed(columns),
         state = state,
         modifier = if (dragSelect != null) gridModifier.gridDragSelect(state, dragSelect) else gridModifier,
     ) {
+        val groups = if (groupByDate) groupMediaByDate(items) else listOf(MediaGroup("", items))
         groups.forEach { group ->
-            item(span = { GridItemSpan(maxLineSpan) }) {
-                Text(
-                    text = group.dateLabel,
-                    style = VaultTheme.typography.labelLarge,
-                    color = VaultTheme.colors.textSecondary,
-                    modifier = Modifier.padding(vertical = spacing.md),
-                )
+            if (group.dateLabel.isNotEmpty()) {
+                item(span = { GridItemSpan(maxLineSpan) }) {
+                    Text(
+                        text = group.dateLabel,
+                        style = VaultTheme.typography.labelLarge,
+                        color = VaultTheme.colors.textSecondary,
+                        modifier = Modifier.padding(vertical = spacing.md),
+                    )
+                }
             }
             items(group.items, key = { it.id }) { item ->
                 MediaThumbnail(

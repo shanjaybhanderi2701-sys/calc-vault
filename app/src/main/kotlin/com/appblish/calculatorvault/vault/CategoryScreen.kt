@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowForward
@@ -34,14 +35,11 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -76,6 +74,8 @@ import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
+import com.appblish.calculatorvault.ui.components.SelectionOverflowItem
+import com.appblish.calculatorvault.ui.theme.VaultGridTokens
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.actions.AlbumNameDialog
 import com.appblish.calculatorvault.vault.actions.AlbumOption
@@ -88,9 +88,11 @@ import com.appblish.calculatorvault.vault.actions.PropertyDialog
 import com.appblish.calculatorvault.vault.actions.UnhideChoice
 import com.appblish.calculatorvault.vault.actions.UnhideDialog
 import com.appblish.calculatorvault.vault.actions.treeUriToRelativePath
+import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
-import com.appblish.calculatorvault.vault.ui.VaultTopBar
+import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.ui.SortSheet
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 
@@ -131,6 +133,9 @@ fun CategoryScreen(
     var showAlbumUnhideDialog by remember { mutableStateOf(false) }
     var showAlbumProperty by remember { mutableStateOf(false) }
     var albumDeleteStep by remember { mutableStateOf<DeleteStep?>(null) }
+    // W3-E: the Sort-by sheet (§7) and the album whose Choose-cover picker is open (§6).
+    var showSortSheet by remember { mutableStateOf(false) }
+    var chooseCoverAlbumId by remember { mutableStateOf<String?>(null) }
     var unhideChoice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
     var chosenUnhideFolder by remember { mutableStateOf<String?>(null) }
     val unhideFolderPicker =
@@ -172,6 +177,35 @@ fun CategoryScreen(
             state.category == VaultCategory.VIDEOS ||
             state.category == VaultCategory.AUDIOS
 
+    // §6 Choose-cover picker: a full-screen surface with one job — it replaces the whole
+    // category screen while open; `‹`/system back cancels without a write.
+    chooseCoverAlbumId?.let { albumId ->
+        val album = state.albums.firstOrNull { it.id == albumId }
+        if (album == null) {
+            chooseCoverAlbumId = null
+        } else {
+            // The picker follows the album's own display order (§7): its per-album
+            // override when set, else the vault-wide photo sort the state carries at root.
+            val members =
+                sortItems(
+                    state.items.filter { it.folderId == albumId },
+                    album.photoSortOverride ?: state.photoSort,
+                )
+            ChooseCoverScreen(
+                items = members,
+                currentCoverId = album.coverItemId ?: members.maxByOrNull { it.sortKey }?.id,
+                onConfirm = { itemId ->
+                    viewModel.setAlbumCover(albumId, itemId)
+                    chooseCoverAlbumId = null
+                },
+                onCancel = { chooseCoverAlbumId = null },
+                loadThumbnail = { item -> viewModel.thumbnail(context, item.id) },
+                modifier = modifier,
+            )
+            return
+        }
+    }
+
     Box(modifier = modifier.fillMaxSize().background(colors.canvas)) {
         Column(modifier = Modifier.fillMaxSize()) {
             when {
@@ -203,15 +237,53 @@ fun CategoryScreen(
                                     showDeleteChoice = true
                                 },
                             ),
+                        // W3-E §5: the selection bar's ⋯ overflow gains its first item —
+                        // Set as cover, N=1 only (a cover is one photo), and only inside
+                        // a real album (root/"Recent" items have no album to cover).
+                        overflow =
+                            if (state.selectedIds.size == 1 &&
+                                state.openFolderId != null &&
+                                state.openFolderId != CategoryState.RECENT_FOLDER_ID
+                            ) {
+                                listOf(
+                                    SelectionOverflowItem("Set as cover") {
+                                        viewModel.setCoverFromSelection()
+                                    },
+                                )
+                            } else {
+                                emptyList()
+                            },
                     )
                 state.albumSelectionMode ->
-                    // W2-E §9 album selection bar: the same shipped W1 component, with the
-                    // album bulk set — Select All · Rename (identity-editing, so it *hides*
-                    // at N>1 rather than disabling) · Move · Unhide · Delete · Property.
+                    // W2-E §9 album selection bar with the W3-D §4 extension: the bulk
+                    // actions stay direct (Select All · Move · Unhide · Delete ·
+                    // Property); the identity-editing N=1 set lives in the ⋯ overflow —
+                    // Rename · Pin album/Unpin album · Set as cover (this order) — and
+                    // the overflow hides entirely at N>1.
                     MultiSelectActionBar(
                         selectedCount = state.selectedAlbumIds.size,
                         closeIcon = Icons.Filled.Close,
                         onClose = viewModel::clearAlbumSelection,
+                        overflow =
+                            state.selectedAlbumTiles.singleOrNull()?.let { tile ->
+                                buildList {
+                                    add(SelectionOverflowItem("Rename") { showRenameAlbum = true })
+                                    add(
+                                        SelectionOverflowItem(if (tile.pinned) "Unpin album" else "Pin album") {
+                                            viewModel.togglePinSelectedAlbum()
+                                        },
+                                    )
+                                    // Hidden for an empty album — nothing to choose (§6).
+                                    if (tile.itemCount > 0) {
+                                        add(
+                                            SelectionOverflowItem("Set as cover") {
+                                                chooseCoverAlbumId = tile.id
+                                                viewModel.clearAlbumSelection()
+                                            },
+                                        )
+                                    }
+                                }
+                            } ?: emptyList(),
                         actions =
                             buildList {
                                 add(
@@ -219,9 +291,6 @@ fun CategoryScreen(
                                         viewModel.selectAllAlbums()
                                     },
                                 )
-                                if (state.selectedAlbumIds.size == 1) {
-                                    add(SelectionAction(Icons.Filled.Edit, "Rename") { showRenameAlbum = true })
-                                }
                                 add(SelectionAction(Icons.Filled.ArrowForward, "Move") { showAlbumMoveSheet = true })
                                 add(
                                     // Disabled-by-no-op when the selection holds zero photos
@@ -243,17 +312,19 @@ fun CategoryScreen(
                             },
                     )
                 state.inFolder ->
-                    VaultTopBar(
+                    CategoryHeader(
                         title = state.openFolderTitle,
                         subtitle = "${state.folderItems.size} items",
+                        showSort = state.folderItems.isNotEmpty(),
                         onBack = viewModel::closeFolder,
+                        onSortClick = { showSortSheet = true },
                     )
                 else ->
-                    CategoryRootHeader(
+                    CategoryHeader(
                         title = state.category.label,
-                        sort = state.folderSort,
+                        showSort = state.folderTiles.isNotEmpty(),
                         onBack = onBack,
-                        onSortSelect = viewModel::setFolderSort,
+                        onSortClick = { showSortSheet = true },
                     )
             }
 
@@ -285,6 +356,10 @@ fun CategoryScreen(
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
                             loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
                             state = mediaGridState,
+                            // W3-E §7: the grid renders folderItems' sorted order exactly;
+                            // hide-date section headers would lie under Name/Size/Date-
+                            // taken orderings, so the album grid is flat.
+                            groupByDate = false,
                             // W1-E3: long-press-drag sweeps a display-order range into the
                             // selection; dragging back releases what this gesture added.
                             dragSelect =
@@ -327,6 +402,30 @@ fun CategoryScreen(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter),
         )
+    }
+
+    // W3-E §7 Sort-by sheet: album keys at the root, photo keys (+ the "This album only"
+    // override checkbox on real albums) inside an open album. Live application — every
+    // tap lands on the persisted choice and the grid re-sorts behind the sheet.
+    if (showSortSheet) {
+        if (state.inFolder) {
+            SortSheet(
+                keys = SortKey.PHOTO_KEYS,
+                current = state.photoSort,
+                onSortChange = viewModel::setPhotoSort,
+                onDismiss = { showSortSheet = false },
+                thisAlbumOnly =
+                    if (state.openFolderId != CategoryState.RECENT_FOLDER_ID) state.photoSortOverridden else null,
+                onThisAlbumOnlyChange = viewModel::setPhotoSortOverride,
+            )
+        } else {
+            SortSheet(
+                keys = SortKey.ALBUM_KEYS,
+                current = state.albumSort,
+                onSortChange = viewModel::setAlbumSort,
+                onDismiss = { showSortSheet = false },
+            )
+        }
     }
 
     // §1.1 create-album dialog (APP-218 fold-in): "New album" prefilled + pre-selected,
@@ -623,16 +722,19 @@ private fun hideActionLabel(category: VaultCategory): String =
     }
 
 /**
- * Root header (S10/S16): back chevron + "‹ {Category}" title + the trailing ↑↓ folder-sort
- * control. Local to this screen rather than [VaultTopBar] because the sort trigger is a
- * two-glyph control with an anchored menu, not the top bar's single action icon.
+ * The category screen's header for both the album root and an open album (S10 + W3-D §7):
+ * back chevron, title (+ optional count subtitle inside an album), and the trailing
+ * `grid.sortButton` — the shipped ↑↓ glyph pair — opening the W3-E Sort-by sheet. The
+ * sort trigger hides when the grid is empty (nothing to sort, no dead end) and never
+ * renders in selection mode (the selection bars replace this header wholesale).
  */
 @Composable
-private fun CategoryRootHeader(
+private fun CategoryHeader(
     title: String,
-    sort: FolderSort,
+    showSort: Boolean,
     onBack: () -> Unit,
-    onSortSelect: (FolderSort) -> Unit,
+    onSortClick: () -> Unit,
+    subtitle: String? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -643,55 +745,36 @@ private fun CategoryRootHeader(
         IconButton(onClick = onBack) {
             Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Back", tint = colors.textPrimary)
         }
-        Text(
-            text = title,
-            style = VaultTheme.typography.titleLarge,
-            color = colors.textPrimary,
-            modifier = Modifier.weight(1f),
-        )
-        FolderSortMenu(current = sort, onSelect = onSortSelect)
-    }
-}
-
-/** S16 sort control: a top-right ↑↓ glyph pair opening the folder-sort menu. */
-@Composable
-private fun FolderSortMenu(
-    current: FolderSort,
-    onSelect: (FolderSort) -> Unit,
-) {
-    val colors = VaultTheme.colors
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        IconButton(onClick = { expanded = true }) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.KeyboardArrowUp,
-                    contentDescription = "Sort folders",
-                    tint = colors.textPrimary,
-                    modifier = Modifier.size(16.dp),
-                )
-                Icon(
-                    imageVector = Icons.Filled.KeyboardArrowDown,
-                    contentDescription = null,
-                    tint = colors.textPrimary,
-                    modifier = Modifier.size(16.dp),
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = title,
+                style = VaultTheme.typography.titleLarge,
+                color = colors.textPrimary,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = VaultTheme.typography.labelMedium,
+                    color = colors.textSecondary,
                 )
             }
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-            FolderSort.entries.forEach { sort ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            text = sort.label,
-                            color = if (sort == current) colors.accent else colors.textPrimary,
-                        )
-                    },
-                    onClick = {
-                        onSelect(sort)
-                        expanded = false
-                    },
-                )
+        if (showSort) {
+            IconButton(onClick = onSortClick, modifier = Modifier.testTag("sort-button")) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowUp,
+                        contentDescription = "Sort",
+                        tint = colors.textPrimary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = colors.textPrimary,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
             }
         }
     }
@@ -800,6 +883,28 @@ private fun FolderTileCard(
                     tint = colors.accent,
                     modifier = Modifier.align(Alignment.TopStart).padding(spacing.xs).size(20.dp),
                 )
+            }
+            // album.pinBadge (W3-D §3/§4): top-END so it never collides with the
+            // top-start selection check; the badge is the pin state's only chrome.
+            if (tile.pinned) {
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier =
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(spacing.xs)
+                            .size(VaultGridTokens.PinBadgeSize)
+                            .clip(CircleShape)
+                            .background(VaultGridTokens.PinBadgeContainer)
+                            .testTag("pin-badge-${tile.id}"),
+                ) {
+                    Icon(
+                        imageVector = VaultGridTokens.PushPin,
+                        contentDescription = "Pinned",
+                        tint = VaultGridTokens.PinBadgeGlyph,
+                        modifier = Modifier.size(VaultGridTokens.PinBadgeGlyphSize),
+                    )
+                }
             }
         }
         Text(

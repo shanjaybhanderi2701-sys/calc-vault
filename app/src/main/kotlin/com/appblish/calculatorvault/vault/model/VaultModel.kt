@@ -65,6 +65,15 @@ data class VaultItem(
     // Original last-modified time (epoch millis) read from MediaStore at hide time. Distinct
     // from [sortKey], which is the added-to-vault time. 0 == unknown → Property shows "—".
     val dateModifiedMs: Long = 0L,
+    // Capture time (MediaStore DATE_TAKEN, epoch millis) read at hide time — the "Date
+    // taken" sort key (W3-E, spec §4.1). 0 == unknown → that item sorts by its
+    // Last-modified value instead (no "Unknown" bucket, design W3-D §7).
+    val dateTakenMs: Long = 0L,
+    // Persisted net display orientation in clockwise degrees (0/90/180/270) — the W3-E
+    // rotate-persist bit (spec §2.2). Orientation metadata in the encrypted index only;
+    // the blob bytes are never re-encoded. Viewers add it to the decoded bitmap and the
+    // stored thumbnail is re-derived on commit, so every cached-thumbnail consumer agrees.
+    val rotationDegrees: Int = 0,
 )
 
 /**
@@ -147,6 +156,19 @@ data class VaultFolder(
     val createdAt: Long = 0L,
     val modifiedAt: Long = 0L,
     val inBin: Boolean = false,
+    // W3-E pin bit (spec §3.6): pinned albums cluster above unpinned on the home album
+    // grid; the active sort applies within each cluster and pin-time is never an ordering
+    // key (design G-1). One bit in the encrypted index — nothing moves on disk. A Bin
+    // restore brings an album back UNpinned (design G-2), so the tombstone path drops it.
+    val pinned: Boolean = false,
+    // W3-E cover pointer (spec §2.7/§3.7): the member item chosen as this album's cover
+    // tile. Null → fall back to the newest member by added-to-vault time (design G-5).
+    // Cleared the moment the pointed-at item leaves the album (moved/unhidden/deleted/
+    // binned), so a later Bin restore never silently re-promotes it.
+    val coverItemId: String? = null,
+    // W3-E per-album photo-sort override (spec §4.1's "apply to this folder only",
+    // design G-8): non-null replaces the vault-wide photo sort inside this album.
+    val photoSortOverride: GridSort? = null,
 )
 
 /**

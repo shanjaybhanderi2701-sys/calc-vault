@@ -13,8 +13,10 @@ import com.appblish.calculatorvault.vault.media.MediaSink
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
+import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.SortPrefs
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.UnhideDisposition
 import com.appblish.calculatorvault.vault.model.UnhideOutcome
@@ -96,6 +98,9 @@ class EncryptedVaultContentRepository(
     private val foldersState = MutableStateFlow(DefaultVaultFolders.forFreshVault())
     private val binState = MutableStateFlow<List<RecycleBinEntry>>(emptyList())
 
+    // Vault-wide persisted grid sorts (W3-E §7); replaced by the index's truth on load.
+    private val prefsState = MutableStateFlow(SortPrefs())
+
     /** True once [unlock] has derived the data key and loaded the index (test/UI probe). */
     fun isUnlocked(): Boolean = crypto != null
 
@@ -170,6 +175,7 @@ class EncryptedVaultContentRepository(
         itemsState.value = emptyList()
         foldersState.value = DefaultVaultFolders.forFreshVault()
         binState.value = emptyList()
+        prefsState.value = SortPrefs()
         // Locking must also drop every decoded thumbnail pixel from memory (APP-244):
         // the LRU is exactly as sensitive as the decrypted content it was decoded from.
         VaultThumbnailPipeline.clear()
@@ -247,6 +253,7 @@ class EncryptedVaultContentRepository(
                             widthPx = meta.widthPx,
                             heightPx = meta.heightPx,
                             dateModifiedMs = meta.dateModifiedMs,
+                            dateTakenMs = if (meta.dateTakenMs > 0) meta.dateTakenMs else staged.dateTakenMs,
                         )
                     // Hide-time thumbnail (APP-244): render a ~200px JPEG from the still-
                     // readable public source and persist it *encrypted* next to the blob,
@@ -407,6 +414,101 @@ class EncryptedVaultContentRepository(
         }
     }
 
+    // --- Organization polish (W3-E): single index writes, off-main-thread (spec §1.6) ---
+
+    override fun sortPrefs(): Flow<SortPrefs> = prefsState
+
+    override suspend fun setPhotoSort(sort: GridSort) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                prefsState.value = prefsState.value.copy(photoSort = sort)
+                persist()
+            }
+        }
+
+    override suspend fun setAlbumSort(sort: GridSort) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                prefsState.value = prefsState.value.copy(albumSort = sort)
+                persist()
+            }
+        }
+
+    override suspend fun setAlbumPhotoSortOverride(
+        folderId: String,
+        sort: GridSort?,
+    ) = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            foldersState.value =
+                foldersState.value.map { if (it.id == folderId) it.copy(photoSortOverride = sort) else it }
+            persist()
+        }
+    }
+
+    override suspend fun setFolderPinned(
+        folderId: String,
+        pinned: Boolean,
+    ) = withContext(Dispatchers.IO) {
+        // One bit on the album label (spec §3.6): no progress UI, zero decryption; the
+        // grid re-render reuses cached thumbnails. modifiedAt is NOT stamped — a pin is a
+        // home-screen arrangement, not an album change (it must not perturb the
+        // Last-modified sort it is defined to compose with).
+        mutex.withLock {
+            foldersState.value =
+                foldersState.value.map { if (it.id == folderId) it.copy(pinned = pinned) else it }
+            persist()
+        }
+    }
+
+    override suspend fun setFolderCover(
+        folderId: String,
+        itemId: String?,
+    ) = withContext(Dispatchers.IO) {
+        // Pointer write only (spec §2.7): a cover that doesn't resolve to a live member
+        // is refused here rather than persisted dangling (persist()'s reconcile would
+        // drop it anyway — this just keeps the write honest).
+        mutex.withLock {
+            val valid = itemId == null || itemsState.value.any { it.id == itemId && it.folderId == folderId }
+            if (!valid) return@withLock
+            foldersState.value =
+                foldersState.value.map { if (it.id == folderId) it.copy(coverItemId = itemId) else it }
+            persist()
+        }
+    }
+
+    override suspend fun setRotation(
+        itemId: String,
+        degrees: Int,
+    ): Boolean =
+        withContext(Dispatchers.IO) {
+            val net = ((degrees % 360) + 360) % 360
+            var previous = -1
+            val persisted =
+                mutex.withLock {
+                    if (crypto == null) return@withLock false
+                    val item = itemsState.value.firstOrNull { it.id == itemId } ?: return@withLock false
+                    previous = item.rotationDegrees
+                    if (previous == net) return@withLock true // idempotent — no write, no thumb work
+                    itemsState.value =
+                        itemsState.value.map { if (it.id == itemId) it.copy(rotationDegrees = net) else it }
+                    runCatching { persist() }.isSuccess
+                }
+            if (!persisted || previous == net) return@withContext persisted
+            // Single-item thumbnail re-derivation (W3-D §9): rotate the already-stored
+            // ~200px thumb by the delta and re-encrypt it — never a full-size decrypt just
+            // for a tile. Best-effort: a miss leaves the stale thumb (stale-over-blank);
+            // the LRU entry is evicted either way so the next draw reads the disk truth.
+            runCatching {
+                val jpeg = openThumbnail(itemId)
+                if (jpeg != null) {
+                    val rotated = VaultThumbnails.rotatedStoredThumb(jpeg, net - previous)
+                    if (rotated != null) saveThumbnail(itemId, rotated)
+                }
+            }
+            VaultThumbnailPipeline.evict(itemId)
+            true
+        }
+
     /**
      * Label bookkeeping shared by [deleteFolderLabels] and the bin-side cleanups: an album
      * some bin entry still references survives as an [VaultFolder.inBin] tombstone when
@@ -422,7 +524,10 @@ class EncryptedVaultContentRepository(
             foldersState.value.mapNotNull { folder ->
                 when {
                     folder.id !in folderIds -> folder
-                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true)
+                    // A tombstone sheds its pin: a Bin restore brings the album back
+                    // UNpinned (design G-2 — a pin is a home-screen arrangement, not
+                    // album content).
+                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true, pinned = false)
                     else -> null
                 }
             }
@@ -802,6 +907,7 @@ class EncryptedVaultContentRepository(
         val widthPx: Int = 0,
         val heightPx: Int = 0,
         val dateModifiedMs: Long = 0L,
+        val dateTakenMs: Long = 0L,
     )
 
     /**
@@ -821,14 +927,20 @@ class EncryptedVaultContentRepository(
                 height = opts.outHeight.coerceAtLeast(0)
             }
         }
-        val modified =
-            runCatching {
-                resolver
-                    .query(uri, arrayOf(MediaStore.MediaColumns.DATE_MODIFIED), null, null, null)
-                    ?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) * 1000L else 0L }
-                    ?: 0L
-            }.getOrDefault(0L)
-        return SourceMetadata(width, height, modified)
+        var modified = 0L
+        var taken = 0L
+        runCatching {
+            // DATE_TAKEN ("datetaken") is capture time in millis; DATE_MODIFIED is in
+            // seconds. Both back index-only reads later (Property dialog, W3-E sort keys).
+            val projection = arrayOf(MediaStore.MediaColumns.DATE_MODIFIED, MediaStore.MediaColumns.DATE_TAKEN)
+            resolver.query(uri, projection, null, null, null)?.use { c ->
+                if (c.moveToFirst()) {
+                    if (!c.isNull(0)) modified = c.getLong(0) * 1000L
+                    if (!c.isNull(1)) taken = c.getLong(1)
+                }
+            }
+        }
+        return SourceMetadata(width, height, modified, taken)
     }
 
     /**
@@ -841,12 +953,35 @@ class EncryptedVaultContentRepository(
 
     // --- Persistence: AES-256-GCM encrypted index in the public .CalcVault/ folder ---
 
+    /**
+     * Drop cover pointers whose item no longer lives in the pointed-at album (design
+     * G-5): the tile falls back to the newest member, and — because the pointer is gone
+     * from the index — a later Bin restore of the exact former cover photo never silently
+     * re-promotes it. Runs on every persisted mutation, under [mutex].
+     */
+    private fun reconcileCovers() {
+        val liveFolderById = itemsState.value.associateBy({ it.id }, { it.folderId })
+        foldersState.value =
+            foldersState.value.map { folder ->
+                val cover = folder.coverItemId
+                if (cover != null && liveFolderById[cover] != folder.id) folder.copy(coverItemId = null) else folder
+            }
+    }
+
     private fun persist(cipher: VaultCrypto? = crypto) {
         if (cipher == null) return
+        reconcileCovers()
         val root =
             JSONObject().apply {
                 put("items", itemsState.value.toJsonArray { it.toJson() })
                 put("folders", foldersState.value.toJsonArray { it.toJson() })
+                put(
+                    "prefs",
+                    JSONObject().apply {
+                        put("photoSort", prefsState.value.photoSort.encode())
+                        put("albumSort", prefsState.value.albumSort.encode())
+                    },
+                )
                 put(
                     "bin",
                     binState.value.toJsonArray { entry ->
@@ -897,6 +1032,16 @@ class EncryptedVaultContentRepository(
                                 deletedAt = obj.getLong("deletedAt"),
                             )
                         }
+                    // Absent on pre-W3 indexes → first-run defaults (JSON back-compat).
+                    val prefs = root.optJSONObject("prefs")
+                    prefsState.value =
+                        SortPrefs(
+                            photoSort =
+                                GridSort.decode(prefs?.optString("photoSort"), GridSort.PHOTO_DEFAULT),
+                            albumSort =
+                                GridSort.decode(prefs?.optString("albumSort"), GridSort.ALBUM_DEFAULT),
+                        )
+                    reconcileCovers()
                 }
             // An index we cannot decode is left exactly as found — never clobber it with a
             // freshly seeded one (its blobs may still be recoverable out-of-band).
@@ -929,6 +1074,8 @@ class EncryptedVaultContentRepository(
             put("widthPx", widthPx)
             put("heightPx", heightPx)
             put("dateModifiedMs", dateModifiedMs)
+            put("dateTakenMs", dateTakenMs)
+            put("rotationDegrees", rotationDegrees)
         }
 
     private fun JSONObject.toVaultItem(): VaultItem =
@@ -947,6 +1094,8 @@ class EncryptedVaultContentRepository(
             widthPx = optInt("widthPx", 0),
             heightPx = optInt("heightPx", 0),
             dateModifiedMs = optLong("dateModifiedMs", 0L),
+            dateTakenMs = optLong("dateTakenMs", 0L),
+            rotationDegrees = optInt("rotationDegrees", 0),
         )
 
     private fun VaultFolder.toJson(): JSONObject =
@@ -958,6 +1107,9 @@ class EncryptedVaultContentRepository(
             put("createdAt", createdAt)
             put("modifiedAt", modifiedAt)
             put("inBin", inBin)
+            put("pinned", pinned)
+            put("coverItemId", coverItemId ?: JSONObject.NULL)
+            put("photoSortOverride", photoSortOverride?.encode() ?: JSONObject.NULL)
         }
 
     private fun JSONObject.toVaultFolder(): VaultFolder =
@@ -969,6 +1121,12 @@ class EncryptedVaultContentRepository(
             createdAt = optLong("createdAt", 0L),
             modifiedAt = optLong("modifiedAt", 0L),
             inBin = optBoolean("inBin", false),
+            pinned = optBoolean("pinned", false),
+            coverItemId = optNullableString("coverItemId"),
+            photoSortOverride =
+                optNullableString("photoSortOverride")?.let {
+                    GridSort.decode(it, GridSort.PHOTO_DEFAULT)
+                },
         )
 
     private fun JSONObject.optNullableString(key: String): String? = if (isNull(key)) null else optString(key, null)

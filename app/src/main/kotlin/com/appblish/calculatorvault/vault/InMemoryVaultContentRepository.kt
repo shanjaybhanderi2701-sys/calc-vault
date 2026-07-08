@@ -1,9 +1,11 @@
 package com.appblish.calculatorvault.vault
 
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
+import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.RestoreSummary
+import com.appblish.calculatorvault.vault.model.SortPrefs
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -33,6 +35,7 @@ class InMemoryVaultContentRepository(
     private val itemsState = MutableStateFlow<List<VaultItem>>(emptyList())
     private val foldersState = MutableStateFlow<List<VaultFolder>>(emptyList())
     private val binState = MutableStateFlow<List<RecycleBinEntry>>(emptyList())
+    private val prefsState = MutableStateFlow(SortPrefs())
 
     init {
         if (seed) seedSampleContent()
@@ -120,7 +123,8 @@ class InMemoryVaultContentRepository(
             foldersState.value.mapNotNull { folder ->
                 when {
                     folder.id !in folderIds -> folder
-                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true)
+                    // Tombstones shed their pin — a Bin restore returns albums unpinned (G-2).
+                    keepForBinRestore && folder.id in referenced -> folder.copy(inBin = true, pinned = false)
                     else -> null
                 }
             }
@@ -138,6 +142,69 @@ class InMemoryVaultContentRepository(
     ) = mutex.withLock {
         itemsState.value =
             itemsState.value.map { if (it.id in itemIds) it.copy(folderId = folderId) else it }
+        reconcileCovers()
+    }
+
+    // --- Organization polish (W3-E): mirrors the device repository's index semantics ---
+
+    override fun sortPrefs(): Flow<SortPrefs> = prefsState
+
+    override suspend fun setPhotoSort(sort: GridSort) =
+        mutex.withLock { prefsState.value = prefsState.value.copy(photoSort = sort) }
+
+    override suspend fun setAlbumSort(sort: GridSort) =
+        mutex.withLock { prefsState.value = prefsState.value.copy(albumSort = sort) }
+
+    override suspend fun setAlbumPhotoSortOverride(
+        folderId: String,
+        sort: GridSort?,
+    ) = mutex.withLock {
+        foldersState.value =
+            foldersState.value.map { if (it.id == folderId) it.copy(photoSortOverride = sort) else it }
+    }
+
+    override suspend fun setFolderPinned(
+        folderId: String,
+        pinned: Boolean,
+    ) = mutex.withLock {
+        foldersState.value =
+            foldersState.value.map { if (it.id == folderId) it.copy(pinned = pinned) else it }
+    }
+
+    override suspend fun setFolderCover(
+        folderId: String,
+        itemId: String?,
+    ) = mutex.withLock {
+        val valid = itemId == null || itemsState.value.any { it.id == itemId && it.folderId == folderId }
+        if (valid) {
+            foldersState.value =
+                foldersState.value.map { if (it.id == folderId) it.copy(coverItemId = itemId) else it }
+        }
+    }
+
+    override suspend fun setRotation(
+        itemId: String,
+        degrees: Int,
+    ): Boolean =
+        mutex.withLock {
+            val net = ((degrees % 360) + 360) % 360
+            if (itemsState.value.none { it.id == itemId }) return@withLock false
+            itemsState.value =
+                itemsState.value.map { if (it.id == itemId) it.copy(rotationDegrees = net) else it }
+            true
+        }
+
+    /**
+     * Design G-5: a cover pointer whose item left the album is dropped the moment it
+     * dangles, so a later restore never re-promotes it. Must run under [mutex].
+     */
+    private fun reconcileCovers() {
+        val liveFolderById = itemsState.value.associateBy({ it.id }, { it.folderId })
+        foldersState.value =
+            foldersState.value.map { folder ->
+                val cover = folder.coverItemId
+                if (cover != null && liveFolderById[cover] != folder.id) folder.copy(coverItemId = null) else folder
+            }
     }
 
     override suspend fun unhide(itemIds: Set<String>): Int =
@@ -146,6 +213,7 @@ class InMemoryVaultContentRepository(
             // list (the device impl publishes the decrypted bytes to public storage first).
             val (restored, kept) = itemsState.value.partition { it.id in itemIds }
             itemsState.value = kept
+            reconcileCovers()
             restored.size
         }
 
@@ -164,6 +232,7 @@ class InMemoryVaultContentRepository(
             // the device impl stamps System.currentTimeMillis().
             binState.value = binState.value + moved.map { RecycleBinEntry(it, deletedAt = it.sortKey) }
             itemsState.value = kept
+            reconcileCovers()
         }
 
     override suspend fun restore(itemIds: Set<String>): Int =
@@ -209,6 +278,7 @@ class InMemoryVaultContentRepository(
             // demo store holds no blob, so dropping the index entry is the whole delete.
             val (removed, kept) = itemsState.value.partition { it.id in itemIds }
             itemsState.value = kept
+            reconcileCovers()
             removed.size
         }
 

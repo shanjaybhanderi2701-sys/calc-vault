@@ -1,5 +1,8 @@
 package com.appblish.calculatorvault.vault
 
+import com.appblish.calculatorvault.vault.model.GridSort
+import com.appblish.calculatorvault.vault.model.SortDirection
+import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.UnhideDisposition
 import com.appblish.calculatorvault.vault.model.UnhideOutcome
@@ -126,30 +129,76 @@ class CategoryViewModelTest {
         }
 
     @Test
-    fun `folder sort orders tiles by name and date in both directions`() {
+    fun `album ordering keeps pinned above unpinned with the active sort inside each cluster`() {
+        // W3-D §4/§7 (G-1): two clusters, key + direction within each, pin never a key.
         val tiles =
             listOf(
-                CategoryFolderTile(id = "a", name = "beta", itemCount = 0, newestSortKey = 9),
-                CategoryFolderTile(id = "b", name = "Alpha", itemCount = 0, newestSortKey = 1),
+                CategoryFolderTile(id = "a", name = "beta", itemCount = 0, sizeBytes = 10, lastModifiedMs = 9),
+                CategoryFolderTile(id = "b", name = "Alpha", itemCount = 0, sizeBytes = 30, lastModifiedMs = 1),
+                CategoryFolderTile(
+                    id = "c",
+                    name = "Mid",
+                    itemCount = 0,
+                    sizeBytes = 20,
+                    lastModifiedMs = 5,
+                    pinned = true,
+                ),
+                CategoryFolderTile(
+                    id = "d",
+                    name = "zed",
+                    itemCount = 0,
+                    sizeBytes = 5,
+                    lastModifiedMs = 7,
+                    pinned = true,
+                ),
             )
-        assertThat(FolderSort.NAME_ASC.sorted(tiles).map { it.name }).containsExactly("Alpha", "beta").inOrder()
-        assertThat(FolderSort.NAME_DESC.sorted(tiles).map { it.name }).containsExactly("beta", "Alpha").inOrder()
-        assertThat(FolderSort.DATE_DESC.sorted(tiles).map { it.id }).containsExactly("a", "b").inOrder()
-        assertThat(FolderSort.DATE_ASC.sorted(tiles).map { it.id }).containsExactly("b", "a").inOrder()
+        val nameAsc = GridSort(SortKey.NAME, SortDirection.ASCENDING)
+        assertThat(orderAlbumTiles(tiles, nameAsc).map { it.id }).containsExactly("c", "d", "b", "a").inOrder()
+        val sizeDesc = GridSort(SortKey.SIZE, SortDirection.DESCENDING)
+        assertThat(orderAlbumTiles(tiles, sizeDesc).map { it.id }).containsExactly("c", "d", "b", "a").inOrder()
+        val modifiedAsc = GridSort(SortKey.LAST_MODIFIED, SortDirection.ASCENDING)
+        assertThat(orderAlbumTiles(tiles, modifiedAsc).map { it.id }).containsExactly("c", "d", "b", "a").inOrder()
     }
 
     @Test
-    fun `changing the folder sort reorders the root grid`() =
+    fun `changing the album sort persists and reorders the root grid`() =
         runTest(dispatcher) {
             val repo = RecordingRepository()
             repo.createFolder(VaultCategory.PHOTOS, "Alpha")
             repo.createFolder(VaultCategory.PHOTOS, "Beta")
             val vm = vm(repo)
+            val nameDesc = GridSort(SortKey.NAME, SortDirection.DESCENDING)
 
-            vm.setFolderSort(FolderSort.NAME_DESC)
+            vm.setAlbumSort(nameDesc)
 
-            val state = vm.state.first { it.folderSort == FolderSort.NAME_DESC && it.folderTiles.size == 2 }
+            val state = vm.state.first { it.albumSort == nameDesc && it.folderTiles.size == 2 }
             assertThat(state.folderTiles.map { it.name }).containsExactly("Beta", "Alpha").inOrder()
+        }
+
+    @Test
+    fun `pin toggle from the single selection reorders the grid and unpin restores it`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            repo.createFolder(VaultCategory.PHOTOS, "Alpha")
+            val zulu = repo.createFolder(VaultCategory.PHOTOS, "Zulu")
+            val vm = vm(repo)
+            vm.state.first { it.folderTiles.size == 2 }
+
+            vm.startAlbumSelection(zulu.id)
+            vm.state.first { it.selectedAlbumTiles.size == 1 }
+            vm.togglePinSelectedAlbum()
+
+            // Pinned cluster leads under the default Name·Ascending sort (G-1); the
+            // selection exited with the write (the badge is the confirmation).
+            var state = vm.state.first { it.folderTiles.firstOrNull()?.pinned == true }
+            assertThat(state.folderTiles.map { it.name }).containsExactly("Zulu", "Alpha").inOrder()
+            assertThat(state.albumSelectionMode).isFalse()
+
+            vm.startAlbumSelection(zulu.id)
+            vm.state.first { it.selectedAlbumTiles.size == 1 }
+            vm.togglePinSelectedAlbum()
+            state = vm.state.first { it.folderTiles.none { tile -> tile.pinned } }
+            assertThat(state.folderTiles.map { it.name }).containsExactly("Alpha", "Zulu").inOrder()
         }
 
     @Test

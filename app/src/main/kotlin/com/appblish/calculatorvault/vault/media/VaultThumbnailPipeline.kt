@@ -137,8 +137,11 @@ object VaultThumbnailPipeline {
                     }
                 }
             bitmap?.let { decoded ->
-                runCatching { repository.saveThumbnail(item.id, VaultThumbnails.toStoredJpeg(decoded)) }
-                decoded.asImageBitmap()
+                // A persisted rotation (W3-E) must reach every cached-thumbnail consumer:
+                // bake it into the backfilled thumb so disk + LRU agree with the index.
+                val oriented = VaultThumbnails.rotate(decoded, item.rotationDegrees)
+                runCatching { repository.saveThumbnail(item.id, VaultThumbnails.toStoredJpeg(oriented)) }
+                oriented.asImageBitmap()
             }
         }
     }

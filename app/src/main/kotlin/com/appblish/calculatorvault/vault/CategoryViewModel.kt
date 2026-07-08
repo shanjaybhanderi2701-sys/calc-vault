@@ -4,14 +4,16 @@ import android.content.Context
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.appblish.calculatorvault.ui.components.MediaItem
-import com.appblish.calculatorvault.ui.components.groupMediaByDate
 import com.appblish.calculatorvault.vault.actions.UnhideMessages
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
+import com.appblish.calculatorvault.vault.model.GridSort
+import com.appblish.calculatorvault.vault.model.SortDirection
+import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.model.sortItems
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -32,30 +34,48 @@ data class CategoryFolderTile(
     val itemCount: Int,
     val cover: VaultItem? = null,
     val newestSortKey: Long = 0L,
+    // W3-E album-sort inputs, all index-derived (spec §4.1: zero decryption to sort) —
+    // Size = contents sum, Last modified = the later of the label change and the newest
+    // member's added-to-vault time — plus the pin bit for the two-cluster ordering (§3.6).
+    val sizeBytes: Long = 0L,
+    val lastModifiedMs: Long = 0L,
+    val pinned: Boolean = false,
 )
 
 /**
- * Sort orders for the category root's folder grid (S16) — folders sort by name or date,
- * each direction. Kept as a small local enum (the picker's [PickerSort] sorts *items* by
- * added-time/size and doesn't fit folders). [sorted] is pure so ordering is unit-testable.
+ * Order the album grid's tiles per the W3-D §4/§7 pin × sort contract: **pinned cluster
+ * above unpinned, the active key + direction applied independently within each cluster,
+ * pin state never a sort key** (design G-1). Pure and top-level so CI/JVM tests can
+ * assert exact orders. Tiebreak: name (case-insensitive) ascending, then id.
  */
-enum class FolderSort(
-    val label: String,
-) {
-    DATE_DESC("Date · newest first"),
-    DATE_ASC("Date · oldest first"),
-    NAME_ASC("Name · A to Z"),
-    NAME_DESC("Name · Z to A"),
-    ;
+fun orderAlbumTiles(
+    tiles: List<CategoryFolderTile>,
+    sort: GridSort,
+): List<CategoryFolderTile> {
+    val (pinned, unpinned) = tiles.partition { it.pinned }
+    return sortAlbumTiles(pinned, sort) + sortAlbumTiles(unpinned, sort)
+}
 
-    /** Order [tiles] for the grid; empty folders (no newest item) sink on date sorts. */
-    fun sorted(tiles: List<CategoryFolderTile>): List<CategoryFolderTile> =
-        when (this) {
-            DATE_DESC -> tiles.sortedByDescending { it.newestSortKey }
-            DATE_ASC -> tiles.sortedBy { it.newestSortKey }
-            NAME_ASC -> tiles.sortedBy { it.name.lowercase() }
-            NAME_DESC -> tiles.sortedByDescending { it.name.lowercase() }
+private fun sortAlbumTiles(
+    tiles: List<CategoryFolderTile>,
+    sort: GridSort,
+): List<CategoryFolderTile> {
+    val byName =
+        compareBy(String.CASE_INSENSITIVE_ORDER) { tile: CategoryFolderTile -> tile.name }.thenBy { it.id }
+    val comparator =
+        when (sort.key) {
+            SortKey.NAME -> if (sort.direction == SortDirection.DESCENDING) byName.reversed() else byName
+            // DATE_TAKEN never reaches an album sheet (design G-7); treat it as the
+            // album default if a corrupt index ever carries it.
+            SortKey.DATE_TAKEN -> byName
+            else -> {
+                val selector: (CategoryFolderTile) -> Long =
+                    if (sort.key == SortKey.SIZE) ({ it.sizeBytes }) else ({ it.lastModifiedMs })
+                val primary = compareBy(selector)
+                (if (sort.direction == SortDirection.DESCENDING) primary.reversed() else primary).then(byName)
+            }
         }
+    return tiles.sortedWith(comparator)
 }
 
 /**
@@ -69,7 +89,12 @@ data class CategoryState(
     val items: List<VaultItem> = emptyList(),
     val folderTiles: List<CategoryFolderTile> = emptyList(),
     val openFolderId: String? = null,
-    val folderSort: FolderSort = FolderSort.DATE_DESC,
+    // W3-E persisted sorts: the album grid's active sort, the open photo grid's
+    // *effective* sort (per-album override when present, else the vault-wide choice),
+    // and whether the open album carries an override (the "This album only" checkbox).
+    val albumSort: GridSort = GridSort.ALBUM_DEFAULT,
+    val photoSort: GridSort = GridSort.PHOTO_DEFAULT,
+    val photoSortOverridden: Boolean = false,
     val selectedIds: Set<String> = emptySet(),
     val selectionMode: Boolean = false,
     // Album multi-select on the root grid (W2-E §9): long-press an album tile to enter,
@@ -92,12 +117,16 @@ data class CategoryState(
     /** Total photos across the selected albums ("91 photos will leave the vault…"). */
     val selectedAlbumItemCount: Int get() = selectedAlbumTiles.sumOf { it.itemCount }
 
-    /** Items of the open folder; the "Recent" pseudo-folder maps to folder-less items. */
+    /**
+     * Items of the open folder in **display order** — the effective photo sort applied
+     * (W3-E §7); the "Recent" pseudo-folder maps to folder-less items. The grid, the
+     * drag-select range math, and the pager viewer all read this one ordering.
+     */
     val folderItems: List<VaultItem> get() =
         when (openFolderId) {
             null -> emptyList()
-            RECENT_FOLDER_ID -> items.filter { it.folderId == null }
-            else -> items.filter { it.folderId == openFolderId }
+            RECENT_FOLDER_ID -> sortItems(items.filter { it.folderId == null }, photoSort)
+            else -> sortItems(items.filter { it.folderId == openFolderId }, photoSort)
         }
 
     /** Title for the open folder's top bar; survives the tile vanishing mid-visit. */
@@ -139,7 +168,6 @@ class CategoryViewModel(
         val dragAnchorId: String? = null,
         val dragBase: Set<String> = emptySet(),
         val openFolderId: String? = null,
-        val sort: FolderSort = FolderSort.DATE_DESC,
         // Album selection on the root grid (W2-E §9), independent of the item selection
         // inside an open folder — the two modes can never be live at once (different views).
         val albumIds: Set<String> = emptySet(),
@@ -157,18 +185,22 @@ class CategoryViewModel(
         combine(
             repository.items(category),
             repository.folders(category),
+            repository.sortPrefs(),
             local,
             notices,
-        ) { items, folders, loc, notice ->
+        ) { items, folders, prefs, loc, notice ->
             // Drop selections that no longer exist (e.g. after a recycle-bin move).
             val validIds = loc.ids.filter { id -> items.any { it.id == id } }.toSet()
             val validAlbumIds = loc.albumIds.filter { id -> folders.any { it.id == id } }.toSet()
+            val openFolder = folders.firstOrNull { it.id == loc.openFolderId }
             CategoryState(
                 category = category,
                 items = items,
-                folderTiles = folderTiles(items, folders, loc.sort),
+                folderTiles = folderTiles(items, folders, prefs.albumSort),
                 openFolderId = loc.openFolderId,
-                folderSort = loc.sort,
+                albumSort = prefs.albumSort,
+                photoSort = openFolder?.photoSortOverride ?: prefs.photoSort,
+                photoSortOverridden = openFolder?.photoSortOverride != null,
                 selectedIds = validIds,
                 selectionMode = loc.active && validIds.isNotEmpty(),
                 selectedAlbumIds = validAlbumIds,
@@ -200,9 +232,81 @@ class CategoryViewModel(
         local.update { it.copy(openFolderId = null, ids = emptySet(), active = false) }
     }
 
-    /** Change the folder-grid sort (S16 ↑↓ control). */
-    fun setFolderSort(sort: FolderSort) {
-        local.update { it.copy(sort = sort) }
+    // --- W3-E sort (§7): persisted in the encrypted index, applied live from the sheet ---
+
+    /** Persist the album-grid sort (vault-wide, one setting per grid type). */
+    fun setAlbumSort(sort: GridSort) {
+        viewModelScope.launch { repository.setAlbumSort(sort) }
+    }
+
+    /**
+     * Apply a photo-grid sort from the sheet: while the open album carries a "This album
+     * only" override the choice lands on that override; otherwise it is the vault-wide
+     * photo sort. Either way it persists in the encrypted index.
+     */
+    fun setPhotoSort(sort: GridSort) {
+        val overriddenFolder = realOpenFolderId()?.takeIf { state.value.photoSortOverridden }
+        viewModelScope.launch {
+            if (overriddenFolder != null) {
+                repository.setAlbumPhotoSortOverride(overriddenFolder, sort)
+            } else {
+                repository.setPhotoSort(sort)
+            }
+        }
+    }
+
+    /**
+     * Toggle the "This album only" checkbox (design G-8): on stamps the current effective
+     * sort as this album's override; off clears it, reverting to the vault-wide setting.
+     */
+    fun setPhotoSortOverride(enabled: Boolean) {
+        val folderId = realOpenFolderId() ?: return
+        val current = state.value.photoSort
+        viewModelScope.launch {
+            repository.setAlbumPhotoSortOverride(folderId, if (enabled) current else null)
+        }
+    }
+
+    /** The open folder's id when it is a real album (never the "Recent" pseudo-folder). */
+    private fun realOpenFolderId(): String? =
+        local.value.openFolderId?.takeUnless { it == CategoryState.RECENT_FOLDER_ID }
+
+    // --- W3-E pin + cover (§4–§6): single index writes, the tile is the confirmation ---
+
+    /**
+     * Pin/unpin the single selected album (§4): selection mode exits and the tile
+     * animates to its cluster — no snackbar ("object is the interface").
+     */
+    fun togglePinSelectedAlbum() {
+        val tile = state.value.selectedAlbumTiles.singleOrNull() ?: return
+        clearAlbumSelection()
+        viewModelScope.launch { repository.setFolderPinned(tile.id, !tile.pinned) }
+    }
+
+    /**
+     * Commit the Choose-cover picker's selection (§6): an index pointer write; the picker
+     * closes back to the grid where the updated tile is visible — no snackbar.
+     */
+    fun setAlbumCover(
+        folderId: String,
+        itemId: String,
+    ) {
+        clearAlbumSelection()
+        viewModelScope.launch { repository.setFolderCover(folderId, itemId) }
+    }
+
+    /**
+     * "Set as cover" from photo-selection mode at N=1 (§5): the album is the open one
+     * (implicit); surfaces the required snackbar — the changed home tile is off-screen.
+     */
+    fun setCoverFromSelection() {
+        val folderId = realOpenFolderId() ?: return
+        val itemId = local.value.ids.singleOrNull() ?: return
+        clearSelection()
+        BulkOps.run {
+            repository.setFolderCover(folderId, itemId)
+            "Set as album cover."
+        }
     }
 
     /**
@@ -355,14 +459,11 @@ class CategoryViewModel(
     }
 
     /**
-     * The open folder's item ids in *display* order — the same date-section grouping the
-     * grid renders ([groupMediaByDate]) — so a drag range matches what the user sees, not
-     * the raw repository order.
+     * The open folder's item ids in *display* order — [CategoryState.folderItems] already
+     * applies the effective photo sort (W3-E §7) the grid renders — so a drag range
+     * matches what the user sees, not the raw repository order.
      */
-    private fun displayOrderedIds(): List<String> =
-        groupMediaByDate(state.value.folderItems.map { MediaItem(it.id, it.dateLabel, it.sortKey) })
-            .flatMap { group -> group.items }
-            .map { it.id }
+    private fun displayOrderedIds(): List<String> = state.value.folderItems.map { it.id }
 
     /**
      * Load a grid thumbnail for [itemId] through [VaultThumbnailPipeline] (APP-244):
@@ -560,24 +661,33 @@ class CategoryViewModel(
         /**
          * Build the root grid's tiles: every real folder (count/cover derived from the
          * live items, not the folder's stored count) plus, when folder-less items exist,
-         * the "Recent" pseudo-folder pinned first — the simplest presentation that never
-         * hides an item from the user. Real folders are ordered by [sort].
+         * the "Recent" pseudo-folder first — the simplest presentation that never hides
+         * an item from the user. Real albums follow the W3-E two-cluster ordering
+         * ([orderAlbumTiles]): pinned above unpinned, [sort] within each cluster. The
+         * cover is the album's explicit cover pointer when it resolves, else the newest
+         * member by added-to-vault time (design G-5 fallback).
          */
         fun folderTiles(
             items: List<VaultItem>,
             folders: List<VaultFolder>,
-            sort: FolderSort,
+            sort: GridSort,
         ): List<CategoryFolderTile> {
             val byFolder = items.groupBy { it.folderId }
             val real =
                 folders.map { folder ->
                     val contents = byFolder[folder.id].orEmpty()
+                    val newest = contents.maxOfOrNull { it.sortKey } ?: 0L
                     CategoryFolderTile(
                         id = folder.id,
                         name = folder.name,
                         itemCount = contents.size,
-                        cover = contents.maxByOrNull { it.sortKey },
-                        newestSortKey = contents.maxOfOrNull { it.sortKey } ?: 0L,
+                        cover =
+                            contents.firstOrNull { it.id == folder.coverItemId }
+                                ?: contents.maxByOrNull { it.sortKey },
+                        newestSortKey = newest,
+                        sizeBytes = contents.sumOf { it.sizeBytes },
+                        lastModifiedMs = maxOf(folder.modifiedAt, newest),
+                        pinned = folder.pinned,
                     )
                 }
             val rootItems = byFolder[null].orEmpty()
@@ -595,7 +705,7 @@ class CategoryViewModel(
                         ),
                     )
                 }
-            return recent + sort.sorted(real)
+            return recent + orderAlbumTiles(real, sort)
         }
     }
 }

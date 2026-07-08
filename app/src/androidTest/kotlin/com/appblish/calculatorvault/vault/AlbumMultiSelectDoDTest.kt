@@ -181,7 +181,10 @@ class AlbumMultiSelectDoDTest {
 
         compose.onNodeWithTag("album-tile-$cameraId").performTouchInput { longClick() }
         compose.onNodeWithText("1 selected").assertExists()
-        compose.onNodeWithContentDescription("Rename").performClick()
+        // W3-E (W3-D §4): the N=1 identity actions moved into the selection bar's ⋯
+        // overflow — Rename · Pin album · Set as cover.
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Rename").performClick()
         compose.onNodeWithText("Rename album").assertExists()
 
         // Field arrives prefilled with the current name (the editable node — the grid tile

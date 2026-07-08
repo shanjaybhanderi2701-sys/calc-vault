@@ -3,6 +3,7 @@ package com.appblish.calculatorvault.vault.media
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Matrix
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Build
@@ -142,6 +143,37 @@ object VaultThumbnails {
 
     /** Backfill: sampled decode of decrypted full-image bytes (grid-tile sized). */
     fun sampledBitmapFromBytes(bytes: ByteArray): Bitmap? = decodeSampledImage(bytes)
+
+    /**
+     * Re-derive a stored thumb rotated by [deltaDegrees] clockwise, from the existing
+     * ~200px thumb JPEG itself — the W3-E rotate-persist propagation (W3-D §9 rule 2:
+     * cheapest available source; the full-size blob is never decrypted for a tile).
+     * Null on decode failure or a whole-turn delta (nothing to do).
+     */
+    fun rotatedStoredThumb(
+        jpeg: ByteArray,
+        deltaDegrees: Int,
+    ): ByteArray? {
+        val normalized = ((deltaDegrees % 360) + 360) % 360
+        if (normalized == 0) return null
+        val decoded = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size) ?: return null
+        val rotated = rotate(decoded, normalized)
+        val out = ByteArrayOutputStream()
+        rotated.compress(Bitmap.CompressFormat.JPEG, STORED_THUMB_QUALITY, out)
+        if (rotated !== decoded) decoded.recycle()
+        return out.toByteArray()
+    }
+
+    /** [bitmap] rotated [degrees] clockwise; returns [bitmap] itself for a 0° turn. */
+    fun rotate(
+        bitmap: Bitmap,
+        degrees: Int,
+    ): Bitmap {
+        val normalized = ((degrees % 360) + 360) % 360
+        if (normalized == 0) return bitmap
+        val matrix = Matrix().apply { postRotate(normalized.toFloat()) }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, matrix, true)
+    }
 
     /** MediaStore's own thumbnail cache (API 29+) — cheapest hide-time source. */
     private fun loadThumbnailViaResolver(
