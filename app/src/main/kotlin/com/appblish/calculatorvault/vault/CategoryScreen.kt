@@ -40,6 +40,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -92,6 +93,7 @@ import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.SortSheet
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
@@ -172,6 +174,24 @@ fun CategoryScreen(
         }
     }
 
+    // APP-294 Share: launch the chooser for a prepared temp-copy session, purge on return;
+    // a failed prepare surfaces its own one-shot notice (never a silent no-op).
+    val shareRequest by viewModel.shareRequest.collectAsStateWithLifecycle()
+    val shareNotice by viewModel.shareNotice.collectAsStateWithLifecycle()
+    ShareSessionLauncher(
+        request = shareRequest,
+        onLaunched = viewModel::shareLaunched,
+        onFinished = viewModel::shareFinished,
+    )
+    LaunchedEffect(shareNotice) {
+        val notice = shareNotice ?: return@LaunchedEffect
+        try {
+            snackbarHostState.showSnackbar(notice)
+        } finally {
+            viewModel.consumeShareNotice()
+        }
+    }
+
     val usesGrid =
         state.category == VaultCategory.PHOTOS ||
             state.category == VaultCategory.VIDEOS ||
@@ -209,43 +229,63 @@ fun CategoryScreen(
     Box(modifier = modifier.fillMaxSize().background(colors.canvas)) {
         Column(modifier = Modifier.fillMaxSize()) {
             when {
-                state.selectionMode ->
-                    // W1-E3 aggregate action bar: count + Select All + the three bulk ops
-                    // (Move / Unhide / Delete), each batching the W1-E2 single-photo flow.
-                    // Share is deliberately absent — out of Phase B scope.
+                state.selectionMode -> {
+                    // W1-E3 aggregate action bar: count + Select All + the bulk ops
+                    // (Move / Unhide / Delete / Share — APP-294 reversed the earlier Share
+                    // deferral), each batching the W1-E2 single-photo flow.
+                    // W3-E §5: at N=1 inside a real album the ⋯ overflow appears (Set as
+                    // cover); Move demotes into it then — never more than five trailing
+                    // targets, or the last one clips off a narrow screen (the APP-287
+                    // Surface-clipping regression; also item 13's sanctioned fallback).
+                    val coverOverflow =
+                        state.selectedIds.size == 1 &&
+                            state.openFolderId != null &&
+                            state.openFolderId != CategoryState.RECENT_FOLDER_ID
                     MultiSelectActionBar(
                         selectedCount = state.selectedIds.size,
                         closeIcon = Icons.Filled.Close,
                         onClose = viewModel::clearSelection,
                         actions =
-                            listOf(
-                                SelectionAction(Icons.Filled.CheckCircle, "Select all") {
-                                    viewModel.selectAllInFolder()
-                                },
+                            buildList {
+                                add(
+                                    SelectionAction(Icons.Filled.CheckCircle, "Select all") {
+                                        viewModel.selectAllInFolder()
+                                    },
+                                )
                                 // §6: bulk move — same Move-to sheet as the viewer's action.
-                                SelectionAction(Icons.Filled.ArrowForward, "Move") {
-                                    showMoveSheet = true
-                                },
+                                if (!coverOverflow) {
+                                    add(
+                                        SelectionAction(Icons.Filled.ArrowForward, "Move") {
+                                            showMoveSheet = true
+                                        },
+                                    )
+                                }
                                 // §7: bulk unhide — destination dialog, honest summary.
-                                SelectionAction(Icons.Filled.Refresh, "Unhide") {
-                                    unhideChoice = UnhideChoice.ORIGINAL
-                                    chosenUnhideFolder = null
-                                    showUnhideDialog = true
-                                },
+                                add(
+                                    SelectionAction(Icons.Filled.Refresh, "Unhide") {
+                                        unhideChoice = UnhideChoice.ORIGINAL
+                                        chosenUnhideFolder = null
+                                        showUnhideDialog = true
+                                    },
+                                )
                                 // D-4: Delete opens the shared choice dialog (bin vs forever).
-                                SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
-                                    showDeleteChoice = true
-                                },
-                            ),
-                        // W3-E §5: the selection bar's ⋯ overflow gains its first item —
-                        // Set as cover, N=1 only (a cover is one photo), and only inside
-                        // a real album (root/"Recent" items have no album to cover).
+                                add(
+                                    SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
+                                        showDeleteChoice = true
+                                    },
+                                )
+                                // APP-294: share the selection via the vault-safe temp-copy
+                                // contract (decrypt → FileProvider → purge on return).
+                                add(
+                                    SelectionAction(Icons.Filled.Share, "Share") {
+                                        viewModel.shareSelected(context)
+                                    },
+                                )
+                            },
                         overflow =
-                            if (state.selectedIds.size == 1 &&
-                                state.openFolderId != null &&
-                                state.openFolderId != CategoryState.RECENT_FOLDER_ID
-                            ) {
+                            if (coverOverflow) {
                                 listOf(
+                                    SelectionOverflowItem("Move") { showMoveSheet = true },
                                     SelectionOverflowItem("Set as cover") {
                                         viewModel.setCoverFromSelection()
                                     },
@@ -254,6 +294,7 @@ fun CategoryScreen(
                                 emptyList()
                             },
                     )
+                }
                 state.albumSelectionMode ->
                     // W2-E §9 album selection bar with the W3-D §4 extension. At N=1 the
                     // per-album identity actions live in the ⋯ overflow — Rename · Pin/

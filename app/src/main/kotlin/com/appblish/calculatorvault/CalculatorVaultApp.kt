@@ -5,6 +5,7 @@ import com.appblish.calculatorvault.applock.AppLockGraph
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.share.VaultShare
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -30,6 +31,11 @@ class CalculatorVaultApp : Application() {
         SettingsGraph.init(this)
         // Warm the synchronous re-lock cache from persisted settings so VaultNavHost's
         // ON_STOP re-lock reflects the user's "Re-lock on background" choice (APP-205).
-        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch { SettingsGraph.warmCaches() }
+        // First, the share temp-copy contract's process-restart purge (APP-294): a
+        // decrypted share copy stranded by a crash/force-kill is wiped at next launch.
+        CoroutineScope(SupervisorJob() + Dispatchers.IO).launch {
+            VaultShare.purgeAll(this@CalculatorVaultApp)
+            SettingsGraph.warmCaches()
+        }
     }
 }

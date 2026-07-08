@@ -117,6 +117,23 @@
         -->
 
         <!--
+          Share temp-copy provider (APP-294, security contract): serves ONLY the
+          cacheDir/share/ session tree (see @xml/vault_share_paths) as opaque read-only
+          content:// URIs to the system share sheet. Not exported — receivers reach it
+          exclusively through per-URI grants attached to the share intent, and the temp
+          copies themselves are purged the moment the share flow returns (VaultShare).
+        -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.share"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/vault_share_paths" />
+        </provider>
+
+        <!--
           Foreground service that keeps bulk hide/restore alive with a progress
           notification (build spec §11). Started by the vault repository around each
           batch; observes BulkOpProgress and stops itself when the batch completes.

@@ -14,13 +14,20 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.share.VaultShare
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * One tile on the category root's folder grid (S10): a real [VaultFolder] or the synthetic
@@ -479,6 +486,79 @@ class CategoryViewModel(
         return VaultThumbnailPipeline.load(context, item, repository)
     }
 
+    // --- APP-294 · Share selection (vault-safe temp-copy contract, see [VaultShare]) ---
+
+    private val _shareRequest = MutableStateFlow<VaultShare.Session?>(null)
+
+    /** A prepared share awaiting launch; the screen's ShareSessionLauncher consumes it. */
+    val shareRequest: StateFlow<VaultShare.Session?> = _shareRequest.asStateFlow()
+
+    private val _shareNotice = MutableStateFlow<String?>(null)
+
+    /** One-shot share failure copy ("Couldn't share.") — never a silent no-op. */
+    val shareNotice: StateFlow<String?> = _shareNotice.asStateFlow()
+
+    fun consumeShareNotice() {
+        _shareNotice.value = null
+    }
+
+    // The launched-but-not-finished session, purged the moment the share flow returns.
+    private var liveShareSession: VaultShare.Session? = null
+
+    /**
+     * Share the selected items: stream-decrypt each into one scoped temp session and
+     * surface it via [shareRequest]. Unlike the bulk mutations this is *not* routed
+     * through [mutateSelection]/[BulkOps] — nothing in the vault changes and the
+     * selection is kept, so after sharing the user can go on to move/unhide/delete the
+     * same set. All-or-nothing: any decrypt failure drops the whole session (already
+     * cleaned up by [VaultShare.prepare]) and reports via [shareNotice].
+     */
+    fun shareSelected(context: Context) {
+        if (liveShareSession != null || _shareRequest.value != null) return
+        val ids = local.value.ids
+        if (ids.isEmpty()) return
+        val appContext = context.applicationContext
+        viewModelScope.launch {
+            // Repository order keeps the shared batch stable; filter to the live items.
+            val items = repository.items(category).first().filter { it.id in ids }
+            val session =
+                if (items.isEmpty()) {
+                    null
+                } else {
+                    withContext(Dispatchers.IO) { VaultShare.prepare(appContext, repository, items) }
+                }
+            if (session == null) {
+                _shareNotice.value = "Couldn't share."
+            } else {
+                liveShareSession = session
+                _shareRequest.value = session
+            }
+        }
+    }
+
+    /** The screen launched the chooser; consume the request so it can never re-fire. */
+    fun shareLaunched() {
+        _shareRequest.value = null
+    }
+
+    /**
+     * The share flow returned (completed or cancelled) — delete the temp copies now, per
+     * the APP-294 contract. Runs on the process-scoped [shareCleanupScope] so a VM clear
+     * racing the result can never strand the cleartext until the process-restart purge.
+     */
+    fun shareFinished() {
+        val session = liveShareSession ?: return
+        liveShareSession = null
+        shareCleanupScope.launch { VaultShare.purge(session) }
+    }
+
+    // Share backstop, mirroring PagerViewerViewModel: a VM clear mid-share (ON_STOP
+    // re-lock while the receiver is foreground) must not lose the purge.
+    override fun onCleared() {
+        shareFinished()
+        super.onCleared()
+    }
+
     /**
      * "Move to Recycle Bin" from the delete-choice dialog (D-4): recoverable for 30 days.
      * Surfaces a one-per-operation summary ("3 items moved to Recycle Bin") via
@@ -652,6 +732,10 @@ class CategoryViewModel(
     }
 
     private companion object {
+        // Process-scoped home for share temp-copy purges so a clear-time flush survives
+        // the VM (mirrors PagerViewerViewModel.commitScope for must-complete IO).
+        val shareCleanupScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
         /** Pluralized count for the P2-3 operation summaries ("1 item" / "3 items"). */
         fun countLabel(count: Int): String = if (count == 1) "1 item" else "$count items"
 
