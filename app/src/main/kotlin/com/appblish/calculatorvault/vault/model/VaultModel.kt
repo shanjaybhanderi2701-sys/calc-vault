@@ -14,6 +14,16 @@ enum class VaultCategory(
     AUDIOS("Audios", 0xFFF59E0B),
     FILES("Files", 0xFF14B8A6),
     CONTACTS("Contacts", 0xFFEC4899),
+    ;
+
+    companion object {
+        /**
+         * The Phase-1 media vault scope (build spec §0/§3, APP-225): Photos, Videos, Audio
+         * only. FILES and CONTACTS stay in the enum so persisted indexes keep decoding, but
+         * no Phase-1 surface offers them.
+         */
+        val PHASE1: List<VaultCategory> = listOf(PHOTOS, VIDEOS, AUDIOS)
+    }
 }
 
 /**
@@ -44,10 +54,74 @@ data class VaultItem(
     val mimeType: String? = null,
     // Public-storage RELATIVE_PATH the original lived in at hide time (e.g. "DCIM/Camera/"),
     // captured from MediaStore so un-hide can write the decrypted bytes back to the same
-    // gallery album. Persisted. Null when unknown → un-hide falls back to a per-category
-    // default public folder (see MediaSink.defaultRelativePath).
+    // gallery album. Persisted. Null when unknown → un-hide falls back to Downloads and
+    // reports it (see MediaSink.writeBack + [UnhideDisposition]).
     val relativePath: String? = null,
+    // Pixel dimensions of the original, captured at hide time from the source bounds so the
+    // Property dialog can report "W × H" without ever decrypting the blob. 0 == unknown
+    // (older items / non-image categories) → the Property dialog shows a muted "—".
+    val widthPx: Int = 0,
+    val heightPx: Int = 0,
+    // Original last-modified time (epoch millis) read from MediaStore at hide time. Distinct
+    // from [sortKey], which is the added-to-vault time. 0 == unknown → Property shows "—".
+    val dateModifiedMs: Long = 0L,
 )
+
+/**
+ * Where an un-hide writes the decrypted bytes. [Original] targets the album the file was
+ * hidden from (from the encrypted index); [Chosen] targets a caller-picked public
+ * RELATIVE_PATH. Either way, if the primary destination is missing/unwritable the
+ * repository falls back to Downloads and reports it — spec §1.4: never fail silently.
+ */
+sealed interface UnhideDestination {
+    data object Original : UnhideDestination
+
+    data class Chosen(
+        val relativePath: String,
+    ) : UnhideDestination
+}
+
+/** How a single item actually landed when un-hidden (drives the honest result snackbar). */
+enum class UnhideDisposition {
+    /** Written to the requested destination (original album or chosen folder). */
+    REQUESTED,
+
+    /** Requested destination was unavailable; saved to the fallback (Downloads) instead. */
+    FALLBACK,
+
+    /** Nothing could be written; the encrypted vault copy was kept (never lost). */
+    FAILED,
+}
+
+/** Per-item un-hide outcome: what happened and, for a fallback, where it actually landed. */
+data class UnhideOutcome(
+    val itemId: String,
+    val disposition: UnhideDisposition,
+    val destinationLabel: String? = null,
+)
+
+/**
+ * Aggregate result of an un-hide over one or more items. Surfaces the counts the design's
+ * §7 snackbar needs — "Unhid N", "saved M to {dest}", total-failure — without the UI
+ * having to re-derive them.
+ */
+data class UnhideResult(
+    val outcomes: List<UnhideOutcome> = emptyList(),
+) {
+    val requested: Int get() = outcomes.count { it.disposition == UnhideDisposition.REQUESTED }
+    val fellBack: Int get() = outcomes.count { it.disposition == UnhideDisposition.FALLBACK }
+    val failed: Int get() = outcomes.count { it.disposition == UnhideDisposition.FAILED }
+
+    /** Items that left the vault (landed somewhere), whether at the requested dest or fallback. */
+    val unhidden: Int get() = requested + fellBack
+
+    /** True when nothing at all could be written — the one case that warrants a modal, not a snackbar. */
+    val totalFailure: Boolean get() = outcomes.isNotEmpty() && unhidden == 0
+
+    /** The fallback destination label, if any item fell back (all fallbacks share one dir). */
+    val fallbackDestination: String?
+        get() = outcomes.firstOrNull { it.disposition == UnhideDisposition.FALLBACK }?.destinationLabel
+}
 
 /** A user-created folder within a category (Create Folder from the FAB menu). */
 data class VaultFolder(
@@ -56,6 +130,90 @@ data class VaultFolder(
     val name: String,
     val itemCount: Int = 0,
 )
+
+/**
+ * The predefined folders seeded into every vault. Build spec §4 (APP-225, board-ruled on
+ * APP-220): each of the three Phase-1 categories — Photos, Videos, Audio — is created on
+ * first use, even when empty, containing exactly one default empty **"Download"** folder.
+ * Seeding is per vault *namespace*: the real vault and each decoy slot (`decoy_<slot>/`)
+ * seed into their own encrypted index, so a decoy's folders can never leak into the real
+ * vault.
+ *
+ * Because the public `.CalcVault/` index survives uninstall **by design**, seeding cannot be
+ * first-run-only: an index written by an older build (pre-"Download" catalog, or with the
+ * legacy Camera/Screenshots/… set) would otherwise never receive the required default. So
+ * seeding is **idempotent and category-scoped** ([missingDefaults]): on every index load,
+ * any Phase-1 category holding ZERO folders gets its catalog default(s); a category with
+ * ≥1 folder — user-created, legacy seed, or a surviving "Download" — is left alone, so a
+ * default the user deleted stays deleted while they keep other folders in that category.
+ * Tradeoff: deleting a category's *last* folder brings "Download" back on the next unlock;
+ * accepted, to guarantee migrated/stale vaults always open with a usable default.
+ *
+ * Each default folder carries a **stable, derived id** (`seed_<category>_<slug>`) so seeding
+ * is idempotent and a folder the user later renames is never resurrected.
+ */
+object DefaultVaultFolders {
+    /** (category, display name) pairs seeded into a fresh vault, in display order. */
+    private val CATALOG: List<Pair<VaultCategory, String>> =
+        VaultCategory.PHASE1.map { it to "Download" }
+
+    /** The default folders for a brand-new vault namespace, with stable ids. */
+    fun forFreshVault(): List<VaultFolder> = missingDefaults(existing = emptyList())
+
+    /**
+     * The catalog defaults missing from [existing]: for each Phase-1 category with ZERO
+     * folders in [existing], that category's default folder(s). Categories that already hold
+     * ≥1 folder contribute nothing (see the object KDoc for the deleted-vs-migrated
+     * tradeoff); non-Phase-1 folders in [existing] neither seed nor suppress anything.
+     */
+    fun missingDefaults(existing: List<VaultFolder>): List<VaultFolder> {
+        val populated = existing.mapTo(mutableSetOf()) { it.category }
+        return CATALOG
+            .filter { (category, _) -> category !in populated }
+            .map { (category, name) -> VaultFolder(id = seedId(category, name), category = category, name = name) }
+    }
+
+    /** Stable id for a seeded folder — deterministic so re-seeding never duplicates it. */
+    private fun seedId(
+        category: VaultCategory,
+        name: String,
+    ): String = "seed_${category.name.lowercase()}_${name.lowercase().replace(Regex("[^a-z0-9]+"), "_")}"
+}
+
+/**
+ * The user-facing outcome of a restore (un-hide) operation — spec §8 + design call D-3 on
+ * APP-224. Restore never fails silently: every item either returned to its original public
+ * location, landed in a visible fallback folder ("DCIM/Restored", "Music/Restored"…)
+ * because the original path was missing/unwritable/name-collided, or stayed safely in the
+ * vault ([failed] — nothing writable at all). The category/viewer screens turn this into
+ * the single per-operation snackbar.
+ */
+data class RestoreSummary(
+    val restoredToOriginal: Int = 0,
+    val restoredToFallback: Int = 0,
+    /** Visible fallback folder (e.g. "DCIM/Restored") when [restoredToFallback] > 0. */
+    val fallbackDestination: String? = null,
+    val failed: Int = 0,
+) {
+    val restored: Int get() = restoredToOriginal + restoredToFallback
+
+    /**
+     * The single per-operation user notice (design call D-3 copy, verbatim rules): one
+     * summary per bulk op, never one toast per item; never silent when anything fell back
+     * or failed. Null only when nothing was attempted.
+     */
+    fun noticeText(): String? {
+        val destination = fallbackDestination ?: "Restored"
+        return when {
+            restored == 0 && failed == 0 -> null
+            failed > 0 && restored == 0 -> "Couldn't restore — check storage access"
+            restoredToFallback > 0 && restoredToOriginal > 0 ->
+                "Restored $restoredToOriginal items · $restoredToFallback saved to $destination (original folder unavailable)"
+            restoredToFallback > 0 -> "Original folder unavailable — restored to $destination"
+            else -> if (restored == 1) "Restored 1 item." else "Restored $restored items."
+        }
+    }
+}
 
 /**
  * An item currently in the recycle bin. [deletedAt] starts the auto-delete countdown;

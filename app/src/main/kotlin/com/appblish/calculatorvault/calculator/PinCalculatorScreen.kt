@@ -21,6 +21,12 @@ const val PIN_LENGTH: Int = 4
  *
  * This backs onboarding create/confirm, change-password, fake-password setup, and the
  * forgot-password reset, so all of them are visually identical to the unlock surface.
+ *
+ * [highlightEqualsWhenComplete] opts into the first-run "=" confirm cue (P3-1, APP-225
+ * board feedback): once exactly [PIN_LENGTH] digits are entered, the `=` key pulses gently
+ * to signal "press to continue". Only onboarding create/confirm passes true; every other
+ * caller (and the calculator disguise, which never uses this screen) keeps the default
+ * false and is pixel-identical to before.
  */
 @Composable
 fun PinCalculatorScreen(
@@ -29,6 +35,7 @@ fun PinCalculatorScreen(
     onSubmit: (String) -> Unit,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    highlightEqualsWhenComplete: Boolean = false,
 ) {
     var entry by remember { mutableStateOf("") }
 
@@ -38,6 +45,7 @@ fun PinCalculatorScreen(
         hint = hint,
         onBack = onBack,
         modifier = modifier,
+        highlightEquals = equalsCueActive(highlightEqualsWhenComplete, entry),
         onKey = { token ->
             when (token) {
                 CalcToken.BACKSPACE -> entry = entry.dropLast(1)
@@ -59,3 +67,13 @@ fun PinCalculatorScreen(
         },
     )
 }
+
+/**
+ * True when the `=` confirm cue should show: the caller opted in (first-run create/confirm
+ * only) and [entry] holds a complete [PIN_LENGTH]-digit code. Pure, so the trigger
+ * condition is unit-testable off-device.
+ */
+fun equalsCueActive(
+    cueEnabled: Boolean,
+    entry: String,
+): Boolean = cueEnabled && entry.length == PIN_LENGTH

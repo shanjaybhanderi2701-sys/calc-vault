@@ -20,12 +20,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import kotlinx.coroutines.delay
+
+/**
+ * How long a first-run user dwells on the splash before onboarding starts. The deck's S1
+ * frame reads as a real screen (auto-advance after init, capped around 1.5s), so we hold
+ * the mark briefly instead of flashing it. Returning users never wait: the calculator
+ * disguise must appear instantly on cold start.
+ */
+private const val FIRST_RUN_SPLASH_MILLIS = 1_200L
 
 /**
  * The launch splash. It shows the CalcVault mark while deciding where to go: a first-run
- * user (no PIN set / onboarding incomplete) is routed to [onOnboard]; a returning user goes
- * straight to the calculator disguise via [onReady]. The check reads the encrypted store,
- * so it is done in an effect, not during composition.
+ * user (no PIN set / onboarding incomplete) is routed to [onOnboard] after a short dwell
+ * ([FIRST_RUN_SPLASH_MILLIS]); a returning user goes straight to the calculator disguise
+ * via [onReady] with no delay. The check reads the encrypted store, so it is done in an
+ * effect, not during composition.
  */
 @Composable
 fun GateScreen(
@@ -36,7 +46,13 @@ fun GateScreen(
     val colors = VaultTheme.colors
 
     LaunchedEffect(Unit) {
-        if (AuthGraph.credentialStore.isOnboarded()) onReady() else onOnboard()
+        if (AuthGraph.credentialStore.isOnboarded()) {
+            onReady()
+        } else {
+            // First run only: let the splash register as a screen before the wizard (S1).
+            delay(FIRST_RUN_SPLASH_MILLIS)
+            onOnboard()
+        }
     }
 
     Column(

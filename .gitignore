@@ -11,3 +11,4 @@ build/
 local.properties
 *.hprof
 .kotlin/
+.claude/

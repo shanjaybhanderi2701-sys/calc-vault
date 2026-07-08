@@ -1,7 +1,10 @@
 package com.appblish.calculatorvault.vault
 
+import android.content.Context
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.SharingStarted
@@ -21,8 +24,12 @@ data class VaultHomeState(
     val binCount: Int = 0,
     val recent: List<VaultItem> = emptyList(),
 ) {
+    // "Empty" == the user has hidden nothing yet. Deliberately ignores folderCounts:
+    // every fresh vault seeds a "Download" folder per category (APP-206/APP-220), so an
+    // emptiness signal that counted folders would never be true. Note the first-run hint
+    // itself is NOT gated on this — it is APP-236's pref-gated tooltip overlay (APP-235).
     val isEmpty: Boolean
-        get() = recent.isEmpty() && counts.values.all { it == 0 } && folderCounts.values.all { it == 0 }
+        get() = recent.isEmpty() && counts.values.all { it == 0 }
 }
 
 /**
@@ -54,4 +61,14 @@ class HomeViewModel(
         // Enforce the recycle-bin auto-delete window whenever the vault is opened.
         viewModelScope.launch { repository.purgeExpired(clock()) }
     }
+
+    /**
+     * Load a cover thumbnail for a Recent-strip [item] through [VaultThumbnailPipeline]
+     * (APP-244) — the same cached path the category grids use, so the home strip shows
+     * real covers instantly on revisits without re-decrypting (APP-234 spec §2.3).
+     */
+    suspend fun thumbnail(
+        context: Context,
+        item: VaultItem,
+    ): ImageBitmap? = VaultThumbnailPipeline.load(context, item, repository)
 }

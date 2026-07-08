@@ -146,4 +146,28 @@ class CredentialStoreTest {
             store.clearAll()
             assertThat(store.isOnboarded()).isFalse()
         }
+
+    @Test
+    fun `real vault opened marker starts false flips on mark and clears on reset`() =
+        runTest {
+            val store = store()
+            // APP-212: fresh install has never opened the real vault, so the deferred
+            // recovery prompt stays silent on the very first open.
+            assertThat(store.hasOpenedRealVault()).isFalse()
+            store.markRealVaultOpened()
+            assertThat(store.hasOpenedRealVault()).isTrue()
+            store.clearAll()
+            assertThat(store.hasOpenedRealVault()).isFalse()
+        }
+
+    @Test
+    fun `real vault opened marker survives a backup export and import round trip`() =
+        runTest {
+            val store = store()
+            store.setRealPin("1234")
+            store.markRealVaultOpened()
+            val restored = store()
+            restored.importRaw(store.exportRaw())
+            assertThat(restored.hasOpenedRealVault()).isTrue()
+        }
 }

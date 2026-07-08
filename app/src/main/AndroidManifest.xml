@@ -3,21 +3,19 @@
     xmlns:tools="http://schemas.android.com/tools">
 
     <!--
-      Media/contacts read access for the hide/import pipeline. On API 33+ the granular
-      READ_MEDIA_* permissions apply; on API 32 and below READ_EXTERNAL_STORAGE covers
-      photos/videos/audio/files. Media originals are removed via MediaStore delete
-      requests (user-consented on API 30+). Contacts are not MediaStore items and have
-      no system delete-consent dialog, so hiding a contact deletes its source row via
-      ContactsContract, which requires WRITE_CONTACTS (the runtime grant is the consent).
+      Media read access for the hide/import pipeline. All Files Access
+      (MANAGE_EXTERNAL_STORAGE, declared below) is the SOLE mandatory vault permission: on
+      API 30+ it already grants full read/write to every shared media category
+      (photos/videos/audio/files), so the granular READ_MEDIA_* runtime permissions are
+      redundant and off-parity with the reference app xlock — they are intentionally NOT
+      declared (board directive APP-219 / APP-203). Only the legacy READ_EXTERNAL_STORAGE
+      fallback (API ≤32) remains for pre-scoped-storage devices that lack All Files Access.
+      Media originals are removed via MediaStore delete requests (user-consented on API 30+).
+      Contacts permissions are also intentionally NOT declared (APP-207 scope refinement).
     -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
-    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
-    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
-    <uses-permission android:name="android.permission.READ_CONTACTS" />
-    <uses-permission android:name="android.permission.WRITE_CONTACTS" />
 
     <!--
       All Files Access — the vault-technique directive (§1–2, APP-142): encrypted blobs
@@ -36,25 +34,23 @@
         android:maxSdkVersion="29" />
 
     <!--
-      AppLock enforcement + Intruder Selfie (Phase 3, APP-160).
-      - PACKAGE_USAGE_STATS: read the foreground package (Usage Access, user-granted in Settings).
-      - CAMERA: front-camera intruder capture, requested only when Intruder Selfie is enabled.
-      - SYSTEM_ALERT_WINDOW: draw the lock screen over other apps on older devices.
-      The accessibility service (declared below) is the primary real-time trigger.
-      QUERY_ALL_PACKAGES is needed to list launchable apps for the AppLock picker on API 30+.
+      Phase-1 scope guard (APP-227): App Lock / Intruder Selfie / Explore permissions
+      (PACKAGE_USAGE_STATS, CAMERA, SYSTEM_ALERT_WINDOW, QUERY_ALL_PACKAGES, INTERNET) and
+      their manifest components are intentionally NOT declared — those features ship in
+      Phase 3/4 and re-add their own entries. Phase 1 is fully offline with the storage,
+      foreground-service and notification permissions below only.
     -->
-    <uses-permission
-        android:name="android.permission.PACKAGE_USAGE_STATS"
-        tools:ignore="ProtectedPermissions" />
-    <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-    <uses-feature android:name="android.hardware.camera" android:required="false" />
-    <uses-feature android:name="android.hardware.camera.front" android:required="false" />
 
-    <!-- Explore · Private Browser (Phase 4): the in-app incognito WebView loads pages. -->
-    <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      Bulk hide/restore hardening (build spec §11, APP-225): batch encrypt/restore runs
+      under a dataSync foreground service (BulkOpService) with a "Processing N of M"
+      notification so the OS does not kill a half-finished batch. POST_NOTIFICATIONS is
+      never gated on — if denied on API 33+ the operation still runs, just without the
+      visible progress notification.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:name=".CalculatorVaultApp"
@@ -73,10 +69,15 @@
           Disguise can swap the visible icon/name at runtime by enabling exactly one. The
           vault is reached only via the secret code typed inside the calculator.
         -->
+        <!--
+          NOT excluded from recents by default (spec §10, APP-225): a calculator that
+          vanishes from the app switcher is more suspicious than one whose preview is
+          blanked. FLAG_SECURE (set in code) blanks the recents thumbnail; fully hiding the
+          task is an opt-in Settings toggle applied at runtime via setExcludeFromRecents.
+        -->
         <activity
             android:name=".MainActivity"
             android:exported="false"
-            android:excludeFromRecents="true"
             android:theme="@style/Theme.CalculatorVault" />
 
         <!-- Default disguise: "Calculator" tile. Enabled at install. -->
@@ -108,52 +109,22 @@
         </activity-alias>
 
         <!--
-          Device-admin receiver behind the Prevent-uninstall switch. An active admin cannot
-          be uninstalled until deactivated (only reachable from inside the unlocked vault).
+          Phase-1 scope guard (APP-227): the App Lock components (LockScreenActivity,
+          AppLockAccessibilityService), the Prevent-uninstall VaultDeviceAdminReceiver and
+          the Explore browser are NOT registered here. Their Kotlin sources stay in-tree
+          (dormant, unreachable — no nav route or Settings row starts them) and Phase 3/4
+          restore the manifest entries when those features ship.
         -->
-        <receiver
-            android:name=".security.VaultDeviceAdminReceiver"
-            android:description="@string/device_admin_description"
-            android:exported="false"
-            android:permission="android.permission.BIND_DEVICE_ADMIN">
-            <meta-data
-                android:name="android.app.device_admin"
-                android:resource="@xml/device_admin" />
-            <intent-filter>
-                <action android:name="android.app.action.DEVICE_ADMIN_ENABLED" />
-            </intent-filter>
-        </receiver>
 
         <!--
-          The AppLock challenge, raised over a locked app by the accessibility service.
-          Not exported (only our service starts it), excluded from Recents, and singleTask so
-          re-triggering reuses one instance instead of stacking lock screens.
-        -->
-        <activity
-            android:name=".applock.LockScreenActivity"
-            android:exported="false"
-            android:excludeFromRecents="true"
-            android:launchMode="singleTask"
-            android:taskAffinity=""
-            android:theme="@style/Theme.CalculatorVault" />
-
-        <!--
-          Real-time enforcement: observes foreground-app changes and raises the lock screen
-          when a locked app comes forward. BIND_ACCESSIBILITY_SERVICE restricts binding to
-          the system; the user must enable it in Accessibility settings (primer flow).
+          Foreground service that keeps bulk hide/restore alive with a progress
+          notification (build spec §11). Started by the vault repository around each
+          batch; observes BulkOpProgress and stops itself when the batch completes.
         -->
         <service
-            android:name=".applock.AppLockAccessibilityService"
+            android:name=".vault.media.BulkOpService"
             android:exported="false"
-            android:label="@string/applock_service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/applock_accessibility_config" />
-        </service>
+            android:foregroundServiceType="dataSync" />
     </application>
 
 </manifest>

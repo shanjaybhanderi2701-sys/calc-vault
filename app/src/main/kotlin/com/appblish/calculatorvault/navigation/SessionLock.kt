@@ -12,28 +12,60 @@ import com.appblish.calculatorvault.vault.VaultSession
  *
  * The wiring lives in [VaultNavHost], driven by `ProcessLifecycleOwner`'s `ON_STOP`
  * (whole-app background — it does not fire for in-app permission / delete-consent dialogs,
- * which only pause the activity, nor for configuration changes). This object holds the two
+ * which only pause the activity, nor for configuration changes). This object holds the
  * decisions that are pure and therefore unit-testable in isolation from Compose/lifecycle.
  */
 internal object SessionLock {
     /**
-     * Routes that are *in front of* the unlocked vault — the disguise/auth spine and the
-     * point-of-need storage primer. Backgrounding on any of these must NOT clear the session
-     * or navigate:
-     *  - the calculator / gate / onboarding / forgot-password expose no vault content; and
-     *  - the storage primer sends the user to full-screen system Settings to grant All Files
-     *    Access and finishes the unlock on return via its resume re-check — clearing the
-     *    session here would strand that grant (see [VaultNavHost] `enterVault`).
-     * Every other route is behind the unlocked vault and must be re-locked.
+     * Routes that are *in front of* the unlocked vault — the disguise/auth spine. They
+     * expose no vault content, so backgrounding on them must NOT clear the session or
+     * navigate. Every other route is behind the unlocked vault and must be re-locked.
      */
     private val PRE_VAULT_SURFACES =
         setOf(
             VaultDestinations.GATE,
             VaultDestinations.ONBOARDING,
             VaultDestinations.CALCULATOR,
-            VaultDestinations.FORGOT_PASSWORD,
-            VaultDestinations.STORAGE_PRIMER,
         )
+
+    /**
+     * How long an armed grant round-trip stays valid (APP-225 board finding P1b). A real
+     * primer trip through system Settings takes seconds; a flag that was armed but never
+     * consumed (grant intent failed to resolve, user swiped the app away mid-trip, …) must
+     * NOT suppress a later, unrelated backgrounding — that would let Recents resume an
+     * unlocked vault without the PIN. Two minutes is generous for the round-trip and far
+     * too short to survive to a plausible "come back later" backgrounding.
+     */
+    private const val GRANT_ROUND_TRIP_EXPIRY_MS: Long = 2 * 60 * 1000L
+
+    /**
+     * One-shot suppression for the All-Files-Access grant round-trip (spec §5, design call
+     * D-2 on APP-224): the primer bottom sheet sends the user to full-screen **system
+     * Settings** to flip the grant, which backgrounds the app and would otherwise re-lock
+     * the vault and strand the "return straight into the tapped category" flow. The primer
+     * arms this immediately before launching the system intent; the very next ON_STOP
+     * consumes it instead of re-locking. It never survives more than one background event,
+     * and it auto-expires after [GRANT_ROUND_TRIP_EXPIRY_MS] even if never consumed.
+     * `null` means "not armed"; otherwise it holds the arming timestamp.
+     */
+    @Volatile
+    private var grantRoundTripArmedAtMs: Long? = null
+
+    /** Arm the one-shot re-lock suppression for a permission grant round-trip. */
+    fun beginGrantRoundTrip(nowMs: Long = System.currentTimeMillis()) {
+        grantRoundTripArmedAtMs = nowMs
+    }
+
+    /**
+     * Consume the one-shot suppression; true means "skip this re-lock". The flag is spent
+     * either way, and an armed flag older than [GRANT_ROUND_TRIP_EXPIRY_MS] has already
+     * expired and returns false, so a stale round-trip can never mask a real backgrounding.
+     */
+    fun consumeGrantRoundTrip(nowMs: Long = System.currentTimeMillis()): Boolean {
+        val armedAtMs = grantRoundTripArmedAtMs
+        grantRoundTripArmedAtMs = null
+        return armedAtMs != null && nowMs - armedAtMs < GRANT_ROUND_TRIP_EXPIRY_MS
+    }
 
     /**
      * True when [route] is behind the unlocked vault and so must be re-locked on background.
@@ -42,12 +74,32 @@ internal object SessionLock {
     fun isVaultSurface(route: String?): Boolean = route != null && route !in PRE_VAULT_SURFACES
 
     /**
-     * Forget the in-memory session and drop the data key + cached content so a backgrounded
-     * vault cannot be resumed. Safe to call repeatedly. Callers gate this on
-     * [isVaultSurface] so the storage-primer grant round-trip is never disturbed.
+     * True when a just-composed destination is the process-death signature and must be
+     * forced back to the calculator lock (APP-240): the nav back stack survives process
+     * death via saved instance state, but the in-memory [VaultSession] does not, so a cold
+     * restore can resurrect a vault surface with no live session. Legitimate in-app
+     * navigation can never look like this — every path onto a vault surface begins the
+     * session first, and every leave-the-vault path clears it only while navigating to a
+     * pre-vault surface — so vault surface + dead session always means "restored corpse".
+     */
+    fun requiresLockOnColdRestore(route: String?): Boolean = isVaultSurface(route) && VaultSession.passphrase == null
+
+    /**
+     * Forget the in-memory session and drop the data key + cached content so the vault is
+     * unreachable without the PIN. Pure state drop — it never navigates — so it is safe
+     * from ANY leave-the-vault path (APP-225 board finding P1a): the `ON_STOP`
+     * backgrounding observer (gated on [isVaultSurface]) AND the vault-home `BackHandler`
+     * that pops back out to the calculator disguise. Safe to call repeatedly, including
+     * when nothing is unlocked.
      */
     fun relock() {
         VaultSession.clear()
         VaultGraph.contentRepository.lock()
     }
+
+    /**
+     * Alias for [relock] whose name states the caller's intent at back-navigation call
+     * sites: the user is deliberately leaving the vault right now, not being backgrounded.
+     */
+    fun lockNow() = relock()
 }

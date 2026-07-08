@@ -90,6 +90,11 @@ dependencies {
     implementation(libs.androidx.camera.lifecycle)
     implementation(libs.androidx.biometric)
 
+    // Media3/ExoPlayer — plays decrypted vault video/audio from a private cache temp file
+    // (spec §7; decrypted bytes never touch public storage in cleartext).
+    implementation(libs.androidx.media3.exoplayer)
+    implementation(libs.androidx.media3.ui)
+
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)
@@ -114,5 +119,10 @@ dependencies {
     androidTestImplementation("androidx.test.ext:junit:1.2.1")
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test:rules:1.6.1")
+    // UiAutomator drives the production composition for the re-lock DoD proof
+    // (APP-241): a compose rule would re-host the window recomposer on the test clock
+    // and break the spine's own navigation effects; the accessibility tree also stays
+    // readable under FLAG_SECURE.
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation(libs.truth)
 }

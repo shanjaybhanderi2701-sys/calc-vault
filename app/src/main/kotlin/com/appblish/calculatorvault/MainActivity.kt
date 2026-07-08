@@ -1,15 +1,25 @@
 package com.appblish.calculatorvault
 
+import android.app.ActivityManager
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.navigation.VaultNavHost
+import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
+import com.appblish.calculatorvault.ui.theme.VaultTheme
+import kotlinx.coroutines.launch
 
 /**
  * Single-activity host. Owns nothing but the Compose tree; navigation between the
@@ -18,24 +28,58 @@ import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // Privacy hardening (APP-205, match reference app xlock): mark the window secure so no
-        // screenshot / screen-record can capture vault content and the Recents thumbnail is
-        // blanked, and disable the recents snapshot outright on API 33+. Paired with
-        // excludeFromRecents in the manifest and the ProcessLifecycleOwner re-lock in
-        // VaultNavHost, an unlocked vault can never be observed from outside the live session.
-        window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            setRecentsScreenshotEnabled(false)
+        // Privacy hardening (APP-205 / spec §10): mark the window secure so no screenshot /
+        // screen-record can capture vault content and the recents thumbnail is blanked, and
+        // disable the recents snapshot outright on API 33+. FLAG_SECURE is the PRIMARY
+        // privacy layer; hiding the task from recents entirely is an opt-in setting applied
+        // below (OFF by default — a calculator that vanishes from recents is more
+        // suspicious, spec §10 / APP-225).
+        // Every build type applies the flags by default, so the instrumented §10 proof
+        // (FlagSecureDoDTest) runs against the debug variant CI actually builds (APP-241).
+        // Debug-only escape hatch for bug-report screenshots (APP-233): a device-global
+        // setting an operator flips explicitly per capture session —
+        //   adb shell settings put global calcvault_allow_screenshots 1
+        // (then relaunch; delete the setting to restore protection). Release ignores it.
+        if (!BuildConfig.DEBUG || !debugScreenshotsEnabled()) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                setRecentsScreenshotEnabled(false)
+            }
         }
-        // Full-screen immersive edge-to-edge (APP-204): hide the system bars so no surface is
-        // clipped by the system navigation bar. Supersedes the earlier enableEdgeToEdge() call.
-        applyImmersiveEdgeToEdge()
+        applyPersistedHideFromRecents()
+        // Edge-to-edge with VISIBLE system bars (APP-225 P2-4, supersedes APP-204's
+        // immersive hide-bars mode): transparent bars with light icons over the dark theme.
+        // The Surface paints the canvas edge-to-edge (so the strips behind the transparent
+        // bars stay on-theme) while the inner Box pads the entire nav tree by
+        // WindowInsets.safeDrawing — one root-level pad keeps every screen clear of the
+        // status bar, display cutout, and navigation bar without per-screen inset handling.
+        applyEdgeToEdge()
         setContent {
             CalculatorVaultTheme {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    VaultNavHost()
+                Surface(
+                    modifier = Modifier.fillMaxSize(),
+                    color = VaultTheme.colors.canvas,
+                ) {
+                    Box(modifier = Modifier.windowInsetsPadding(WindowInsets.safeDrawing)) {
+                        VaultNavHost()
+                    }
                 }
             }
+        }
+    }
+
+    /** True only when the debug screenshot override (APP-233) was explicitly set via adb. */
+    private fun debugScreenshotsEnabled(): Boolean =
+        runCatching {
+            Settings.Global.getInt(contentResolver, "calcvault_allow_screenshots", 0) == 1
+        }.getOrDefault(false)
+
+    /** Re-apply the opt-in "hide from recents" setting to this task on every launch. */
+    private fun applyPersistedHideFromRecents() {
+        lifecycleScope.launch {
+            val enabled = runCatching { SettingsGraph.settingsStore.load().hideFromRecentsEnabled }.getOrDefault(false)
+            val activityManager = getSystemService(ACTIVITY_SERVICE) as? ActivityManager
+            activityManager?.appTasks?.firstOrNull()?.setExcludeFromRecents(enabled)
         }
     }
 }

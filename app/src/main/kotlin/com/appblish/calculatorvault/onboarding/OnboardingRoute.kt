@@ -1,9 +1,6 @@
 package com.appblish.calculatorvault.onboarding
 
-import android.Manifest
-import android.os.Build
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Star
@@ -13,49 +10,48 @@ import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
-import com.appblish.calculatorvault.calculator.CalculatorKeypad
 import com.appblish.calculatorvault.calculator.PinCalculatorScreen
 import com.appblish.calculatorvault.calculator.confirmPinHint
 import com.appblish.calculatorvault.calculator.createPinHint
 
 /**
  * Hosts the whole first-run wizard, rendering the screen for the current
- * [OnboardingViewModel] step and calling [onComplete] once onboarding is flagged done. The
- * file-access permission request is launched here on the Allow step; whatever the user
- * grants, the wizard advances.
+ * [OnboardingViewModel] step and calling [onComplete] once onboarding is flagged done —
+ * passing the freshly created PIN so the host can open the vault directly (spec §1.5: the
+ * last intro card's Done lands on **Home (Vault tab)**, not back on the calculator).
+ *
+ * Phase 1 (build spec §1): the wizard is a clean calculator/PIN setup — language → create PIN
+ * → confirm PIN → two intro cards. There is deliberately **no** upfront All Files Access
+ * wall and **no** recovery step of any kind: permissions are primed in context at first use,
+ * and PIN recovery does not exist in Phase 1 at all (build spec §0 — deferred to a later
+ * phase, accepted risk).
  */
 @Composable
 fun OnboardingRoute(
-    onComplete: () -> Unit,
+    onComplete: (pin: String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: OnboardingViewModel = viewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
 
     LaunchedEffect(state.finished) {
-        if (state.finished) onComplete()
+        if (state.finished) onComplete(state.pinDraft)
     }
-
-    val permissionLauncher =
-        rememberLauncherForActivityResult(
-            contract = ActivityResultContracts.RequestMultiplePermissions(),
-        ) { viewModel.onFileAccessHandled() }
 
     when (state.step) {
         OnboardingStep.LANGUAGE ->
-            LanguageSelectScreen(
-                selected = state.language,
-                onSelect = viewModel::selectLanguage,
-                onDone = viewModel::onLanguageDone,
-                modifier = modifier,
-            )
-
-        OnboardingStep.ALLOW_FILE_ACCESS ->
-            AllowFileAccessScreen(
-                onAllow = { permissionLauncher.launch(fileAccessPermissions()) },
-                onNotNow = viewModel::onFileAccessHandled,
-                modifier = modifier,
-            )
+            Box(modifier = modifier) {
+                LanguageSelectScreen(
+                    selected = state.language,
+                    onSelect = viewModel::selectLanguage,
+                    onDone = viewModel::onLanguageDone,
+                )
+                // S3: "Setting Up Language" modal over the dimmed list while the ViewModel
+                // holds the minimum loader dwell, then it advances to CREATE_PIN itself.
+                if (state.applyingLanguage) {
+                    LanguageApplyingOverlay()
+                }
+            }
 
         OnboardingStep.CREATE_PIN ->
             PinCalculatorScreen(
@@ -64,6 +60,8 @@ fun OnboardingRoute(
                 onSubmit = viewModel::onPinCreated,
                 onBack = viewModel::onBack,
                 modifier = modifier,
+                // P3-1: first-run only — pulse "=" once the 4th digit is in.
+                highlightEqualsWhenComplete = true,
             )
 
         OnboardingStep.CONFIRM_PIN ->
@@ -73,21 +71,14 @@ fun OnboardingRoute(
                 onSubmit = viewModel::onPinConfirmed,
                 onBack = viewModel::onBack,
                 modifier = modifier,
+                highlightEqualsWhenComplete = true,
             )
-
-        OnboardingStep.SECURITY_QUESTION -> {
-            // Deck shows the calculator (with the just-set PIN) behind the modal.
-            CalculatorKeypad(display = "1111", onKey = {}, modifier = modifier)
-            SecurityQuestionModal(
-                onSave = viewModel::onSecuritySaved,
-                onCancel = viewModel::onSecuritySkipped,
-            )
-        }
 
         OnboardingStep.INTRO_PRIVATE ->
             IntroCardScreen(
                 title = "Private Apps & Media Vault",
-                body = "Securely hide apps, photos, videos, audio and important files.",
+                // Design sign-off S6: body drops "apps" (the title keeps the docx wording).
+                body = "Securely hide photos, videos, audio and important files",
                 icon = Icons.Filled.Lock,
                 ctaLabel = "Next",
                 pageIndex = 0,
@@ -111,15 +102,3 @@ fun OnboardingRoute(
             )
     }
 }
-
-/** The storage/media permissions to request, matching the platform's model per API level. */
-private fun fileAccessPermissions(): Array<String> =
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        arrayOf(
-            Manifest.permission.READ_MEDIA_IMAGES,
-            Manifest.permission.READ_MEDIA_VIDEO,
-            Manifest.permission.READ_MEDIA_AUDIO,
-        )
-    } else {
-        arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
-    }

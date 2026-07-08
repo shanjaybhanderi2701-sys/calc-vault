@@ -67,6 +67,15 @@ class SettingsViewModel(
 
     fun setIncorrectVibration(enabled: Boolean) = mutate { it.copy(incorrectVibrationEnabled = enabled) }
 
+    /**
+     * Opt-in "hide from recents" (spec §10 — OFF by default; the OS-level side effect on
+     * the live task is applied by the screen, which owns an Activity context).
+     */
+    fun setHideFromRecents(enabled: Boolean) = mutate { it.copy(hideFromRecentsEnabled = enabled) }
+
+    /** Persist the app language chosen in Settings → App language (or onboarding). */
+    fun setAppLanguage(language: String) = mutate { it.copy(appLanguage = language) }
+
     /** Record the prevent-uninstall result after the OS consent flow resolves. */
     fun setPreventUninstall(enabled: Boolean) = mutate { it.copy(preventUninstallEnabled = enabled) }
 

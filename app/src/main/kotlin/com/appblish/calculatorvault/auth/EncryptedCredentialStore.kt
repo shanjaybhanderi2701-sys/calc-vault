@@ -43,22 +43,33 @@ class EncryptedCredentialStore(
             prefs.getString(key, null)
         }
 
+    // Writes use commit(), not apply(): apply() queues an async disk write that a hard
+    // process kill can drop, which is how the onboarded flag / just-set PIN vanished and
+    // resurrected the intro wizard after `am kill` (APP-240). These writes are rare,
+    // tiny, and already on Dispatchers.IO, so a synchronous flush is the right trade.
+    @Suppress("ApplySharedPref")
     override suspend fun setValue(
         key: String,
         value: String,
-    ) = withContext(Dispatchers.IO) {
-        prefs.edit().putString(key, value).apply()
+    ) {
+        withContext(Dispatchers.IO) {
+            prefs.edit().putString(key, value).commit()
+        }
     }
 
-    override suspend fun removeValue(key: String) =
+    @Suppress("ApplySharedPref")
+    override suspend fun removeValue(key: String) {
         withContext(Dispatchers.IO) {
-            prefs.edit().remove(key).apply()
+            prefs.edit().remove(key).commit()
         }
+    }
 
-    override suspend fun clearValues() =
+    @Suppress("ApplySharedPref")
+    override suspend fun clearValues() {
         withContext(Dispatchers.IO) {
-            prefs.edit().clear().apply()
+            prefs.edit().clear().commit()
         }
+    }
 
     private companion object {
         const val PREFS_NAME = "calcvault_credentials"

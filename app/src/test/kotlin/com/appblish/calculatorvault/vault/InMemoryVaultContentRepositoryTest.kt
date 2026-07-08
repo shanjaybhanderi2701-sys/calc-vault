@@ -50,6 +50,22 @@ class InMemoryVaultContentRepositoryTest {
         }
 
     @Test
+    fun `seeded repo ships the predefined default folders`() =
+        runTest {
+            // The production/preview instance seeds sample content AND the default folders.
+            val repo = InMemoryVaultContentRepository(seed = true)
+            val counts = repo.folderCounts().first()
+            // Matches DefaultVaultFolders (spec §4): one "Download" per Phase-1 category.
+            assertThat(counts[VaultCategory.PHOTOS]).isEqualTo(1)
+            assertThat(counts[VaultCategory.VIDEOS]).isEqualTo(1)
+            assertThat(counts[VaultCategory.AUDIOS]).isEqualTo(1)
+            assertThat(counts[VaultCategory.FILES]).isEqualTo(0)
+            assertThat(counts[VaultCategory.CONTACTS]).isEqualTo(0)
+            assertThat(repo.folders(VaultCategory.PHOTOS).first().map { it.name })
+                .containsExactly("Download")
+        }
+
+    @Test
     fun `recycle then restore round-trips the item`() =
         runTest {
             val repo = repo()
@@ -102,6 +118,32 @@ class InMemoryVaultContentRepositoryTest {
 
             assertThat(count).isEqualTo(1)
             assertThat(repo.items(VaultCategory.FILES).first().map { it.originalName }).containsExactly("keep.bin")
+        }
+
+    @Test
+    fun `unhideDetailed classifies known items as restored-to-original and unknown ids as failed`() =
+        runTest {
+            val repo = repo()
+            val ids =
+                repo
+                    .hide(
+                        listOf(
+                            staged("a", VaultCategory.PHOTOS, 3),
+                            staged("b", VaultCategory.PHOTOS, 2),
+                        ),
+                    ).map { it.id }
+                    .toSet()
+
+            val summary = repo.unhideDetailed(ids + "missing-id")
+
+            // Off-device fake: everything known lands at its original spot, nothing falls
+            // back, and the unknown id is reported failed — the never-silent contract.
+            assertThat(summary.restoredToOriginal).isEqualTo(2)
+            assertThat(summary.restoredToFallback).isEqualTo(0)
+            assertThat(summary.fallbackDestination).isNull()
+            assertThat(summary.failed).isEqualTo(1)
+            assertThat(summary.restored).isEqualTo(2)
+            assertThat(repo.items(VaultCategory.PHOTOS).first()).isEmpty()
         }
 
     @Test

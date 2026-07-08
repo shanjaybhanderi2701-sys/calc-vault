@@ -1,11 +1,17 @@
 package com.appblish.calculatorvault.vault
 
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
+import com.appblish.calculatorvault.vault.model.RestoreSummary
+import com.appblish.calculatorvault.vault.model.UnhideDestination
+import com.appblish.calculatorvault.vault.model.UnhideDisposition
+import com.appblish.calculatorvault.vault.model.UnhideOutcome
+import com.appblish.calculatorvault.vault.model.UnhideResult
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flowOf
+import java.io.File
 
 /**
  * Read/write boundary for hidden vault *content* (media, files, folders, recycle bin) —
@@ -85,7 +91,61 @@ interface VaultContentRepository {
      * the vault (its only copy is never lost). This is the board's "watch it return to
      * the gallery" beat — the inverse of [hide].
      */
-    suspend fun unhide(itemIds: Set<String>): Int
+    suspend fun unhide(itemIds: Set<String>): Int = unhideTo(itemIds, UnhideDestination.Original).unhidden
+
+    /**
+     * Un-hide [itemIds] to [destination] and report, per item, whether it landed at the
+     * requested destination, fell back to Downloads (original/chosen dir unavailable), or
+     * failed entirely (blob kept in the vault — spec §1.4, never lose the only copy). This
+     * is the result-bearing form the Unhide dialog uses so it can show the honest §7
+     * snackbar ("Unhid N", "saved M to {dest}"). Default impl delegates to [unhide] so
+     * preview/in-memory fakes need not model destinations, reporting every success as
+     * [UnhideDisposition.REQUESTED].
+     */
+    suspend fun unhideTo(
+        itemIds: Set<String>,
+        destination: UnhideDestination,
+    ): UnhideResult {
+        val ids = itemIds.toList()
+        val done = unhide(itemIds)
+        return UnhideResult(
+            ids.take(done).map { UnhideOutcome(it, UnhideDisposition.REQUESTED) } +
+                ids.drop(done).map { UnhideOutcome(it, UnhideDisposition.FAILED) },
+        )
+    }
+
+    /**
+     * Permanently destroy the *vault* items [itemIds]: securely wipe each encrypted blob
+     * (overwrite before unlink) and remove its index entry — the 2-step-confirmed
+     * "Delete permanently" path (spec §1.5). Distinct from [deleteForever], which operates
+     * on items already sitting in the recycle bin. Default impl removes the index entries;
+     * the device repository adds the secure blob wipe.
+     */
+    suspend fun permanentlyDelete(itemIds: Set<String>) {
+        // In-memory fakes hold no blob; dropping the index entry is a full delete for them.
+        moveToRecycleBin(itemIds)
+        deleteForever(itemIds)
+    }
+
+    /**
+     * [unhide] with the full per-operation outcome (spec §8 / design call D-3): how many
+     * items returned to their original location, how many fell back to the visible
+     * Downloads folder (§7 fallback — and where), and how many could not be written at all
+     * (left in the vault). Screens use this to surface the mandatory restore-fallback
+     * notice. Built from [unhideTo]'s per-item dispositions, so any implementation that
+     * reports destinations honestly gets honest summaries for free; fakes that only
+     * override [unhide] report every success as restored-to-original via the [unhideTo]
+     * default.
+     */
+    suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary {
+        val result = unhideTo(itemIds, UnhideDestination.Original)
+        return RestoreSummary(
+            restoredToOriginal = result.requested,
+            restoredToFallback = result.fellBack,
+            fallbackDestination = result.fallbackDestination,
+            failed = result.failed,
+        )
+    }
 
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)
@@ -104,4 +164,40 @@ interface VaultContentRepository {
 
     /** Read a decrypted blob for a viewer. Null if the item or blob is missing. */
     suspend fun openDecrypted(itemId: String): ByteArray?
+
+    /**
+     * Decrypt [itemId]'s blob straight into [dest] — the large-media seam for viewers that
+     * must not hold a whole video in memory (bulk-op hardening, spec §11). The device
+     * implementation streams blob → cipher → file and returns false (leaving no partial
+     * [dest]) when the item/blob/key is missing or the GCM tag fails. This default
+     * materializes [openDecrypted] so in-memory fakes work unchanged.
+     */
+    suspend fun decryptToFile(
+        itemId: String,
+        dest: File,
+    ): Boolean {
+        val bytes = openDecrypted(itemId) ?: return false
+        dest.outputStream().use { it.write(bytes) }
+        return true
+    }
+
+    /**
+     * Read [itemId]'s stored grid thumbnail as decrypted JPEG bytes (APP-244 encrypted
+     * on-disk thumb cache) — a few tens of KB instead of the full blob. Null when no thumb
+     * has been generated yet (pre-APP-244 items, non-visual categories) or the vault is
+     * locked; callers then backfill via [saveThumbnail]. Default null so in-memory fakes
+     * keep working (the pipeline falls back to the full-blob decode path).
+     */
+    suspend fun openThumbnail(itemId: String): ByteArray? = null
+
+    /**
+     * Persist [jpegBytes] as [itemId]'s stored grid thumbnail, **encrypted** — plaintext
+     * previews must never touch disk (APP-244 board mandate). Called at hide-time by the
+     * device implementation itself and by the pipeline's lazy backfill for items hidden
+     * before thumbs existed. Default no-op for fakes.
+     */
+    suspend fun saveThumbnail(
+        itemId: String,
+        jpegBytes: ByteArray,
+    ) {}
 }

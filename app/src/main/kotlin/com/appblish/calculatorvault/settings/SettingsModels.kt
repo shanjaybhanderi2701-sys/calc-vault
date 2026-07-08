@@ -91,4 +91,13 @@ data class VaultSettings(
     val shufflePinPadEnabled: Boolean = false,
     /** Vibrate the device on a wrong PIN entry. */
     val incorrectVibrationEnabled: Boolean = true,
+    /**
+     * Hide the app from the recents/app-switcher list entirely. **Off by default** (spec
+     * §10, APP-225): a calculator that vanishes from recents looks *more* suspicious, not
+     * less — `FLAG_SECURE` already blanks the recents preview, which is the primary
+     * privacy layer. Exposed as an opt-in Settings toggle.
+     */
+    val hideFromRecentsEnabled: Boolean = false,
+    /** The app language chosen at onboarding / in Settings ("Default" = follow system). */
+    val appLanguage: String = "Default",
 )

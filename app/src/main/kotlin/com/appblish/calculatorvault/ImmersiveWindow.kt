@@ -1,28 +1,28 @@
 package com.appblish.calculatorvault
 
+import android.graphics.Color
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 
 /**
- * Full-screen immersive edge-to-edge, matching the reference app (xlock). (APP-204)
+ * Edge-to-edge with VISIBLE system bars (APP-225 board findings P2–P4; supersedes the
+ * APP-204 immersive hide-bars mode this file originally carried).
  *
- * The window is drawn edge-to-edge (transparent system bars via [enableEdgeToEdge] +
- * [WindowCompat.setDecorFitsSystemWindows] `false`) and both the status and navigation bars
- * are hidden with sticky behaviour: a swipe from a screen edge reveals them transiently as a
- * translucent overlay and they auto-hide again. Because the bars are hidden their insets
- * report as zero, so every surface — the calculator disguise keypad, the vault Home/grid, the
- * PIN lock screen — lays out over the full display and can never be clipped by or collide
- * with the system navigation bar. This is the "hide system bars immersively" option from the
- * QA fix direction; it fixes all screens from one place rather than per-screen inset padding.
+ * The window is drawn edge-to-edge — [enableEdgeToEdge] calls
+ * `WindowCompat.setDecorFitsSystemWindows(window, false)` under the hood — with the status
+ * and navigation bars SHOWN and fully transparent. [SystemBarStyle.dark] matches the app's
+ * dark-only theme: light (white) bar icons over the near-black canvas, and no forced
+ * navigation-bar contrast scrim on API 29+. Because the bars stay visible their insets now
+ * report real sizes, so composables are responsible for inset handling: [MainActivity] and
+ * [com.appblish.calculatorvault.applock.LockScreenActivity] pad their whole content tree
+ * with `WindowInsets.safeDrawing` at the root, which keeps every screen clear of the status
+ * bar, display cutout, and navigation bar from one place while the root surface still
+ * paints the canvas color behind the transparent bars.
  */
-fun ComponentActivity.applyImmersiveEdgeToEdge() {
-    enableEdgeToEdge()
-    WindowCompat.setDecorFitsSystemWindows(window, false)
-    WindowInsetsControllerCompat(window, window.decorView).apply {
-        hide(WindowInsetsCompat.Type.systemBars())
-        systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-    }
+fun ComponentActivity.applyEdgeToEdge() {
+    enableEdgeToEdge(
+        statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+        navigationBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
+    )
 }

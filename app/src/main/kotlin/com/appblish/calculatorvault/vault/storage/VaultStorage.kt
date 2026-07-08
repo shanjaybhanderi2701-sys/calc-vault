@@ -87,6 +87,25 @@ object VaultStorage {
         namespace: String = VaultSession.namespace,
     ): File = File(vaultDir(context, namespace), blobName)
 
+    /**
+     * The **encrypted** stored-thumbnail file for [blobName] (APP-244), under a `thumbs/`
+     * sub-directory of the active vault dir so it shares the blob's namespace isolation,
+     * survive-uninstall location, and `.nomedia` cover. Same bare-UUID name as its blob —
+     * nothing about the original leaks — and the content is a VaultCrypto ciphertext,
+     * never a plaintext preview.
+     */
+    fun thumbFile(
+        context: Context,
+        blobName: String,
+        namespace: String = VaultSession.namespace,
+    ): File {
+        val dir = File(vaultDir(context, namespace), THUMBS_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, blobName)
+    }
+
+    const val THUMBS_DIR = "thumbs"
+
     private fun ensureNoMedia(dir: File) {
         val marker = File(dir, NOMEDIA)
         if (!marker.exists()) runCatching { marker.createNewFile() }

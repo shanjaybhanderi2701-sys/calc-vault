@@ -70,21 +70,53 @@ class VaultKeyFile(
         return SecretKeySpec(raw, "AES")
     }
 
+    /**
+     * Envelope re-key for a PIN change (APP-245): unwrap the DEK with [oldPassphrase],
+     * re-wrap it under a KEK derived from [newPassphrase] with a **fresh salt + IV**, and
+     * atomically replace the key file (temp write + rename, so a crash mid-write leaves the
+     * old envelope intact). The DEK itself never changes — every blob and the encrypted
+     * index stay readable; only the wrapping moves to the new PIN. Afterwards the old PIN
+     * fails the GCM tag exactly like any wrong passphrase.
+     *
+     * Throws [WrongPassphraseException] — with the file untouched — when [oldPassphrase]
+     * does not unwrap the stored key, and [IllegalStateException] when there is no key file
+     * (callers gate on [exists]; with nothing wrapped there is nothing to re-key).
+     */
+    fun rewrap(
+        oldPassphrase: String,
+        newPassphrase: String,
+    ) {
+        check(file.exists()) { "No vault key file to re-wrap" }
+        val dek = unlock(oldPassphrase)
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText(serializeWrapped(dek, newPassphrase))
+        if (!tmp.renameTo(file)) {
+            tmp.delete()
+            throw java.io.IOException("Could not atomically replace the vault key file")
+        }
+    }
+
     /** Generate a fresh DEK, wrap it under a KEK derived from [passphrase], and persist. */
     private fun create(passphrase: String): SecretKey {
         val dek = VaultCrypto.newKey()
+        file.parentFile?.mkdirs()
+        file.writeText(serializeWrapped(dek, passphrase))
+        return dek
+    }
+
+    /** Wrap [dek] under a fresh-salt KEK from [passphrase] and serialize to the file format. */
+    private fun serializeWrapped(
+        dek: SecretKey,
+        passphrase: String,
+    ): String {
         val salt = ByteArray(SALT_BYTES).also(random::nextBytes)
         val iv = ByteArray(IV_BYTES).also(random::nextBytes)
         val kek = deriveKek(passphrase, salt, ITERATIONS)
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, kek, GCMParameterSpec(TAG_BITS, iv))
         val wrapped = cipher.doFinal(dek.encoded)
-        val serialized =
-            listOf(VERSION.toString(), ITERATIONS.toString(), encode(salt), encode(iv), encode(wrapped))
-                .joinToString(SEPARATOR)
-        file.parentFile?.mkdirs()
-        file.writeText(serialized)
-        return dek
+        return listOf(VERSION.toString(), ITERATIONS.toString(), encode(salt), encode(iv), encode(wrapped))
+            .joinToString(SEPARATOR)
     }
 
     /** PBKDF2-HMAC-SHA256, single 32-byte block — a 256-bit KEK for AES key wrapping. */
