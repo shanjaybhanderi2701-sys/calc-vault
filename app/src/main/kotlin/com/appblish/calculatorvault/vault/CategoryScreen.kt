@@ -80,6 +80,7 @@ import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.actions.AlbumNameDialog
 import com.appblish.calculatorvault.vault.actions.AlbumOption
 import com.appblish.calculatorvault.vault.actions.AlbumProperties
+import com.appblish.calculatorvault.vault.actions.ChosenFolder
 import com.appblish.calculatorvault.vault.actions.DeleteDialog
 import com.appblish.calculatorvault.vault.actions.DeleteStep
 import com.appblish.calculatorvault.vault.actions.MoveToSheet
@@ -87,7 +88,7 @@ import com.appblish.calculatorvault.vault.actions.NEW_ALBUM_PREFILL
 import com.appblish.calculatorvault.vault.actions.PropertyDialog
 import com.appblish.calculatorvault.vault.actions.UnhideChoice
 import com.appblish.calculatorvault.vault.actions.UnhideDialog
-import com.appblish.calculatorvault.vault.actions.treeUriToRelativePath
+import com.appblish.calculatorvault.vault.actions.chosenFolderFrom
 import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -137,15 +138,15 @@ fun CategoryScreen(
     var showSortSheet by remember { mutableStateOf(false) }
     var chooseCoverAlbumId by remember { mutableStateOf<String?>(null) }
     var unhideChoice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
-    var chosenUnhideFolder by remember { mutableStateOf<String?>(null) }
+    var chosenUnhideFolder by remember { mutableStateOf<ChosenFolder?>(null) }
     val unhideFolderPicker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-            val relPath = uri?.let(::treeUriToRelativePath)
-            if (relPath != null) {
-                chosenUnhideFolder = relPath
+            val picked = uri?.let { chosenFolderFrom(context, it) }
+            if (picked != null) {
+                chosenUnhideFolder = picked
                 unhideChoice = UnhideChoice.CHOSEN
-            } else {
-                // User backed out without picking — fall back to the safe default choice.
+            } else if (chosenUnhideFolder == null) {
+                // Backed out with nothing ever picked — fall back to the safe default choice.
                 unhideChoice = UnhideChoice.ORIGINAL
             }
         }
@@ -510,7 +511,7 @@ fun CategoryScreen(
             itemCount = photoCount,
             originalPath = null,
             choice = unhideChoice,
-            chosenFolderLabel = chosenUnhideFolder,
+            chosenFolder = chosenUnhideFolder,
             title =
                 if (selectedTiles.size == 1) {
                     "Unhide \"${selectedTiles.single().name}\""
@@ -625,7 +626,7 @@ fun CategoryScreen(
             itemCount = state.selectedIds.size,
             originalPath = selectionCommonPath(state),
             choice = unhideChoice,
-            chosenFolderLabel = chosenUnhideFolder,
+            chosenFolder = chosenUnhideFolder,
             onChoiceChange = { unhideChoice = it },
             onPickFolder = { unhideFolderPicker.launch(null) },
             onConfirm = { destination ->

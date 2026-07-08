@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.vault.viewer
 
 import android.graphics.BitmapFactory
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
@@ -10,6 +11,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
@@ -28,10 +30,9 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
@@ -72,6 +73,7 @@ import androidx.media3.common.MediaItem
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.ui.PlayerView
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
+import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -118,6 +120,9 @@ fun PagerViewerScreen(
     onEmpty: () -> Unit = onBack,
     onMove: (VaultItem) -> Unit = {},
     onInfo: (VaultItem) -> Unit = {},
+    // APP-293 P0-1/P0-2: Unhide routes through the §7 destination dialog (original vs
+    // chosen folder) exactly like Move/Info — never a blind restore-to-original.
+    onUnhide: (VaultItem) -> Unit = {},
 ) {
     val colors = VaultTheme.colors
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -136,6 +141,7 @@ fun PagerViewerScreen(
                 onBack = onBack,
                 onMove = onMove,
                 onInfo = onInfo,
+                onUnhide = onUnhide,
             )
         } else {
             // Context still loading (or just emptied and about to navigate back).
@@ -155,6 +161,7 @@ private fun ViewerPager(
     onBack: () -> Unit,
     onMove: (VaultItem) -> Unit,
     onInfo: (VaultItem) -> Unit,
+    onUnhide: (VaultItem) -> Unit,
 ) {
     val pagerState = rememberPagerState(initialPage = state.startIndex) { state.pages.size }
     var zoomed by remember { mutableStateOf(false) }
@@ -244,7 +251,7 @@ private fun ViewerPager(
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
             ViewerBottomBar(
-                onUnhide = { currentItem?.let { viewModel.restore(it.id) } },
+                onUnhide = { currentItem?.let(onUnhide) },
                 onDelete = { showDeleteChoice = true },
                 onMove = { currentItem?.let(onMove) },
                 // W3-E §5: the pre-agreed W1-D "4th action → ⋯ More" rule, executed. Null
@@ -290,9 +297,9 @@ private fun ViewerPage(
                 )
             PageContent.Error -> ErrorPage()
             is PageContent.Media ->
-                // Only the settled page plays; a page peeked mid-swipe shows the spinner.
+                // Only the settled page previews/plays; a page peeked mid-swipe spins.
                 if (isCurrent) {
-                    MediaPlayerPage(mediaFile = content.file)
+                    VideoPage(mediaFile = content.file, onToggleChrome = onToggleChrome)
                 } else {
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
                 }
@@ -456,10 +463,89 @@ private fun ZoomableImage(
 }
 
 /**
+ * Video/audio page (APP-293 P0-3): playback is **tap-to-start, never automatic**. Until
+ * the user taps the play button the page shows the full-screen preview frame (decoded
+ * off-main from the already-decrypted cache temp — no extra decrypt) under a
+ * semi-transparent centred play button; the surrounding chrome (Unhide/Delete/Move/More +
+ * Info) stays available exactly as on a photo page, and a tap outside the button toggles
+ * it. Tapping play swaps in the ExoPlayer surface.
+ */
+@Composable
+private fun VideoPage(
+    mediaFile: File,
+    onToggleChrome: () -> Unit,
+) {
+    var playing by remember(mediaFile) { mutableStateOf(false) }
+    if (playing) {
+        MediaPlayerPage(mediaFile)
+    } else {
+        VideoPreviewPage(mediaFile = mediaFile, onPlay = { playing = true }, onToggleChrome = onToggleChrome)
+    }
+}
+
+/** The pre-playback preview: decoded frame + `viewer.playButton` over the black canvas. */
+@Composable
+private fun VideoPreviewPage(
+    mediaFile: File,
+    onPlay: () -> Unit,
+    onToggleChrome: () -> Unit,
+) {
+    // First frame from the decrypted temp file, off the main thread. Audio blobs have no
+    // frame — the play button over the canvas is the whole preview.
+    val frame by produceState<ImageBitmap?>(initialValue = null, mediaFile) {
+        value =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    val retriever = MediaMetadataRetriever()
+                    try {
+                        retriever.setDataSource(mediaFile.absolutePath)
+                        retriever.frameAtTime?.asImageBitmap()
+                    } finally {
+                        retriever.release()
+                    }
+                }.getOrNull()
+            }
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) { detectTapGestures(onTap = { onToggleChrome() }) },
+    ) {
+        frame?.let { bmp ->
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        // Semi-transparent, properly-sized play affordance — playback starts ONLY here.
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier =
+                Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(ViewerScrim)
+                    .clickable(onClick = onPlay),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "Play",
+                tint = ViewerOnCanvas,
+                modifier = Modifier.size(44.dp),
+            )
+        }
+    }
+}
+
+/**
  * Plays a decrypted video/audio blob from [mediaFile] (app-private cache) via
  * Media3/ExoPlayer + [PlayerView] (spec §7 hard requirement). The player is released when
- * the page leaves composition; the temp file itself is owned by [PagerViewerViewModel],
- * which deletes it when the settled page changes and sweeps all of them in onCleared().
+ * the page leaves composition; the temp file itself is owned by [PagerViewerViewModel]'s
+ * in-session cache, which evicts old entries and sweeps everything in onCleared().
  */
 @Composable
 private fun MediaPlayerPage(mediaFile: File) {
@@ -644,10 +730,11 @@ private fun ViewerBottomBar(
                 .padding(vertical = VaultTheme.spacing.sm),
     ) {
         // Unhide: decrypt this blob back out to the gallery (original-or-chosen, W1-E2).
-        ViewerAction(label = "Unhide", tint = ViewerOnCanvas, icon = Icons.Filled.Share, onClick = onUnhide)
+        // Its glyph is the unlock (APP-293 P0-1) — Share is a different action entirely.
+        ViewerAction(label = "Unhide", tint = ViewerOnCanvas, icon = VaultActionIcons.Unhide, onClick = onUnhide)
         ViewerAction(label = "Delete", tint = colors.destructive, icon = Icons.Filled.Delete, onClick = onDelete)
         // Move: relocate the encrypted index entry to another vault album (stays encrypted).
-        ViewerAction(label = "Move", tint = ViewerOnCanvas, icon = Icons.Filled.KeyboardArrowRight, onClick = onMove)
+        ViewerAction(label = "Move", tint = ViewerOnCanvas, icon = VaultActionIcons.MoveTo, onClick = onMove)
         if (onSetCover != null) {
             Box {
                 ViewerAction(
@@ -658,7 +745,7 @@ private fun ViewerBottomBar(
                 )
                 DropdownMenu(expanded = moreMenuOpen, onDismissRequest = { moreMenuOpen = false }) {
                     DropdownMenuItem(
-                        text = { Text("Set as cover") },
+                        text = { Text("Change cover photo") },
                         onClick = {
                             moreMenuOpen = false
                             onSetCover()

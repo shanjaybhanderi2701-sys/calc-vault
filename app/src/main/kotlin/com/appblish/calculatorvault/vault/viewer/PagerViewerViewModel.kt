@@ -88,11 +88,14 @@ data class ActivePage(
  * shrinks [PagerViewerState.pages] (the pager advances naturally); an emptied context is
  * signalled via [PagerViewerState.empty].
  *
- * Decryption stays strictly per-page ([setActivePage], spec §7): images/contacts/files
- * are decrypted purely in memory; video/audio stream to a random-named, extension-less
- * temp file under the app-private cache (`cacheDir/viewer/`) for ExoPlayer. Swiping away
- * deletes the previous temp file immediately; [onCleared] deletes every temp file this
- * session created as the backstop — decrypted bytes never touch public storage.
+ * Decryption stays per-page and in-session ([setActivePage], spec §7): images/contacts/
+ * files are decrypted purely in memory; video/audio stream to a random-named,
+ * extension-less temp file under the app-private cache (`cacheDir/viewer/`) for ExoPlayer.
+ * Once decrypted, a page's payload joins the **in-session viewer cache** (APP-293 P0-4) —
+ * a byte-capped LRU for photo bytes and a count-capped set of media temp files — so
+ * swiping back to a viewed page is instant and never decrypts twice. [onCleared] clears
+ * the byte cache and deletes every temp file this session created — decrypted bytes never
+ * touch public storage and never outlive the viewer.
  *
  * Delete/Restore keep the single-item viewer's semantics: [deletePermanently] routes
  * through the recycle bin + deleteForever under [NonCancellable] (D-4), and [restore]
@@ -185,11 +188,65 @@ class PagerViewerViewModel(
     }
 
     private var decryptJob: Job? = null
-    private var tempFile: File? = null
 
     // Every temp file this session created, so onCleared can also sweep up a file whose
     // decrypt job was cancelled mid-write (IO may finish the write after the cancel).
     private val createdTempFiles = mutableListOf<File>()
+
+    // --- APP-293 P0-4 · in-session decrypted-page cache ---------------------------------
+    // Swiping back to an already-viewed page must be instant and must not decrypt again
+    // (the fullDecrypts discipline: reuse in-session plaintext, no unnecessary decrypts).
+    // Photo/file bytes sit in a byte-capped access-order LRU; video/audio keep their
+    // decrypted temp files for the session (count-capped — evicted files delete on the
+    // spot). Main-thread only (all callers are viewModelScope on Main).
+    private val byteCache = LinkedHashMap<String, PageContent.Bytes>(16, 0.75f, true)
+    private var byteCacheSize = 0L
+    private val mediaCache = LinkedHashMap<String, File>(8, 0.75f, true)
+
+    private fun cachedContent(itemId: String): PageContent? {
+        byteCache[itemId]?.let { return it }
+        val file = mediaCache[itemId] ?: return null
+        if (!file.exists()) {
+            mediaCache.remove(itemId)
+            return null
+        }
+        return PageContent.Media(file)
+    }
+
+    private fun cacheBytes(
+        itemId: String,
+        content: PageContent.Bytes,
+    ) {
+        byteCache.put(itemId, content)?.let { byteCacheSize -= it.bytes.size }
+        byteCacheSize += content.bytes.size
+        val eldest = byteCache.entries.iterator()
+        while (byteCacheSize > BYTE_CACHE_CAP_BYTES && eldest.hasNext()) {
+            val entry = eldest.next()
+            if (entry.key == itemId) continue // never evict the page being viewed
+            byteCacheSize -= entry.value.bytes.size
+            eldest.remove()
+        }
+    }
+
+    private fun cacheMedia(
+        itemId: String,
+        file: File,
+    ) {
+        mediaCache[itemId] = file
+        val eldest = mediaCache.entries.iterator()
+        while (mediaCache.size > MEDIA_CACHE_CAP_FILES && eldest.hasNext()) {
+            val entry = eldest.next()
+            if (entry.key == itemId) continue
+            entry.value.delete()
+            eldest.remove()
+        }
+    }
+
+    /** Drop [itemId]'s cached plaintext the moment it leaves the vault context. */
+    private fun evictFromCache(itemId: String) {
+        byteCache.remove(itemId)?.let { byteCacheSize -= it.bytes.size }
+        mediaCache.remove(itemId)?.delete()
+    }
 
     /**
      * Make [itemId] the one decrypted page. Called by the screen when the pager settles on
@@ -202,10 +259,15 @@ class PagerViewerViewModel(
         // pending net orientation before this page takes over — never lost on swipe.
         commitPendingRotation()
         decryptJob?.cancel()
-        tempFile?.delete()
-        tempFile = null
         // Retarget the §6–§9 single-photo actions at the newly settled page.
         activeItemId.value = itemId
+        // In-session cache hit (P0-4): reuse the already-decrypted payload — instant
+        // swipe-back, zero additional decrypts.
+        val cached = cachedContent(itemId)
+        if (cached != null) {
+            _activePage.value = ActivePage(itemId, cached)
+            return
+        }
         _activePage.value = ActivePage(itemId, PageContent.Loading)
         decryptJob =
             viewModelScope.launch {
@@ -219,6 +281,11 @@ class PagerViewerViewModel(
                             if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
                         }
                     }
+                when (content) {
+                    is PageContent.Bytes -> cacheBytes(itemId, content)
+                    is PageContent.Media -> cacheMedia(itemId, content.file)
+                    else -> Unit
+                }
                 // Publish only if this page is still the active one (guards a stale decrypt
                 // finishing after a fast swipe re-keyed the active page).
                 if (_activePage.value?.itemId == itemId) {
@@ -229,6 +296,7 @@ class PagerViewerViewModel(
 
     /** Send [itemId] to the recycle bin (the safe default of the delete-choice modal). */
     fun moveToRecycleBin(itemId: String) {
+        evictFromCache(itemId)
         viewModelScope.launch {
             // NonCancellable: the mutation must complete even if the screen leaves and
             // clears this VM mid-flight.
@@ -238,6 +306,7 @@ class PagerViewerViewModel(
 
     /** Destroy [itemId] outright (the explicit choice in the modal is the consent, D-4). */
     fun deletePermanently(itemId: String) {
+        evictFromCache(itemId)
         viewModelScope.launch {
             // deleteForever is contractually scoped to recycle-bin entries, so a live vault
             // item passes through the bin first — same end state, no bin residue.
@@ -255,6 +324,7 @@ class PagerViewerViewModel(
      * (design call D-3 allows this surface for the viewer path).
      */
     fun restore(itemId: String) {
+        evictFromCache(itemId)
         viewModelScope.launch {
             withContext(NonCancellable) {
                 val summary = repository.unhideDetailed(setOf(itemId))
@@ -293,6 +363,7 @@ class PagerViewerViewModel(
      */
     fun unhide(destination: UnhideDestination = UnhideDestination.Original) {
         val id = activeItemId.value ?: return
+        evictFromCache(id)
         viewModelScope.launch {
             val result = withContext(NonCancellable) { repository.unhideTo(setOf(id), destination) }
             _message.value = UnhideMessages.summary(result)
@@ -302,6 +373,7 @@ class PagerViewerViewModel(
     /** §8 · Soft delete the active item → recycle bin (recoverable). */
     fun delete() {
         val id = activeItemId.value ?: return
+        evictFromCache(id)
         viewModelScope.launch {
             withContext(NonCancellable) { repository.moveToRecycleBin(setOf(id)) }
             _message.value = "Moved to Recycle Bin."
@@ -311,6 +383,7 @@ class PagerViewerViewModel(
     /** §8 · Secure permanent delete of the active item straight from the vault. */
     fun permanentlyDelete() {
         val id = activeItemId.value ?: return
+        evictFromCache(id)
         viewModelScope.launch {
             withContext(NonCancellable) { repository.permanentlyDelete(setOf(id)) }
             _message.value = "Deleted permanently."
@@ -402,7 +475,6 @@ class PagerViewerViewModel(
     private suspend fun decryptToCache(itemId: String): PageContent {
         val cache = appContext?.cacheDir ?: return PageContent.Error
         val target = File(File(cache, VIEWER_CACHE_DIR), UUID.randomUUID().toString())
-        tempFile = target
         createdTempFiles += target
         // Stream blob → cipher → file so a large video is never held in memory (spec §11);
         // decryptToFile deletes any partial file on failure.
@@ -421,6 +493,9 @@ class PagerViewerViewModel(
     override fun onCleared() {
         commitPendingRotation()
         decryptJob?.cancel()
+        byteCache.clear()
+        byteCacheSize = 0L
+        mediaCache.clear()
         createdTempFiles.forEach { it.delete() }
         super.onCleared()
     }
@@ -430,6 +505,10 @@ class PagerViewerViewModel(
 
         /** rotate.commitDebounce (W3-D §3): 500ms idle, or page-change/exit first. */
         const val ROTATE_COMMIT_DEBOUNCE_MS = 500L
+
+        /** P0-4 in-session cache caps: ~48 MB of encoded photo bytes, 3 media temp files. */
+        const val BYTE_CACHE_CAP_BYTES = 48L * 1024 * 1024
+        const val MEDIA_CACHE_CAP_FILES = 3
 
         // Process-scoped home for rotate commits so an exit-path flush survives the VM
         // clear — mirrors BulkOps' app-scoped pattern for must-complete index writes.

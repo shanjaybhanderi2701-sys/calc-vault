@@ -382,9 +382,11 @@ fun VaultNavHost() {
                 PagerViewerScreen(
                     viewModel = vm,
                     onBack = { navController.popBackStack() },
-                    // §6 Move + §9 Property open the layered action dialogs for the active page.
+                    // §6 Move / §7 Unhide / §9 Property open the layered action dialogs
+                    // for the active page (Unhide via the destination dialog — APP-293 P0-2).
                     onMove = { controller.open(PhotoAction.MOVE) },
                     onInfo = { controller.open(PhotoAction.PROPERTY) },
+                    onUnhide = { controller.open(PhotoAction.UNHIDE) },
                 )
                 activeItem?.let { current ->
                     PhotoActionsHost(

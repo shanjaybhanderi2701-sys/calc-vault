@@ -1,5 +1,7 @@
 package com.appblish.calculatorvault.vault.actions
 
+import android.content.Context
+import android.content.Intent
 import android.net.Uri
 import android.provider.DocumentsContract
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -9,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.platform.LocalContext
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultItem
 
@@ -100,15 +103,16 @@ private fun UnhideHost(
     callbacks: PhotoActionCallbacks,
 ) {
     var choice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
-    var chosenFolder by remember { mutableStateOf<String?>(null) }
+    var chosenFolder by remember { mutableStateOf<ChosenFolder?>(null) }
+    val context = LocalContext.current
     val picker =
         rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-            val relPath = uri?.let(::treeUriToRelativePath)
-            if (relPath != null) {
-                chosenFolder = relPath
+            val picked = uri?.let { chosenFolderFrom(context, it) }
+            if (picked != null) {
+                chosenFolder = picked
                 choice = UnhideChoice.CHOSEN
-            } else {
-                // User backed out without picking — fall back to the safe default choice.
+            } else if (chosenFolder == null) {
+                // Backed out with nothing ever picked — fall back to the safe default choice.
                 choice = UnhideChoice.ORIGINAL
             }
         }
@@ -116,7 +120,7 @@ private fun UnhideHost(
         itemCount = 1,
         originalPath = item.relativePath,
         choice = choice,
-        chosenFolderLabel = chosenFolder,
+        chosenFolder = chosenFolder,
         onChoiceChange = { choice = it },
         onPickFolder = { picker.launch(null) },
         onConfirm = { destination ->
@@ -150,16 +154,63 @@ private fun DeleteHost(
 }
 
 /**
- * Best-effort translation of a SAF tree Uri to a MediaStore RELATIVE_PATH. A tree document
- * id looks like `primary:Pictures/Vault`; we keep the part after the volume prefix and add a
- * trailing slash. Returns null for non-primary volumes / unparseable ids, so the caller
- * treats "Choose a folder…" as not-yet-picked rather than writing to a bogus path.
+ * The folder the user picked in the SAF tree picker, carrying everything the write path
+ * needs (APP-293 P0-2): the MediaStore RELATIVE_PATH when the tree parses to a primary-
+ * volume path (preferred, gallery-indexed route), the tree Uri itself as the direct SAF
+ * write route for everything else, and the human label for the dialog + result copy.
  */
-fun treeUriToRelativePath(treeUri: Uri): String? {
+data class ChosenFolder(
+    val relativePath: String?,
+    val treeUri: String,
+    val label: String,
+) {
+    fun toDestination(): UnhideDestination.Chosen = UnhideDestination.Chosen(relativePath, treeUri, label)
+}
+
+/**
+ * Capture a SAF tree pick as a [ChosenFolder]. Unlike the earlier primary-volume-only
+ * parse, every resolvable tree is accepted — a Samsung/MIUI-style non-primary volume just
+ * skips the RELATIVE_PATH route and writes through the tree Uri — so a picked folder never
+ * silently degrades back to "Original". Also takes the persistable grant (best-effort) so
+ * a long bulk unhide keeps write access if the process is recycled mid-batch.
+ */
+fun chosenFolderFrom(
+    context: Context,
+    treeUri: Uri,
+): ChosenFolder? {
     val docId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return null
+    runCatching {
+        context.contentResolver.takePersistableUriPermission(
+            treeUri,
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+        )
+    }
+    val (relativePath, label) = parseChosenDocId(docId)
+    return ChosenFolder(relativePath, treeUri.toString(), label)
+}
+
+/**
+ * Pure docId → (RELATIVE_PATH?, label) mapping, split out for JVM tests. `primary:` paths
+ * map directly; AOSP's `home:` volume is the public Documents dir; anything else (SD card
+ * volumes like `1A2B-3C4D:`) yields no RELATIVE_PATH and is served by the SAF route.
+ */
+fun parseChosenDocId(docId: String): Pair<String?, String> {
     val parts = docId.split(':', limit = 2)
-    if (parts.size != 2 || parts[0] != "primary") return null
-    val path = parts[1].trim('/')
-    if (path.isBlank()) return null
-    return "$path/"
+    val volume = parts[0]
+    val path = parts.getOrNull(1)?.trim('/').orEmpty()
+    val relativePath =
+        when {
+            path.isBlank() -> null
+            volume == "primary" -> "$path/"
+            volume == "home" -> "Documents/$path/"
+            else -> null
+        }
+    val label =
+        when {
+            path.isNotBlank() -> path.substringAfterLast('/')
+            volume == "primary" -> "Internal storage"
+            volume == "home" -> "Documents"
+            else -> "SD card"
+        }
+    return relativePath to label
 }

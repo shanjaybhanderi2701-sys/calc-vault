@@ -277,7 +277,7 @@ fun UnhideDialog(
     itemCount: Int,
     originalPath: String?,
     choice: UnhideChoice,
-    chosenFolderLabel: String?,
+    chosenFolder: ChosenFolder?,
     onChoiceChange: (UnhideChoice) -> Unit,
     onPickFolder: () -> Unit,
     onConfirm: (UnhideDestination) -> Unit,
@@ -294,7 +294,7 @@ fun UnhideDialog(
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
-    val confirmEnabled = choice == UnhideChoice.ORIGINAL || chosenFolderLabel != null
+    val confirmEnabled = choice == UnhideChoice.ORIGINAL || chosenFolder != null
 
     VaultModal(
         title = title ?: if (itemCount == 1) "Unhide photo" else "Unhide $itemCount photos",
@@ -302,10 +302,10 @@ fun UnhideDialog(
         confirmEnabled = confirmEnabled,
         onConfirm = {
             val dest =
-                if (choice == UnhideChoice.ORIGINAL || chosenFolderLabel == null) {
+                if (choice == UnhideChoice.ORIGINAL || chosenFolder == null) {
                     UnhideDestination.Original
                 } else {
-                    UnhideDestination.Chosen(chosenFolderLabel)
+                    chosenFolder.toDestination()
                 }
             onConfirm(dest)
         },
@@ -326,7 +326,7 @@ fun UnhideDialog(
             RadioRow(
                 selected = choice == UnhideChoice.CHOSEN,
                 title = "Choose a folder…",
-                subtitle = chosenFolderLabel,
+                subtitle = chosenFolder?.label,
                 onClick = {
                     onChoiceChange(UnhideChoice.CHOSEN)
                     onPickFolder()
@@ -495,7 +495,7 @@ private fun UnhideDialogPreview() {
             itemCount = 4,
             originalPath = "DCIM/Camera/",
             choice = UnhideChoice.ORIGINAL,
-            chosenFolderLabel = null,
+            chosenFolder = null,
             onChoiceChange = {},
             onPickFolder = {},
             onConfirm = {},

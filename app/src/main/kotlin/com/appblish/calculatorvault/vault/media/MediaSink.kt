@@ -6,6 +6,7 @@ import android.media.MediaScannerConnection
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.UnhideDisposition
@@ -89,11 +90,23 @@ class MediaSink(
         destination: UnhideDestination,
         writer: (OutputStream) -> Unit,
     ): WriteBackResult {
+        val chosen = destination as? UnhideDestination.Chosen
         val primary = primaryRelPath(item, destination)
         if (primary != null) {
             val uri = writeAt(item, primary, writer)
             if (uri != null) {
-                return WriteBackResult(uri, UnhideDisposition.REQUESTED, folderLabel(primary))
+                return WriteBackResult(uri, UnhideDisposition.REQUESTED, chosen?.label ?: folderLabel(primary))
+            }
+        }
+        // A chosen folder the RELATIVE_PATH route couldn't serve (non-primary volume, or a
+        // primary directory MediaStore rejects for the media collection) is still honored by
+        // writing straight into the picked SAF tree (APP-293 P0-2) — the user's choice wins
+        // over a silent Downloads degrade.
+        val tree = chosen?.treeUri
+        if (tree != null) {
+            val uri = writeViaSafTree(item, tree, writer)
+            if (uri != null) {
+                return WriteBackResult(uri, UnhideDisposition.REQUESTED, chosen.label ?: CHOSEN_LABEL)
             }
         }
         // Primary unavailable/unwritable (or unknown original) → fall back to Downloads and
@@ -114,8 +127,45 @@ class MediaSink(
         destination: UnhideDestination,
     ): String? =
         when (destination) {
-            is UnhideDestination.Chosen -> destination.relativePath.takeIf { it.isNotBlank() }
+            is UnhideDestination.Chosen -> destination.relativePath?.takeIf { it.isNotBlank() }
             UnhideDestination.Original -> item.relativePath?.takeIf { it.isNotBlank() }
+        }
+
+    /**
+     * Write into the user-picked SAF tree via DocumentsContract: create a child document
+     * under the tree root and stream the plaintext into it. The provider uniquifies a
+     * colliding display name itself ("IMG.jpg (1)"), matching the spec §2.4 name-collision
+     * contract. A half-written document is deleted before returning null so a mid-stream
+     * decrypt failure leaves no partial plaintext behind.
+     */
+    private fun writeViaSafTree(
+        item: VaultItem,
+        treeUriString: String,
+        writer: (OutputStream) -> Unit,
+    ): Uri? =
+        try {
+            val treeUri = Uri.parse(treeUriString)
+            val parentDoc =
+                DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri,
+                    DocumentsContract.getTreeDocumentId(treeUri),
+                )
+            val doc =
+                DocumentsContract.createDocument(
+                    resolver,
+                    parentDoc,
+                    item.mimeType ?: DEFAULT_MIME,
+                    item.originalName,
+                ) ?: error("createDocument returned null for $parentDoc")
+            try {
+                resolver.openOutputStream(doc)?.use(writer) ?: error("no output stream for $doc")
+                doc
+            } catch (e: Exception) {
+                runCatching { DocumentsContract.deleteDocument(resolver, doc) }
+                null
+            }
+        } catch (e: Exception) {
+            null
         }
 
     /** One write attempt at [relPath] via the API-appropriate path; null on any failure. */
@@ -237,6 +287,8 @@ class MediaSink(
 
     private companion object {
         const val FALLBACK_LABEL = "Downloads"
+        const val CHOSEN_LABEL = "chosen folder"
+        const val DEFAULT_MIME = "application/octet-stream"
 
         /** The always-available fallback dir (spec §1.4 fallback target). */
         fun fallbackRelPath(): String = "${Environment.DIRECTORY_DOWNLOADS}/"
