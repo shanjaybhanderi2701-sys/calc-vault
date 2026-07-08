@@ -2,6 +2,8 @@ package com.appblish.calculatorvault.vault
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.appblish.calculatorvault.ui.components.MediaItem
+import com.appblish.calculatorvault.ui.components.groupMediaByDate
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
@@ -211,10 +213,61 @@ class HideImportViewModel(
     }
 
     fun toggle(itemId: String) {
+        // The up that ends a long-press-drag also fires the pressed cell's click; while a
+        // drag session is live that tap is gesture noise (same guard as the hidden grid).
+        if (dragAnchorId != null) return
         _state.update { current ->
             val ids = if (itemId in current.selectedIds) current.selectedIds - itemId else current.selectedIds + itemId
             current.copy(selectedIds = ids)
         }
+    }
+
+    // --- APP-293 item 7 · long-press-drag range select (parity with the hidden grid) ---
+
+    private var dragAnchorId: String? = null
+    private var dragBase: Set<String> = emptySet()
+
+    /**
+     * A long-press-drag began on [itemId]: anchor the range there and snapshot the
+     * selection the gesture starts from, so dragging backwards only ever releases items
+     * this gesture itself swept up — the exact hidden-grid contract (W1-E3).
+     */
+    fun beginDragSelect(itemId: String) {
+        if (_state.value.sources.none { it.id == itemId }) return // header/gutter — no anchor
+        _state.update { current ->
+            val ids = current.selectedIds + itemId
+            dragAnchorId = itemId
+            dragBase = ids
+            current.copy(selectedIds = ids)
+        }
+    }
+
+    /** The drag pointer is over [itemId]: selection = base + anchor..target display range. */
+    fun dragSelectOver(itemId: String) {
+        val anchor = dragAnchorId ?: return
+        val ordered = displayOrderedIds()
+        _state.update { current ->
+            current.copy(selectedIds = DragSelection.rangeSelect(ordered, dragBase, anchor, itemId))
+        }
+    }
+
+    /** The drag gesture ended; the accumulated selection stays. */
+    fun endDragSelect() {
+        dragAnchorId = null
+        dragBase = emptySet()
+    }
+
+    /**
+     * The picker grid's item ids in **display order** — the same sort + date-section
+     * grouping [SectionedItemGrid] renders — so a drag range matches what the user sees.
+     */
+    private fun displayOrderedIds(): List<String> {
+        val current = _state.value
+        return groupMediaByDate(
+            PickerSort.grid(current.sources, current.sort).map { (id, label, key) ->
+                MediaItem(id = id, dateLabel = label, sortKey = key)
+            },
+        ).flatMap { group -> group.items.map { it.id } }
     }
 
     /** S15 "All" toggle: select every visible item, or clear when all are already selected. */

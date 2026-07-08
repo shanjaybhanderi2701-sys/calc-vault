@@ -75,6 +75,8 @@ import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
 import com.appblish.calculatorvault.ui.components.SelectionActionTray
 import com.appblish.calculatorvault.ui.components.SelectionOverflowItem
+import com.appblish.calculatorvault.ui.components.pinchColumns
+import com.appblish.calculatorvault.ui.components.rememberPinchColumnsState
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultGridTokens
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -296,6 +298,9 @@ fun CategoryScreen(
                     state.folderItems.isEmpty() -> EmptyFolderState(state.category)
                     usesGrid -> {
                         val mediaGridState = rememberLazyGridState()
+                        // APP-293 item 10: two-finger pinch rescales the photo grid
+                        // fluidly between 2 and 5 columns — no snap.
+                        val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
                         DateGroupedMediaGrid(
                             items = state.folderItems.map { it.toMediaItem() },
                             selectionMode = state.selectionMode,
@@ -304,6 +309,8 @@ fun CategoryScreen(
                             onItemClick = { media -> viewModel.tappedItem(media.id)?.let(onOpenItem) },
                             onItemLongPress = { media -> viewModel.startSelection(media.id) },
                             loadThumbnail = { media -> viewModel.thumbnail(context, media.id) },
+                            columns = pinch.columns,
+                            modifier = Modifier.pinchColumns(pinch),
                             state = mediaGridState,
                             // W3-E §7: the grid renders folderItems' sorted order exactly;
                             // hide-date section headers would lie under Name/Size/Date-
@@ -907,12 +914,15 @@ private fun FolderTileGrid(
     loadCover: suspend (String) -> ImageBitmap?,
 ) {
     val spacing = VaultTheme.spacing
+    // APP-293 item 10: the album grid pinches too (2–4 columns — tiles carry labels).
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 4)
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        columns = GridCells.Fixed(pinch.columns),
         modifier =
             Modifier
                 .fillMaxSize()
                 .padding(horizontal = spacing.lg)
+                .pinchColumns(pinch)
                 .testTag("album-grid"),
         contentPadding = PaddingValues(vertical = spacing.md),
     ) {

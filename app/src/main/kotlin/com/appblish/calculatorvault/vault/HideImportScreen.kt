@@ -63,9 +63,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.appblish.calculatorvault.ui.components.FastScrollbar
+import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.PillButton
+import com.appblish.calculatorvault.ui.components.gridDragSelect
 import com.appblish.calculatorvault.ui.components.groupMediaByDate
+import com.appblish.calculatorvault.ui.components.pinchColumns
+import com.appblish.calculatorvault.ui.components.rememberPinchColumnsState
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.VaultThumbnails
@@ -249,11 +253,13 @@ private fun FolderGrid(
     val spacing = VaultTheme.spacing
     val context = LocalContext.current
     val gridState = rememberLazyGridState()
+    // APP-293 item 10: two-finger pinch rescales the folder grid fluidly (2–4 columns).
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 4)
     Box(modifier = modifier.fillMaxWidth()) {
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Fixed(pinch.columns),
             state = gridState,
-            modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg),
+            modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg).pinchColumns(pinch),
         ) {
             items(albums, key = { it.id }) { album ->
                 FolderTile(
@@ -381,11 +387,28 @@ private fun SectionedItemGrid(
     val sourcesById = remember(state.sources) { state.sources.associateBy { it.id } }
 
     val gridState = rememberLazyGridState()
+    // APP-293 item 10: pinch-to-change-columns, same fluid contract as the hidden grid.
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
     Box(modifier = modifier.fillMaxWidth()) {
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Fixed(pinch.columns),
             state = gridState,
-            modifier = Modifier.fillMaxSize().padding(horizontal = spacing.lg),
+            modifier =
+                Modifier
+                    .fillMaxSize()
+                    .padding(horizontal = spacing.lg)
+                    .pinchColumns(pinch)
+                    // APP-293 item 7: the same long-press-drag range select as the hidden
+                    // grid — cells keep their tap-to-toggle; the grid detector owns the
+                    // long-press+drag sweep (headers/gutters are ignored by the VM).
+                    .gridDragSelect(
+                        gridState,
+                        GridDragSelectCallbacks(
+                            onDragStart = viewModel::beginDragSelect,
+                            onDragOver = viewModel::dragSelectOver,
+                            onDragEnd = viewModel::endDragSelect,
+                        ),
+                    ),
         ) {
             groups.forEach { group ->
                 val sectionIds = group.items.map { it.id }

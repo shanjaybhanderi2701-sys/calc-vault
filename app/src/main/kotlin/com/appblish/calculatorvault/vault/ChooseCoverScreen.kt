@@ -34,6 +34,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.components.PillButton
+import com.appblish.calculatorvault.ui.components.pinchColumns
+import com.appblish.calculatorvault.ui.components.rememberPinchColumnsState
 import com.appblish.calculatorvault.ui.theme.VaultGridTokens
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -67,16 +69,19 @@ fun ChooseCoverScreen(
 
     BackHandler(onBack = onCancel)
 
+    // APP-293 item 10: the cover picker pinches like every other grid.
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
     Column(modifier = modifier.fillMaxSize().background(colors.canvas)) {
         VaultTopBar(title = "Choose cover", onBack = onCancel)
         LazyVerticalGrid(
-            columns = GridCells.Fixed(3),
+            columns = GridCells.Fixed(pinch.columns),
             contentPadding = PaddingValues(vertical = spacing.md),
             modifier =
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(horizontal = spacing.lg)
+                    .pinchColumns(pinch)
                     .testTag("choose-cover-grid"),
         ) {
             items(items, key = { it.id }) { item ->
