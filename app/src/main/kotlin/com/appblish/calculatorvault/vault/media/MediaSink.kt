@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.os.Environment
 import android.provider.MediaStore
+import com.appblish.calculatorvault.vault.model.UnhideDestination
+import com.appblish.calculatorvault.vault.model.UnhideDisposition
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import java.io.File
@@ -19,8 +21,15 @@ import java.io.OutputStream
  *
  * This realizes the board's [vault-technique §4] "watch it return to the gallery" beat:
  * hide strips the original from public storage into an app-private encrypted blob;
- * un-hide reverses it — decrypt → publish under the original RELATIVE_PATH + name → the
+ * un-hide reverses it — decrypt → publish under the requested RELATIVE_PATH + name → the
  * OS media scanner surfaces it in Photos/Files again.
+ *
+ * **Fallback (spec §1.4 — never fail silently):** the caller picks a destination (the
+ * original album, or a chosen folder). If that primary write fails (folder unavailable /
+ * unwritable), [writeBack] retries once against **Downloads** and reports the fallback so
+ * the UI can tell the user where the file actually landed. Only when even Downloads is
+ * unwritable does it return [UnhideDisposition.FAILED] with a null Uri, so the caller
+ * keeps the encrypted vault copy (never lose the only copy on a failed restore).
  *
  * Two write paths by API level:
  *  - **API 29+ (scoped storage):** insert a fresh MediaStore row carrying DISPLAY_NAME,
@@ -31,12 +40,8 @@ import java.io.OutputStream
  *    the relative path, then hand it to [MediaScannerConnection.scanFile] so the gallery
  *    picks it up. Needs `WRITE_EXTERNAL_STORAGE` (declared `maxSdkVersion=28`).
  *
- * [writeBack] returns a [WriteBackResult] naming WHICH destination was used (original vs
- * visible fallback folder) so the repository can build the spec §8 [RestoreSummary
- * classification][com.appblish.calculatorvault.vault.model.RestoreSummary], or null on
- * failure so the caller keeps the encrypted blob (never lose the only copy on a failed
- * restore). Plaintext arrives via a writer lambda, not a ByteArray, so the repository can
- * stream blob → cipher → public storage without materializing a large video in memory.
+ * Plaintext arrives via a writer lambda, not a ByteArray, so the repository can stream
+ * blob → cipher → public storage without materializing a large video in memory.
  */
 class MediaSink(
     context: Context,
@@ -44,73 +49,86 @@ class MediaSink(
     private val appContext = context.applicationContext
     private val resolver get() = appContext.contentResolver
 
-    /**
-     * Where a successful write-back landed — the repository folds this into the spec §8
-     * restore classification. A failed write returns null instead of a result.
-     */
-    sealed interface WriteBackResult {
-        /** The published public content/file Uri. */
-        val uri: Uri
-
-        /** Landed at the item's original [VaultItem.relativePath]. */
-        data class Original(
-            override val uri: Uri,
-        ) : WriteBackResult
-
-        /** Landed in the visible per-category fallback folder [destination] (e.g. "DCIM/Restored"). */
-        data class Fallback(
-            override val uri: Uri,
-            val destination: String,
-        ) : WriteBackResult
-    }
+    /** Where a single item landed on un-hide, and the human label of that folder. */
+    data class WriteBackResult(
+        val uri: Uri?,
+        val disposition: UnhideDisposition,
+        val destinationLabel: String?,
+    )
 
     /**
-     * Publish a vault item back to public storage, streaming the plaintext from [writer]
-     * (typically blob → VaultCrypto.decrypt → this output stream).
-     *
-     * Destination policy (spec §8): the item's original [VaultItem.relativePath] is tried
-     * first; when it is unknown or unwritable the visible per-category "Restored" folder
-     * is tried instead. Name collisions never clobber and never force the fallback —
-     * MediaStore auto-uniquifies DISPLAY_NAME on API 29+ and [uniqueFile] suffixes on
-     * legacy — so a collision resolves *in place* with a "(1)"-style name. Returns null
-     * only when nothing was writable (or [writer] itself failed, e.g. a bad GCM tag): the
-     * caller must then keep the encrypted blob — never lose the only copy, never silent.
-     */
-    fun writeBack(
-        item: VaultItem,
-        writer: (OutputStream) -> Unit,
-    ): WriteBackResult? {
-        item.relativePath?.takeIf { it.isNotBlank() }?.let { originalPath ->
-            writeTo(item, originalPath, writer)?.let { return WriteBackResult.Original(it) }
-        }
-        // Original path unknown or unwritable. NOTE: a writer failure (decrypt error) also
-        // lands here and fails again below — acceptable double cost on a rare path, and it
-        // keeps "unwritable original" and "unreadable blob" on the same safe null exit.
-        val fallbackPath = defaultRelativePath(item.category)
-        val uri = writeTo(item, fallbackPath, writer) ?: return null
-        return WriteBackResult.Fallback(uri, fallbackPath.trimEnd('/'))
-    }
-
-    /**
-     * Byte-array convenience for small payloads and tests: wraps the streaming
-     * [writeBack] and reports only the published Uri (null on failure).
+     * Legacy convenience: publish [bytes] to [item]'s original location, returning the new
+     * public Uri or null on total failure. Prefer [writeBack] with an explicit
+     * [UnhideDestination] so fallbacks are reported instead of applied silently.
      */
     fun writeBack(
         item: VaultItem,
         bytes: ByteArray,
-    ): Uri? = writeBack(item) { out -> out.write(bytes) }?.uri
+    ): Uri? = writeBack(item, bytes, UnhideDestination.Original).uri
 
-    /** One write attempt at [relativePath] via the API-appropriate path; null on any failure. */
-    private fun writeTo(
+    /** Byte-array convenience for small payloads and tests: wraps the streaming [writeBack]. */
+    fun writeBack(
         item: VaultItem,
-        relativePath: String,
+        bytes: ByteArray,
+        destination: UnhideDestination,
+    ): WriteBackResult = writeBack(item, destination) { out -> out.write(bytes) }
+
+    /**
+     * Publish a vault item back to public storage at [destination], streaming the plaintext
+     * from [writer] (typically blob → VaultCrypto.decrypt → this output stream), falling
+     * back to Downloads if the primary destination is unwritable. Returns which of the
+     * three outcomes occurred plus the folder label for the user-facing message.
+     *
+     * NOTE: a [writer] failure (e.g. a bad GCM tag on decrypt) fails the primary attempt
+     * and then fails the Downloads retry the same way — acceptable double cost on a rare
+     * path, and it keeps "unwritable destination" and "unreadable blob" on the same safe
+     * FAILED exit where the caller retains the encrypted blob.
+     */
+    fun writeBack(
+        item: VaultItem,
+        destination: UnhideDestination,
+        writer: (OutputStream) -> Unit,
+    ): WriteBackResult {
+        val primary = primaryRelPath(item, destination)
+        if (primary != null) {
+            val uri = writeAt(item, primary, writer)
+            if (uri != null) {
+                return WriteBackResult(uri, UnhideDisposition.REQUESTED, folderLabel(primary))
+            }
+        }
+        // Primary unavailable/unwritable (or unknown original) → fall back to Downloads and
+        // say so, rather than dropping the file or the message (spec §1.4).
+        val fallback = fallbackRelPath()
+        if (fallback != primary) {
+            val uri = writeAt(item, fallback, writer)
+            if (uri != null) {
+                return WriteBackResult(uri, UnhideDisposition.FALLBACK, FALLBACK_LABEL)
+            }
+        }
+        return WriteBackResult(null, UnhideDisposition.FAILED, null)
+    }
+
+    /** The requested destination's RELATIVE_PATH, or null when the original is unknown. */
+    private fun primaryRelPath(
+        item: VaultItem,
+        destination: UnhideDestination,
+    ): String? =
+        when (destination) {
+            is UnhideDestination.Chosen -> destination.relativePath.takeIf { it.isNotBlank() }
+            UnhideDestination.Original -> item.relativePath?.takeIf { it.isNotBlank() }
+        }
+
+    /** One write attempt at [relPath] via the API-appropriate path; null on any failure. */
+    private fun writeAt(
+        item: VaultItem,
+        relPath: String,
         writer: (OutputStream) -> Unit,
     ): Uri? =
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                writeViaMediaStore(item, relativePath, writer)
+                writeViaMediaStore(item, relPath, writer)
             } else {
-                writeViaLegacyFile(item, relativePath, writer)
+                writeViaLegacyFile(item, relPath, writer)
             }
         } catch (e: Exception) {
             null
@@ -199,13 +217,13 @@ class MediaSink(
         }
 
     private companion object {
-        /** Per-category public folder used when the original's RELATIVE_PATH is unknown. */
-        fun defaultRelativePath(category: VaultCategory): String =
-            when (category) {
-                VaultCategory.PHOTOS -> "${Environment.DIRECTORY_DCIM}/Restored/"
-                VaultCategory.VIDEOS -> "${Environment.DIRECTORY_MOVIES}/Restored/"
-                VaultCategory.AUDIOS -> "${Environment.DIRECTORY_MUSIC}/Restored/"
-                VaultCategory.FILES, VaultCategory.CONTACTS -> "${Environment.DIRECTORY_DOWNLOADS}/Restored/"
-            }
+        const val FALLBACK_LABEL = "Downloads"
+
+        /** The always-available fallback dir (spec §1.4 fallback target). */
+        fun fallbackRelPath(): String = "${Environment.DIRECTORY_DOWNLOADS}/"
+
+        /** Last non-empty path segment of a RELATIVE_PATH, e.g. "DCIM/Camera/" → "Camera". */
+        fun folderLabel(relPath: String): String =
+            relPath.trim('/').substringAfterLast('/').ifBlank { relPath.trim('/') }
     }
 }

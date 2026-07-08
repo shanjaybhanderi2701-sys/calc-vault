@@ -1,8 +1,10 @@
 package com.appblish.calculatorvault.vault
 
 import android.content.Context
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
+import android.provider.MediaStore
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
@@ -13,7 +15,10 @@ import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.RecycleBin
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
-import com.appblish.calculatorvault.vault.model.RestoreSummary
+import com.appblish.calculatorvault.vault.model.UnhideDestination
+import com.appblish.calculatorvault.vault.model.UnhideDisposition
+import com.appblish.calculatorvault.vault.model.UnhideOutcome
+import com.appblish.calculatorvault.vault.model.UnhideResult
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultFolder
 import com.appblish.calculatorvault.vault.model.VaultItem
@@ -33,6 +38,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.security.SecureRandom
 import java.util.UUID
 
 /**
@@ -226,12 +232,19 @@ class EncryptedVaultContentRepository(
                             BulkOpProgress.update(index + 1)
                             continue
                         }
+                    // Capture resolution + modified date from the original for the Property
+                    // dialog (spec §1.3 — Property reads the index, never the blob). Best-effort:
+                    // a source that won't decode simply leaves the fields at 0 ("—" in the UI).
+                    val meta = captureMetadata(staged)
                     val item =
                         staged.copy(
                             id = "v$blobName",
                             encryptedPath = blobName,
                             sizeBytes = encryptedBytes,
                             sourceUri = null,
+                            widthPx = meta.widthPx,
+                            heightPx = meta.heightPx,
+                            dateModifiedMs = meta.dateModifiedMs,
                         )
                     // Hide-time thumbnail (APP-244): render a ~200px JPEG from the still-
                     // readable public source and persist it *encrypted* next to the blob,
@@ -355,70 +368,49 @@ class EncryptedVaultContentRepository(
         persist()
     }
 
-    override suspend fun unhide(itemIds: Set<String>): Int = unhideDetailed(itemIds).restored
+    override suspend fun unhide(itemIds: Set<String>): Int = unhideTo(itemIds, UnhideDestination.Original).unhidden
 
-    override suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary =
+    override suspend fun unhideTo(
+        itemIds: Set<String>,
+        destination: UnhideDestination,
+    ): UnhideResult =
         withContext(Dispatchers.IO) {
-            // Locked vault: nothing is writable — every requested item stays put (spec §8:
-            // never lose the only copy, never silent; the summary reports the failure).
-            val cipher = crypto ?: return@withContext RestoreSummary(failed = itemIds.size)
+            val cipher = crypto ?: return@withContext UnhideResult()
             val targets = itemsState.value.filter { it.id in itemIds }
-            var toOriginal = 0
-            var toFallback = 0
-            var fallbackDestination: String? = null
-            // Ids that no longer resolve to a vault item count as failed, matching the
-            // interface default's arithmetic.
-            var failed = itemIds.size - targets.size
-            withBulkOp("Restoring files", targets.size) {
-                for ((index, item) in targets.withIndex()) {
-                    // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
-                    // resolveBlob handles both those and any legacy absolute paths.
-                    val blob = item.encryptedPath?.let(::resolveBlob)
-                    if (blob == null || !blob.exists()) {
-                        failed++
-                        BulkOpProgress.update(index + 1)
-                        continue
-                    }
-                    // Stream blob → cipher → public output: MediaSink opens the destination
-                    // and we pump the decrypted bytes straight into it, so a large video
-                    // never materializes as a full ByteArray. MediaSink classifies the
-                    // landing spot (original album vs visible "Restored" fallback) and rolls
-                    // back its own partial writes on failure.
-                    val outcome =
-                        mediaSink.writeBack(item) { out ->
-                            blob.inputStream().use { source -> cipher.decrypt(source, out) }
-                        }
-                    if (outcome == null) {
-                        // Neither the original path nor the fallback folder was writable (or
-                        // the blob failed its GCM tag): the item stays in the vault untouched.
-                        failed++
-                        BulkOpProgress.update(index + 1)
-                        continue
-                    }
-                    when (outcome) {
-                        is MediaSink.WriteBackResult.Original -> toOriginal++
-                        is MediaSink.WriteBackResult.Fallback -> {
-                            toFallback++
-                            fallbackDestination = outcome.destination
-                        }
-                    }
-                    // Only on a confirmed write-back do we drop the vault copy (and its
-                    // cached thumbnail — the item is no longer hidden, APP-244).
-                    blob.delete()
-                    dropThumb(item)
-                    mutex.withLock {
-                        itemsState.value = itemsState.value.filterNot { it.id == item.id }
-                        persist()
-                    }
-                    BulkOpProgress.update(index + 1)
+            val outcomes = mutableListOf<UnhideOutcome>()
+            for (item in targets) {
+                // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
+                // resolveBlob handles both those and any legacy absolute paths.
+                val blob = item.encryptedPath?.let(::resolveBlob)
+                if (blob == null || !blob.exists()) {
+                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                    continue
                 }
+                // Stream blob → decrypt → public storage without materializing the
+                // plaintext in memory (a vault video can be larger than the heap). Only on
+                // a confirmed write-back do we drop the vault copy — a failed decrypt or
+                // write leaves the encrypted original in place (never lose it), and
+                // MediaSink discards any partially written plaintext.
+                val result =
+                    mediaSink.writeBack(item, destination) { out ->
+                        blob.inputStream().use { source -> cipher.decrypt(source, out) }
+                    }
+                if (result.uri == null) {
+                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                    continue
+                }
+                // Securely wipe then unlink — the decrypted copy now lives in the gallery,
+                // so the vault blob must leave no recoverable ciphertext behind. Also evict
+                // the encrypted thumb cache: the item is no longer hidden (APP-244).
+                secureWipe(blob)
+                dropThumb(item)
+                mutex.withLock {
+                    itemsState.value = itemsState.value.filterNot { it.id == item.id }
+                    persist()
+                }
+                outcomes += UnhideOutcome(item.id, result.disposition, result.destinationLabel)
             }
-            RestoreSummary(
-                restoredToOriginal = toOriginal,
-                restoredToFallback = toFallback,
-                fallbackDestination = fallbackDestination,
-                failed = failed,
-            )
+            UnhideResult(outcomes)
         }
 
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
@@ -442,18 +434,30 @@ class EncryptedVaultContentRepository(
         mutex.withLock {
             val (removed, kept) = binState.value.partition { it.item.id in itemIds }
             removed.forEach {
-                it.item.encryptedPath?.let { path -> resolveBlob(path).delete() }
+                it.item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
                 dropThumb(it.item)
             }
             binState.value = kept
             persist()
         }
 
+    override suspend fun permanentlyDelete(itemIds: Set<String>) =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                // Secure blob wipe + index-entry removal, straight from the vault (the
+                // 2-step-confirmed permanent path, spec §1.5). Never routes through the bin.
+                val (removed, kept) = itemsState.value.partition { it.id in itemIds }
+                removed.forEach { it.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) } }
+                itemsState.value = kept
+                persist()
+            }
+        }
+
     override suspend fun purgeExpired(now: Long): Int =
         mutex.withLock {
             val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
             expired.forEach {
-                it.item.encryptedPath?.let { path -> resolveBlob(path).delete() }
+                it.item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
                 dropThumb(it.item)
             }
             binState.value = kept
@@ -588,6 +592,73 @@ class EncryptedVaultContentRepository(
     }
 
     /**
+     * Securely erase [blob]: overwrite its bytes with random data (flushed to disk) before
+     * unlinking, so a permanent-delete leaves no recoverable ciphertext on the media —
+     * spec §1.5. A plain `delete()` only drops the directory entry. Best-effort on flash
+     * (wear-levelling can retain pages); it still denies trivial file-carving recovery and
+     * is the strongest guarantee available from userspace. Falls back to `delete()` if the
+     * overwrite throws.
+     */
+    private fun secureWipe(blob: File) {
+        if (!blob.exists()) return
+        try {
+            val length = blob.length()
+            if (length > 0) {
+                val random = SecureRandom()
+                val chunk = ByteArray(64 * 1024)
+                blob.outputStream().use { out ->
+                    var remaining = length
+                    while (remaining > 0) {
+                        val n = minOf(remaining, chunk.size.toLong()).toInt()
+                        random.nextBytes(chunk)
+                        out.write(chunk, 0, n)
+                        remaining -= n
+                    }
+                    out.flush()
+                    out.fd.sync()
+                }
+            }
+        } catch (e: Exception) {
+            android.util.Log.w("VaultWipe", "secure overwrite failed: ${e.javaClass.simpleName}")
+        } finally {
+            blob.delete()
+        }
+    }
+
+    private data class SourceMetadata(
+        val widthPx: Int = 0,
+        val heightPx: Int = 0,
+        val dateModifiedMs: Long = 0L,
+    )
+
+    /**
+     * Best-effort resolution + modified-date read from a staged item's public source, so the
+     * Property dialog can report them from the index. Photos: decode bounds only (no full
+     * bitmap in memory). Date: MediaStore DATE_MODIFIED. Any failure yields zeros → "—".
+     */
+    private fun captureMetadata(staged: VaultItem): SourceMetadata {
+        val uri = staged.sourceUri?.let(Uri::parse) ?: return SourceMetadata()
+        var width = 0
+        var height = 0
+        if (staged.category == VaultCategory.PHOTOS) {
+            runCatching {
+                val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                resolver.openInputStream(uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
+                width = opts.outWidth.coerceAtLeast(0)
+                height = opts.outHeight.coerceAtLeast(0)
+            }
+        }
+        val modified =
+            runCatching {
+                resolver
+                    .query(uri, arrayOf(MediaStore.MediaColumns.DATE_MODIFIED), null, null, null)
+                    ?.use { c -> if (c.moveToFirst() && !c.isNull(0)) c.getLong(0) * 1000L else 0L }
+                    ?: 0L
+            }.getOrDefault(0L)
+        return SourceMetadata(width, height, modified)
+    }
+
+    /**
      * Resolve a stored blob reference to a file. New items store a bare UUID name resolved
      * against the current public vault dir; a legacy absolute path (older installs) is used
      * as-is so pre-existing blobs still open.
@@ -682,6 +753,9 @@ class EncryptedVaultContentRepository(
             put("durationMs", durationMs)
             put("mimeType", mimeType ?: JSONObject.NULL)
             put("relativePath", relativePath ?: JSONObject.NULL)
+            put("widthPx", widthPx)
+            put("heightPx", heightPx)
+            put("dateModifiedMs", dateModifiedMs)
         }
 
     private fun JSONObject.toVaultItem(): VaultItem =
@@ -697,6 +771,9 @@ class EncryptedVaultContentRepository(
             durationMs = optLong("durationMs", 0L),
             mimeType = optNullableString("mimeType"),
             relativePath = optNullableString("relativePath"),
+            widthPx = optInt("widthPx", 0),
+            heightPx = optInt("heightPx", 0),
+            dateModifiedMs = optLong("dateModifiedMs", 0L),
         )
 
     private fun VaultFolder.toJson(): JSONObject =

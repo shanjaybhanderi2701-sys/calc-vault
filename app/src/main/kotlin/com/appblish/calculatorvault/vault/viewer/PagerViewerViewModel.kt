@@ -7,16 +7,23 @@ import androidx.lifecycle.viewModelScope
 import com.appblish.calculatorvault.vault.CategoryState
 import com.appblish.calculatorvault.vault.VaultContentRepository
 import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.actions.AlbumOption
+import com.appblish.calculatorvault.vault.actions.UnhideMessages
+import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -86,7 +93,13 @@ data class ActivePage(
  * Delete/Restore keep the single-item viewer's semantics: [deletePermanently] routes
  * through the recycle bin + deleteForever under [NonCancellable] (D-4), and [restore]
  * surfaces the per-operation outcome as a Toast (D-3).
+ *
+ * It also hosts the W1-E2 §6–§9 single-photo actions for the **currently active page**:
+ * [move]/[createFolder] (§6), [unhide] (§7), [delete]/[permanentlyDelete] (§8), and the
+ * Property accessors [activeItem]/[albumName]/[albums] (§9). Those surface a one-shot
+ * [message] the pager route shows as a §7 snackbar.
  */
+@OptIn(ExperimentalCoroutinesApi::class)
 class PagerViewerViewModel(
     private val startItemId: String,
     val category: VaultCategory,
@@ -117,6 +130,48 @@ class PagerViewerViewModel(
     /** The settled page's decrypted content; pages other than [ActivePage.itemId] show a spinner. */
     val activePage: StateFlow<ActivePage?> = _activePage.asStateFlow()
 
+    // The currently settled page's item id — the target of every §6–§9 single-photo action.
+    private val _activeItemId = MutableStateFlow<String?>(null)
+
+    /** The settled page's live [VaultItem] (drives the §6 Move sheet + §9 Property dialog). */
+    val activeItem: StateFlow<VaultItem?> =
+        _activeItemId
+            .flatMapLatest { id ->
+                if (id == null) {
+                    MutableStateFlow(null)
+                } else {
+                    repository.allItems().map { all -> all.firstOrNull { it.id == id } }
+                }
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    /** Move targets for the active item's category: an "Album root" option plus every folder. */
+    val albums: StateFlow<List<AlbumOption>> =
+        activeItem
+            .filterNotNull()
+            .flatMapLatest { current ->
+                combine(repository.folders(current.category), repository.items(current.category)) { folders, items ->
+                    listOf(AlbumOption(null, "Album root", items.count { it.folderId == null })) +
+                        folders.map { f -> AlbumOption(f.id, f.name, items.count { it.folderId == f.id }) }
+                }
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
+
+    /** Name of the folder the active item currently lives in (Property "In vault" row). */
+    val albumName: StateFlow<String?> =
+        activeItem
+            .filterNotNull()
+            .flatMapLatest { current ->
+                repository.folders(current.category).map { fs -> fs.firstOrNull { it.id == current.folderId }?.name }
+            }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), null)
+
+    private val _message = MutableStateFlow<String?>(null)
+
+    /** One-shot result copy for the §7 snackbar (unhide summary, move/delete confirmation). */
+    val message: StateFlow<String?> = _message.asStateFlow()
+
+    fun consumeMessage() {
+        _message.value = null
+    }
+
     private var decryptJob: Job? = null
     private var tempFile: File? = null
 
@@ -134,6 +189,8 @@ class PagerViewerViewModel(
         decryptJob?.cancel()
         tempFile?.delete()
         tempFile = null
+        // Retarget the §6–§9 single-photo actions at the newly settled page.
+        _activeItemId.value = itemId
         _activePage.value = ActivePage(itemId, PageContent.Loading)
         decryptJob =
             viewModelScope.launch {
@@ -193,6 +250,55 @@ class PagerViewerViewModel(
                     }
                 }
             }
+        }
+    }
+
+    // --- W1-E2 §6–§9 single-photo actions, keyed to the active page (see [activeItem]) ---
+
+    /** §6 · Move the active item's index entry to [folderId] (null = album root). */
+    fun move(folderId: String?) {
+        val id = _activeItemId.value ?: return
+        viewModelScope.launch {
+            withContext(NonCancellable) { repository.moveToFolder(setOf(id), folderId) }
+            _message.value = "Moved."
+        }
+    }
+
+    /** §6 · Create a folder in the active item's category (Move sheet "New folder…"). */
+    fun createFolder(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        val category = activeItem.value?.category ?: return
+        viewModelScope.launch { repository.createFolder(category, trimmed) }
+    }
+
+    /**
+     * §7 · Un-hide the active item to [destination] (with the §1.4 Downloads fallback), then
+     * drop it from the vault. Reports the honest §7 result copy via [message].
+     */
+    fun unhide(destination: UnhideDestination = UnhideDestination.Original) {
+        val id = _activeItemId.value ?: return
+        viewModelScope.launch {
+            val result = withContext(NonCancellable) { repository.unhideTo(setOf(id), destination) }
+            _message.value = UnhideMessages.summary(result)
+        }
+    }
+
+    /** §8 · Soft delete the active item → recycle bin (recoverable). */
+    fun delete() {
+        val id = _activeItemId.value ?: return
+        viewModelScope.launch {
+            withContext(NonCancellable) { repository.moveToRecycleBin(setOf(id)) }
+            _message.value = "Moved to Recycle Bin."
+        }
+    }
+
+    /** §8 · Secure permanent delete of the active item straight from the vault. */
+    fun permanentlyDelete() {
+        val id = _activeItemId.value ?: return
+        viewModelScope.launch {
+            withContext(NonCancellable) { repository.permanentlyDelete(setOf(id)) }
+            _message.value = "Deleted permanently."
         }
     }
 

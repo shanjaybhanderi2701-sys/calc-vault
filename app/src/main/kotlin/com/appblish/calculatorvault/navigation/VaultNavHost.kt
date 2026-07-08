@@ -7,13 +7,20 @@ import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -46,6 +53,10 @@ import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.VaultHomeScreen
 import com.appblish.calculatorvault.vault.VaultSearchScreen
 import com.appblish.calculatorvault.vault.VaultSession
+import com.appblish.calculatorvault.vault.actions.PhotoAction
+import com.appblish.calculatorvault.vault.actions.PhotoActionCallbacks
+import com.appblish.calculatorvault.vault.actions.PhotoActionsHost
+import com.appblish.calculatorvault.vault.actions.rememberPhotoActionsController
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
@@ -352,10 +363,47 @@ fun VaultNavHost() {
                             initializer { PagerViewerViewModel(itemId, category, folderId, viewerContext) }
                         },
                 )
-            PagerViewerScreen(
-                viewModel = vm,
-                onBack = { navController.popBackStack() },
-            )
+            // Host = app-255's gallery-grade pager; app-254's §6–§9 photo-action dialogs are
+            // layered on top and keyed to the pager's *active* page (vm.activeItem).
+            val activeItem by vm.activeItem.collectAsStateWithLifecycle()
+            val albums by vm.albums.collectAsStateWithLifecycle()
+            val albumName by vm.albumName.collectAsStateWithLifecycle()
+            val message by vm.message.collectAsStateWithLifecycle()
+            val controller = rememberPhotoActionsController()
+            val snackbarHostState = remember { SnackbarHostState() }
+            // Surface the §7 result copy (Move / Unhide / Delete / Permanent). The pager
+            // itself advances as the list shrinks and pops back once the context empties.
+            LaunchedEffect(message) {
+                val text = message ?: return@LaunchedEffect
+                snackbarHostState.showSnackbar(text)
+                vm.consumeMessage()
+            }
+            Box(modifier = Modifier.fillMaxSize()) {
+                PagerViewerScreen(
+                    viewModel = vm,
+                    onBack = { navController.popBackStack() },
+                    // §6 Move + §9 Property open the layered action dialogs for the active page.
+                    onMove = { controller.open(PhotoAction.MOVE) },
+                    onInfo = { controller.open(PhotoAction.PROPERTY) },
+                )
+                activeItem?.let { current ->
+                    PhotoActionsHost(
+                        controller = controller,
+                        item = current,
+                        albumName = albumName,
+                        albums = albums,
+                        callbacks =
+                            PhotoActionCallbacks(
+                                onMove = { folderId -> vm.move(folderId) },
+                                onCreateFolder = { name -> vm.createFolder(name) },
+                                onUnhide = { destination -> vm.unhide(destination) },
+                                onMoveToBin = { vm.delete() },
+                                onPermanentDelete = { vm.permanentlyDelete() },
+                            ),
+                    )
+                }
+                SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+            }
         }
 
         composable(
