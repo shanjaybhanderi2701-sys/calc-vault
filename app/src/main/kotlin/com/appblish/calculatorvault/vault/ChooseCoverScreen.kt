@@ -42,7 +42,7 @@ import com.appblish.calculatorvault.vault.ui.VaultTopBar
 /**
  * The W3-E album-level **Choose cover** picker (design W3-D §6): a full-screen
  * radio-select grid over the album's photos — tap selects exactly one, tap another moves
- * the ring — with the album's current cover chip and a bottom "Set as cover" action that
+ * the ring — with the album's current cover chip and a bottom "Change cover photo" action that
  * arms only once a non-current tile is chosen. `‹`/system back cancels without a write.
  *
  * **Cached-thumbnail-only** (spec §1.7/§3.7): every tile renders through [loadThumbnail]
@@ -91,7 +91,7 @@ fun ChooseCoverScreen(
         }
         val armedId = selectedId?.takeUnless { it == currentCoverId }
         PillButton(
-            text = "Set as cover",
+            text = "Change cover photo",
             enabled = armedId != null,
             onClick = { armedId?.let(onConfirm) },
             modifier =

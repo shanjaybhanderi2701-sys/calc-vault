@@ -30,16 +30,15 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
-import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
-import androidx.compose.material.icons.filled.KeyboardArrowUp
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -74,7 +73,9 @@ import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
 import com.appblish.calculatorvault.ui.components.SelectionAction
+import com.appblish.calculatorvault.ui.components.SelectionActionTray
 import com.appblish.calculatorvault.ui.components.SelectionOverflowItem
+import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultGridTokens
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.actions.AlbumNameDialog
@@ -85,6 +86,7 @@ import com.appblish.calculatorvault.vault.actions.DeleteDialog
 import com.appblish.calculatorvault.vault.actions.DeleteStep
 import com.appblish.calculatorvault.vault.actions.MoveToSheet
 import com.appblish.calculatorvault.vault.actions.NEW_ALBUM_PREFILL
+import com.appblish.calculatorvault.vault.actions.PhotoProperties
 import com.appblish.calculatorvault.vault.actions.PropertyDialog
 import com.appblish.calculatorvault.vault.actions.UnhideChoice
 import com.appblish.calculatorvault.vault.actions.UnhideDialog
@@ -137,6 +139,10 @@ fun CategoryScreen(
     // W3-E: the Sort-by sheet (§7) and the album whose Choose-cover picker is open (§6).
     var showSortSheet by remember { mutableStateOf(false) }
     var chooseCoverAlbumId by remember { mutableStateOf<String?>(null) }
+    // APP-293 item 5: Property in item multi-select (aggregate for many, detail for one).
+    var showProperty by remember { mutableStateOf(false) }
+    // APP-293 item 6: "Unhide album" from the open album's ⋯ More menu.
+    var showOpenAlbumUnhide by remember { mutableStateOf(false) }
     var unhideChoice by remember { mutableStateOf(UnhideChoice.ORIGINAL) }
     var chosenUnhideFolder by remember { mutableStateOf<ChosenFolder?>(null) }
     val unhideFolderPicker =
@@ -211,9 +217,8 @@ fun CategoryScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             when {
                 state.selectionMode ->
-                    // W1-E3 aggregate action bar: count + Select All + the three bulk ops
-                    // (Move / Unhide / Delete), each batching the W1-E2 single-photo flow.
-                    // Share is deliberately absent — out of Phase B scope.
+                    // W1-E3 selection header: count + Select All. The bulk actions live in
+                    // the labeled bottom tray (APP-293 item 13) — the viewer-bar pattern.
                     MultiSelectActionBar(
                         selectedCount = state.selectedIds.size,
                         closeIcon = Icons.Filled.Close,
@@ -223,101 +228,21 @@ fun CategoryScreen(
                                 SelectionAction(Icons.Filled.CheckCircle, "Select all") {
                                     viewModel.selectAllInFolder()
                                 },
-                                // §6: bulk move — same Move-to sheet as the viewer's action.
-                                SelectionAction(Icons.Filled.ArrowForward, "Move") {
-                                    showMoveSheet = true
-                                },
-                                // §7: bulk unhide — destination dialog, honest summary.
-                                SelectionAction(Icons.Filled.Refresh, "Unhide") {
-                                    unhideChoice = UnhideChoice.ORIGINAL
-                                    chosenUnhideFolder = null
-                                    showUnhideDialog = true
-                                },
-                                // D-4: Delete opens the shared choice dialog (bin vs forever).
-                                SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
-                                    showDeleteChoice = true
-                                },
                             ),
-                        // W3-E §5: the selection bar's ⋯ overflow gains its first item —
-                        // Set as cover, N=1 only (a cover is one photo), and only inside
-                        // a real album (root/"Recent" items have no album to cover).
-                        overflow =
-                            if (state.selectedIds.size == 1 &&
-                                state.openFolderId != null &&
-                                state.openFolderId != CategoryState.RECENT_FOLDER_ID
-                            ) {
-                                listOf(
-                                    SelectionOverflowItem("Set as cover") {
-                                        viewModel.setCoverFromSelection()
-                                    },
-                                )
-                            } else {
-                                emptyList()
-                            },
                     )
                 state.albumSelectionMode ->
-                    // W2-E §9 album selection bar with the W3-D §4 extension. At N=1 the
-                    // per-album identity actions live in the ⋯ overflow — Rename · Pin/
-                    // Unpin album · Set as cover · Property — keeping the bar to four
-                    // direct icons (Select All · Move · Unhide · Delete) so the overflow
-                    // itself is never clipped off a narrow screen by the Surface bounds.
-                    // At N>1 the overflow hides and Property returns as a direct action
-                    // (aggregate details), still four/five icons — always within width.
+                    // W2-E §9 album selection header: count + Select All. Album bulk
+                    // actions live in the labeled bottom tray (APP-293 item 13).
                     MultiSelectActionBar(
                         selectedCount = state.selectedAlbumIds.size,
                         closeIcon = Icons.Filled.Close,
                         onClose = viewModel::clearAlbumSelection,
-                        overflow =
-                            state.selectedAlbumTiles.singleOrNull()?.let { tile ->
-                                buildList {
-                                    add(SelectionOverflowItem("Rename") { showRenameAlbum = true })
-                                    add(
-                                        SelectionOverflowItem(if (tile.pinned) "Unpin album" else "Pin album") {
-                                            viewModel.togglePinSelectedAlbum()
-                                        },
-                                    )
-                                    // Hidden for an empty album — nothing to choose (§6).
-                                    if (tile.itemCount > 0) {
-                                        add(
-                                            SelectionOverflowItem("Set as cover") {
-                                                chooseCoverAlbumId = tile.id
-                                                viewModel.clearAlbumSelection()
-                                            },
-                                        )
-                                    }
-                                    add(SelectionOverflowItem("Property") { showAlbumProperty = true })
-                                }
-                            } ?: emptyList(),
                         actions =
-                            buildList {
-                                add(
-                                    SelectionAction(Icons.Filled.CheckCircle, "Select all") {
-                                        viewModel.selectAllAlbums()
-                                    },
-                                )
-                                add(SelectionAction(Icons.Filled.ArrowForward, "Move") { showAlbumMoveSheet = true })
-                                add(
-                                    // Disabled-by-no-op when the selection holds zero photos
-                                    // (design §6: nothing to unhide — no dialog).
-                                    SelectionAction(Icons.Filled.Refresh, "Unhide") {
-                                        if (state.selectedAlbumItemCount > 0) {
-                                            unhideChoice = UnhideChoice.ORIGINAL
-                                            chosenUnhideFolder = null
-                                            showAlbumUnhideDialog = true
-                                        }
-                                    },
-                                )
-                                add(
-                                    SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
-                                        albumDeleteStep = DeleteStep.CHOICE
-                                    },
-                                )
-                                // At N=1 Property lives in the ⋯ overflow (above); it is a
-                                // direct icon only for the multi-album aggregate view.
-                                if (state.selectedAlbumIds.size > 1) {
-                                    add(SelectionAction(Icons.Filled.Info, "Property") { showAlbumProperty = true })
-                                }
-                            },
+                            listOf(
+                                SelectionAction(Icons.Filled.CheckCircle, "Select all") {
+                                    viewModel.selectAllAlbums()
+                                },
+                            ),
                     )
                 state.inFolder ->
                     CategoryHeader(
@@ -326,6 +251,22 @@ fun CategoryScreen(
                         showSort = state.folderItems.isNotEmpty(),
                         onBack = viewModel::closeFolder,
                         onSortClick = { showSortSheet = true },
+                        // APP-293 item 6: the album grid's ⋯ More menu — Unhide album.
+                        // The synthetic "Recent" pseudo-folder is not an album.
+                        menu =
+                            if (state.openFolderId != CategoryState.RECENT_FOLDER_ID &&
+                                state.folderItems.isNotEmpty()
+                            ) {
+                                listOf(
+                                    SelectionOverflowItem("Unhide album") {
+                                        unhideChoice = UnhideChoice.ORIGINAL
+                                        chosenUnhideFolder = null
+                                        showOpenAlbumUnhide = true
+                                    },
+                                )
+                            } else {
+                                emptyList()
+                            },
                     )
                 else ->
                     CategoryHeader(
@@ -403,6 +344,100 @@ fun CategoryScreen(
                 onCreateFolder = { showCreateFolder = true },
                 onHide = onHide,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(VaultTheme.spacing.lg),
+            )
+        }
+
+        // APP-293 item 13: the labeled multi-select bottom tray — primaries up front
+        // (Unhide · Move · Delete; Share joins via the sibling Share issue), the rest in
+        // More — mirroring the viewer bottom bar. One tray per selection mode.
+        if (state.selectionMode) {
+            SelectionActionTray(
+                actions =
+                    listOf(
+                        // §7: bulk unhide — destination dialog, honest summary.
+                        SelectionAction(VaultActionIcons.Unhide, "Unhide") {
+                            unhideChoice = UnhideChoice.ORIGINAL
+                            chosenUnhideFolder = null
+                            showUnhideDialog = true
+                        },
+                        // §6: bulk move — same Move-to sheet as the viewer's action.
+                        SelectionAction(VaultActionIcons.MoveTo, "Move") {
+                            showMoveSheet = true
+                        },
+                        // D-4: Delete opens the shared choice dialog (bin vs forever).
+                        SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
+                            showDeleteChoice = true
+                        },
+                    ),
+                overflow =
+                    buildList {
+                        // APP-293 item 5: Property — aggregate for many, detail for one.
+                        add(SelectionOverflowItem("Property") { showProperty = true })
+                        // W3-E §5: Change cover photo, N=1 only, real albums only.
+                        if (state.selectedIds.size == 1 &&
+                            state.openFolderId != null &&
+                            state.openFolderId != CategoryState.RECENT_FOLDER_ID
+                        ) {
+                            add(
+                                SelectionOverflowItem("Change cover photo") {
+                                    viewModel.setCoverFromSelection()
+                                },
+                            )
+                        }
+                    },
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
+        if (state.albumSelectionMode) {
+            val singleTile = state.selectedAlbumTiles.singleOrNull()
+            SelectionActionTray(
+                actions =
+                    buildList {
+                        add(
+                            // Disabled-by-no-op when the selection holds zero photos
+                            // (design §6: nothing to unhide — no dialog).
+                            SelectionAction(VaultActionIcons.Unhide, "Unhide") {
+                                if (state.selectedAlbumItemCount > 0) {
+                                    unhideChoice = UnhideChoice.ORIGINAL
+                                    chosenUnhideFolder = null
+                                    showAlbumUnhideDialog = true
+                                }
+                            },
+                        )
+                        add(SelectionAction(VaultActionIcons.MoveTo, "Move") { showAlbumMoveSheet = true })
+                        add(
+                            SelectionAction(Icons.Filled.Delete, "Delete", destructive = true) {
+                                albumDeleteStep = DeleteStep.CHOICE
+                            },
+                        )
+                        // At N=1 Property lives in the ⋯ More menu with the identity
+                        // actions; direct only for the multi-album aggregate view.
+                        if (state.selectedAlbumIds.size > 1) {
+                            add(SelectionAction(Icons.Filled.Info, "Property") { showAlbumProperty = true })
+                        }
+                    },
+                overflow =
+                    singleTile?.let { tile ->
+                        buildList {
+                            add(SelectionOverflowItem("Rename") { showRenameAlbum = true })
+                            add(
+                                SelectionOverflowItem(if (tile.pinned) "Unpin album" else "Pin album") {
+                                    viewModel.togglePinSelectedAlbum()
+                                },
+                            )
+                            // Hidden for an empty album — nothing to choose (§6).
+                            if (tile.itemCount > 0) {
+                                add(
+                                    SelectionOverflowItem("Change cover photo") {
+                                        chooseCoverAlbumId = tile.id
+                                        viewModel.clearAlbumSelection()
+                                    },
+                                )
+                            }
+                            add(SelectionOverflowItem("Property") { showAlbumProperty = true })
+                        }
+                    } ?: emptyList(),
+                modifier = Modifier.align(Alignment.BottomCenter),
             )
         }
 
@@ -585,6 +620,56 @@ fun CategoryScreen(
         )
     }
 
+    // APP-293 item 5: Property over the item selection — single-item detail rows at N=1
+    // (same builder as the viewer's §9 dialog), index-only aggregate rows at N>1.
+    if (showProperty) {
+        val selectedItems = state.folderItems.filter { it.id in state.selectedIds }
+        if (selectedItems.isEmpty()) {
+            showProperty = false
+        } else {
+            PropertyDialog(
+                title = if (selectedItems.size == 1) "Details" else "Details — ${selectedItems.size} items",
+                rows =
+                    selectedItems.singleOrNull()?.let { single ->
+                        PhotoProperties.rows(
+                            single,
+                            state.openFolderTitle.takeUnless {
+                                state.openFolderId == CategoryState.RECENT_FOLDER_ID
+                            },
+                        )
+                    } ?: PhotoProperties.aggregateRows(selectedItems),
+                onDismiss = { showProperty = false },
+            )
+        }
+    }
+
+    // APP-293 item 6: whole-album unhide from the open album's ⋯ More menu — the same
+    // destination dialog + per-file fallback contract as the album-selection path.
+    if (showOpenAlbumUnhide) {
+        val albumTitle = state.openFolderTitle
+        val photoCount = state.folderItems.size
+        UnhideDialog(
+            itemCount = photoCount,
+            originalPath = null,
+            choice = unhideChoice,
+            chosenFolder = chosenUnhideFolder,
+            title = "Unhide \"$albumTitle\"",
+            bodyText =
+                "${if (photoCount == 1) "1 photo" else "$photoCount photos"} will leave the vault. " +
+                    "Where should we put them?",
+            originalTitle = "Original locations",
+            originalSubtitle = "Each photo returns to where it came from",
+            fallbackNote = "If an original folder isn't available, we'll save those photos to Downloads and tell you.",
+            onChoiceChange = { unhideChoice = it },
+            onPickFolder = { unhideFolderPicker.launch(null) },
+            onConfirm = { destination ->
+                viewModel.unhideOpenAlbum(destination)
+                showOpenAlbumUnhide = false
+            },
+            onDismiss = { showOpenAlbumUnhide = false },
+        )
+    }
+
     // D-4: every Delete routes through the shared choice dialog — Recycle Bin is the safe
     // default, permanent delete is the explicit destructive choice (no second confirm).
     if (showDeleteChoice) {
@@ -743,9 +828,12 @@ private fun CategoryHeader(
     onBack: () -> Unit,
     onSortClick: () -> Unit,
     subtitle: String? = null,
+    // APP-293 item 6: optional trailing ⋯ menu (the open album's "Unhide album" home).
+    menu: List<SelectionOverflowItem> = emptyList(),
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
+    var menuOpen by remember { mutableStateOf(false) }
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.fillMaxWidth().padding(end = spacing.sm, top = spacing.sm, bottom = spacing.sm),
@@ -768,20 +856,35 @@ private fun CategoryHeader(
             }
         }
         if (showSort) {
+            // APP-293 item 11: the contemporary sort glyph (was the ↑↓ chevron pair).
             IconButton(onClick = onSortClick, modifier = Modifier.testTag("sort-button")) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = VaultActionIcons.Sort,
+                    contentDescription = "Sort",
+                    tint = colors.textPrimary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+        }
+        if (menu.isNotEmpty()) {
+            Box {
+                IconButton(onClick = { menuOpen = true }, modifier = Modifier.testTag("album-more-button")) {
                     Icon(
-                        imageVector = Icons.Filled.KeyboardArrowUp,
-                        contentDescription = "Sort",
+                        imageVector = Icons.Filled.MoreVert,
+                        contentDescription = "More options",
                         tint = colors.textPrimary,
-                        modifier = Modifier.size(16.dp),
                     )
-                    Icon(
-                        imageVector = Icons.Filled.KeyboardArrowDown,
-                        contentDescription = null,
-                        tint = colors.textPrimary,
-                        modifier = Modifier.size(16.dp),
-                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    menu.forEach { item ->
+                        DropdownMenuItem(
+                            text = { Text(item.label, color = colors.textPrimary) },
+                            onClick = {
+                                menuOpen = false
+                                item.onClick()
+                            },
+                        )
+                    }
                 }
             }
         }

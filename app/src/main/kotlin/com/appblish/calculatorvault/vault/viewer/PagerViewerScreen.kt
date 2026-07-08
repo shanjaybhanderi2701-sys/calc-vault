@@ -709,7 +709,7 @@ private fun ViewerTopBar(
  * glyph + label only), **Move** (relocate the index entry to another album, W1-E2) — plus
  * the W3-E fourth equal target **`⋯ More`**, executing W1-D §4's pre-agreed rule verbatim:
  * a menu (`viewer.moreMenu`), never a truncation, holding the single Wave-3 item
- * **Set as cover**. [onSetCover] null hides `⋯ More` entirely (no album to cover).
+ * **Change cover photo**. [onSetCover] null hides `⋯ More` entirely (no album to cover).
  */
 @Composable
 private fun ViewerBottomBar(

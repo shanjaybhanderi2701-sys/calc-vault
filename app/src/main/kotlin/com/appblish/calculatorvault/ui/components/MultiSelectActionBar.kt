@@ -1,7 +1,9 @@
 package com.appblish.calculatorvault.ui.components
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,7 +24,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 
 /** One action in the [MultiSelectActionBar] (share, move, unhide, delete…). */
@@ -33,7 +38,7 @@ data class SelectionAction(
     val onClick: () -> Unit,
 )
 
-/** One row inside the selection bar's `⋯` overflow menu (W3-E: Rename / Pin / Set as cover). */
+/** One row inside a selection `⋯` menu (Rename / Pin / Change cover photo / Property). */
 data class SelectionOverflowItem(
     val label: String,
     val onClick: () -> Unit,
@@ -117,5 +122,81 @@ private fun SelectionOverflowMenu(items: List<SelectionOverflowItem>) {
                 )
             }
         }
+    }
+}
+
+/**
+ * The multi-select **bottom action tray** (APP-293 item 13): every action as an
+ * icon-over-label column — the viewer bottom-bar pattern — with the primaries up front
+ * and everything else inside a trailing `More` menu. Overlay it at the screen's bottom
+ * edge while a selection is live; the count/Select-all top bar stays separate.
+ */
+@Composable
+fun SelectionActionTray(
+    actions: List<SelectionAction>,
+    modifier: Modifier = Modifier,
+    overflow: List<SelectionOverflowItem> = emptyList(),
+) {
+    val colors = VaultTheme.colors
+    var moreOpen by remember { mutableStateOf(false) }
+    Surface(color = colors.surfaceVariant, shadowElevation = 6.dp, modifier = modifier.fillMaxWidth()) {
+        Row(
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(vertical = VaultTheme.spacing.xs),
+        ) {
+            actions.forEach { action ->
+                TrayAction(
+                    label = action.label,
+                    icon = action.icon,
+                    tint = if (action.destructive) colors.destructive else colors.textPrimary,
+                    onClick = action.onClick,
+                )
+            }
+            if (overflow.isNotEmpty()) {
+                Box {
+                    TrayAction(
+                        label = "More",
+                        icon = Icons.Filled.MoreVert,
+                        tint = colors.textPrimary,
+                        onClick = { moreOpen = true },
+                        contentDescription = "More options",
+                    )
+                    DropdownMenu(expanded = moreOpen, onDismissRequest = { moreOpen = false }) {
+                        overflow.forEach { item ->
+                            DropdownMenuItem(
+                                text = { Text(item.label, color = colors.textPrimary) },
+                                onClick = {
+                                    moreOpen = false
+                                    item.onClick()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** One icon-over-label tray target (mirrors the viewer's `ViewerAction`). */
+@Composable
+private fun TrayAction(
+    label: String,
+    icon: ImageVector,
+    tint: Color,
+    onClick: () -> Unit,
+    contentDescription: String = label,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier =
+            Modifier
+                .clip(VaultTheme.shapes.card)
+                .clickable(onClick = onClick)
+                .padding(horizontal = VaultTheme.spacing.sm, vertical = VaultTheme.spacing.xs),
+    ) {
+        Icon(imageVector = icon, contentDescription = contentDescription, tint = tint)
+        Text(text = label, style = VaultTheme.typography.labelMedium, color = tint)
     }
 }

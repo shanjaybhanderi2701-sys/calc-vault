@@ -581,6 +581,17 @@ class CategoryViewModel(
         mutateAlbumSelection { ids -> UnhideMessages.summary(repository.unhideFolders(ids, destination)) }
 
     /**
+     * Whole-album unhide of the **open** album (APP-293 item 6 — the album grid's ⋯ More
+     * menu). Same per-file fallback rules as [unhideSelectedAlbums]; the screen returns to
+     * the root grid first because a fully-emptied album loses its label mid-operation.
+     */
+    fun unhideOpenAlbum(destination: UnhideDestination) {
+        val folderId = realOpenFolderId() ?: return
+        closeFolder()
+        BulkOps.run { UnhideMessages.summary(repository.unhideFolders(setOf(folderId), destination)) }
+    }
+
+    /**
      * Album delete → Recycle Bin (§7 soft path): contents to the bin still encrypted,
      * keeping their album grouping (F-3); the label becomes a bin tombstone. An empty
      * album just loses its label — no service run, honest summary either way.

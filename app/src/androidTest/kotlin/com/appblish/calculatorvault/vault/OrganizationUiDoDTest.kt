@@ -38,7 +38,7 @@ import org.junit.runner.RunWith
  *    reorders, choice lands in the repository) with no confirm button.
  * 3. **Choose-cover picker** — album overflow → full-screen picker → select + confirm
  *    writes the index pointer and returns to the grid; back cancels without a write.
- * 4. **Photo-selection Set as cover** — the selection bar's ⋯ overflow at N=1 writes the
+ * 4. **Photo-selection Change cover photo** — the selection tray's ⋯ More at N=1 writes the
  *    pointer for the open album and surfaces the "Set as album cover." snackbar.
  */
 @RunWith(AndroidJUnit4::class)
@@ -225,7 +225,7 @@ class OrganizationUiDoDTest {
 
         // Open the picker from the album overflow.
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
-        clickOverflowItem("Set as cover")
+        clickOverflowItem("Change cover photo")
         awaitText("Choose cover")
         compose.onNodeWithText("Choose cover").assertExists()
 
@@ -248,7 +248,7 @@ class OrganizationUiDoDTest {
 
         // Re-open, pick the OLDER photo, confirm → pointer written, back on the grid.
         compose.onNodeWithTag("album-tile-$zuluId").performTouchInput { longClick() }
-        clickOverflowItem("Set as cover")
+        clickOverflowItem("Change cover photo")
         val older = itemIds.first()
         awaitTag("cover-tile-$older")
         compose.onNodeWithTag("cover-tile-$older").performClick()
@@ -282,7 +282,7 @@ class OrganizationUiDoDTest {
         compose.onNodeWithTag("media-tile-$older").performTouchInput { longClick() }
         compose.onNodeWithText("1 selected").assertExists()
 
-        clickOverflowItem("Set as cover")
+        clickOverflowItem("Change cover photo")
 
         compose.waitUntil(5_000) {
             runBlocking {
@@ -345,12 +345,12 @@ class OrganizationUiDoDTest {
             }
         }
 
-        // ⋯ More → Set as cover: the photo's own album is implicit (§5). The bottom-bar
+        // ⋯ More → Change cover photo: the photo's own album is implicit (§5). The bottom-bar
         // overflow uses the "More" content description (vs the selection bar's "More
         // options"); the popup item composes a frame late, so await it before clicking.
         compose.onNodeWithContentDescription("More").performClick()
-        awaitText("Set as cover")
-        compose.onNodeWithText("Set as cover").performClick()
+        awaitText("Change cover photo")
+        compose.onNodeWithText("Change cover photo").performClick()
         compose.waitUntil(10_000) {
             runBlocking {
                 repo
