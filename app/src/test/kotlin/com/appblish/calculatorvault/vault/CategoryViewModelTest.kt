@@ -1,11 +1,16 @@
 package com.appblish.calculatorvault.vault
 
-import com.appblish.calculatorvault.vault.model.RestoreSummary
+import com.appblish.calculatorvault.vault.model.UnhideDestination
+import com.appblish.calculatorvault.vault.model.UnhideDisposition
+import com.appblish.calculatorvault.vault.model.UnhideOutcome
+import com.appblish.calculatorvault.vault.model.UnhideResult
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.google.common.truth.Truth.assertThat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.resetMain
@@ -16,37 +21,51 @@ import org.junit.Before
 import org.junit.Test
 
 /**
- * Locks in the folder-grid-first category state machine (APP-225, S10/S16/S17 + D-3/D-4):
- * the root exposes folder tiles only (with a "Recent" pseudo-folder so folder-less items
- * are never hidden), open-folder/back is internal ViewModel state, Delete routes through
- * the two-choice dialog actions (bin vs permanent), and every mutation — Restore, Recycle
- * Bin, permanent delete, plus the hide picker's "N hidden" hand-off — surfaces exactly one
- * per-operation summary notice (P2-3) — never silent.
+ * Locks in the folder-grid-first category state machine (APP-225, S10/S16/S17 + D-3/D-4)
+ * and the W1-E3 multi-select layer: the root exposes folder tiles only (with a "Recent"
+ * pseudo-folder so folder-less items are never hidden), open-folder/back is internal
+ * ViewModel state, selection grows by long-press/tap/drag-range/Select All, Delete routes
+ * through the two-choice dialog actions (bin vs permanent), and every bulk mutation —
+ * Move, Unhide, Recycle Bin, permanent delete, plus the hide picker's "N hidden" hand-off
+ * — surfaces exactly one per-operation summary notice (P2-3) — never silent.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class CategoryViewModelTest {
     private val dispatcher = StandardTestDispatcher()
 
-    @Before fun setUp() = Dispatchers.setMain(dispatcher)
+    @Before
+    fun setUp() {
+        Dispatchers.setMain(dispatcher)
+        // Bulk ops run app-scoped in production (they must survive ViewModel clearing);
+        // point that scope at the test scheduler so advanceUntilIdle drives them.
+        BulkOps.scope = CoroutineScope(SupervisorJob() + dispatcher)
+    }
 
     @After
     fun tearDown() {
-        // The hide summary is a process-wide slot shared across ViewModels — reset it so
-        // one test's pending summary can never leak into the next.
+        // The hide + bulk summaries are process-wide slots shared across ViewModels —
+        // reset them so one test's pending summary can never leak into the next.
         HideImportViewModel.consumeHideSummary()
+        BulkOps.consume()
+        BulkOps.scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         Dispatchers.resetMain()
     }
 
-    /** Delegating fake: real in-memory content store + a scriptable [RestoreSummary]. */
+    /** Delegating fake: real in-memory content store + a scriptable [UnhideResult]. */
     private class RecordingRepository(
         val delegate: InMemoryVaultContentRepository = InMemoryVaultContentRepository(seed = false),
-        private val restoreSummary: RestoreSummary? = null,
+        private val unhideResult: UnhideResult? = null,
     ) : VaultContentRepository by delegate {
-        var restoredIds: Set<String>? = null
+        var unhiddenIds: Set<String>? = null
+        var unhideDestination: UnhideDestination? = null
 
-        override suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary {
-            restoredIds = itemIds
-            return restoreSummary ?: delegate.unhideDetailed(itemIds)
+        override suspend fun unhideTo(
+            itemIds: Set<String>,
+            destination: UnhideDestination,
+        ): UnhideResult {
+            unhiddenIds = itemIds
+            unhideDestination = destination
+            return unhideResult ?: delegate.unhideTo(itemIds, destination)
         }
     }
 
@@ -212,46 +231,174 @@ class CategoryViewModelTest {
         }
 
     @Test
-    fun `restore surfaces one summary notice and consuming clears it`() =
+    fun `bulk unhide surfaces the honest destination summary and consuming clears it`() =
         runTest(dispatcher) {
-            val summary =
-                RestoreSummary(
-                    restoredToOriginal = 1,
-                    restoredToFallback = 1,
-                    fallbackDestination = "DCIM/Restored",
+            val result =
+                UnhideResult(
+                    listOf(
+                        UnhideOutcome("a", UnhideDisposition.REQUESTED),
+                        UnhideOutcome("b", UnhideDisposition.FALLBACK, destinationLabel = "Downloads"),
+                    ),
                 )
-            val repo = RecordingRepository(restoreSummary = summary)
+            val repo = RecordingRepository(unhideResult = result)
             val stored = repo.hide(listOf(staged("a", sortKey = 2), staged("b", sortKey = 1)))
             val vm = vm(repo)
             vm.state.first { it.items.size == 2 }
 
             vm.startSelection(stored[0].id)
             vm.toggle(stored[1].id)
-            vm.restoreSelected()
+            vm.unhideSelected(UnhideDestination.Original)
             dispatcher.scheduler.advanceUntilIdle()
 
-            assertThat(repo.restoredIds).containsExactly(stored[0].id, stored[1].id)
+            assertThat(repo.unhiddenIds).containsExactly(stored[0].id, stored[1].id)
+            assertThat(repo.unhideDestination).isEqualTo(UnhideDestination.Original)
             val state = vm.state.first { it.opNotice != null }
-            assertThat(state.opNotice).isEqualTo(summary.noticeText())
+            assertThat(state.opNotice).isEqualTo("Unhid 1 · saved 1 to Downloads (original unavailable).")
 
             vm.consumeOpNotice()
             assertThat(vm.state.first { it.opNotice == null }.opNotice).isNull()
         }
 
     @Test
-    fun `a fully failed restore is never silent`() =
+    fun `a fully failed bulk unhide is never silent`() =
         runTest(dispatcher) {
-            val repo = RecordingRepository(restoreSummary = RestoreSummary(failed = 1))
+            val repo =
+                RecordingRepository(
+                    unhideResult = UnhideResult(listOf(UnhideOutcome("a", UnhideDisposition.FAILED))),
+                )
             val stored = repo.hide(listOf(staged("a", sortKey = 1)))
             val vm = vm(repo)
             vm.state.first { it.items.size == 1 }
 
             vm.startSelection(stored.single().id)
-            vm.restoreSelected()
+            vm.unhideSelected(UnhideDestination.Original)
             dispatcher.scheduler.advanceUntilIdle()
 
             val state = vm.state.first { it.opNotice != null }
-            assertThat(state.opNotice).isEqualTo("Couldn't restore — check storage access")
+            assertThat(state.opNotice).isEqualTo("Couldn't unhide — check storage access.")
+        }
+
+    @Test
+    fun `select all selects every item in the open folder and toggles back off`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            repo.hide(listOf(staged("a", sortKey = 3), staged("b", sortKey = 2), staged("c", sortKey = 1)))
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 3 }
+
+            vm.openFolder(CategoryState.RECENT_FOLDER_ID)
+            vm.state.first { it.inFolder && it.folderItems.size == 3 }
+            vm.selectAllInFolder()
+            val selected = vm.state.first { it.selectionMode }
+            assertThat(selected.selectedIds).hasSize(3)
+
+            // The same control on a full selection clears it (toggle semantics).
+            vm.selectAllInFolder()
+            val cleared = vm.state.first { !it.selectionMode }
+            assertThat(cleared.selectedIds).isEmpty()
+        }
+
+    @Test
+    fun `drag select sweeps the display-order range and retreat releases only swept items`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            // Same dateLabel → display order is sortKey descending: a(5) b(4) c(3) d(2) e(1).
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("a", sortKey = 5),
+                        staged("b", sortKey = 4),
+                        staged("c", sortKey = 3),
+                        staged("d", sortKey = 2),
+                        staged("e", sortKey = 1),
+                    ),
+                )
+            val byName = stored.associateBy { it.originalName.removeSuffix(".jpg") }
+
+            fun id(name: String) = byName.getValue(name).id
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 5 }
+            vm.openFolder(CategoryState.RECENT_FOLDER_ID)
+            vm.state.first { it.inFolder }
+
+            // Long-press anchors on "b"; the drag sweeps forward to "d"…
+            vm.beginDragSelect(id("b"))
+            vm.dragSelectOver(id("d"))
+            val swept = vm.state.first { it.selectedIds.size == 3 }
+            assertThat(swept.selectedIds).containsExactly(id("b"), id("c"), id("d"))
+
+            // …then retreats to "c": "d" drops out, the anchor stays.
+            vm.dragSelectOver(id("c"))
+            val retreated = vm.state.first { it.selectedIds.size == 2 }
+            assertThat(retreated.selectedIds).containsExactly(id("b"), id("c"))
+
+            // Gesture ends: the accumulated selection sticks, mode stays active.
+            vm.endDragSelect()
+            assertThat(vm.state.first { it.selectionMode }.selectedIds).containsExactly(id("b"), id("c"))
+        }
+
+    @Test
+    fun `the tap ending a long-press gesture never un-selects the just-anchored item`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val stored = repo.hide(listOf(staged("a", sortKey = 1)))
+            val id = stored.single().id
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 1 }
+            vm.openFolder(CategoryState.RECENT_FOLDER_ID)
+            vm.state.first { it.inFolder }
+
+            // Long press anchors; the same gesture's up fires the tile click — noise.
+            vm.beginDragSelect(id)
+            assertThat(vm.tappedItem(id)).isNull()
+            vm.endDragSelect()
+            assertThat(vm.state.first { it.selectionMode }.selectedIds).containsExactly(id)
+
+            // After the gesture a real tap toggles normally…
+            assertThat(vm.tappedItem(id)).isNull()
+            assertThat(vm.state.first { !it.selectionMode }.selectedIds).isEmpty()
+            // …and with no selection active, a tap opens the item.
+            assertThat(vm.tappedItem(id)?.id).isEqualTo(id)
+        }
+
+    @Test
+    fun `long-press on another item extends an active selection instead of resetting it`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val stored = repo.hide(listOf(staged("a", sortKey = 2), staged("b", sortKey = 1)))
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 2 }
+
+            vm.startSelection(stored[0].id)
+            vm.startSelection(stored[1].id)
+
+            assertThat(vm.state.first { it.selectedIds.size == 2 }.selectedIds)
+                .containsExactly(stored[0].id, stored[1].id)
+        }
+
+    @Test
+    fun `bulk move surfaces a counted summary naming the destination folder`() =
+        runTest(dispatcher) {
+            val repo = RecordingRepository()
+            val folder = repo.createFolder(VaultCategory.PHOTOS, "Trip")
+            val stored = repo.hide(listOf(staged("a", sortKey = 2), staged("b", sortKey = 1)))
+            val vm = vm(repo)
+            vm.state.first { it.items.size == 2 && it.folderTiles.any { tile -> tile.name == "Trip" } }
+
+            vm.startSelection(stored[0].id)
+            vm.toggle(stored[1].id)
+            vm.moveSelectedToFolder(folder.id)
+            dispatcher.scheduler.advanceUntilIdle()
+
+            val state = vm.state.first { it.opNotice != null }
+            assertThat(state.opNotice).isEqualTo("Moved 2 items to Trip")
+            assertThat(
+                repo
+                    .items(VaultCategory.PHOTOS)
+                    .first()
+                    .filter { it.folderId == folder.id }
+                    .map { it.id },
+            ).containsExactly(stored[0].id, stored[1].id)
         }
 
     @Test

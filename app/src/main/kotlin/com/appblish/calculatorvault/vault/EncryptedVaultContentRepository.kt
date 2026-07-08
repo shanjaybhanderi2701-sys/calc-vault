@@ -377,91 +377,159 @@ class EncryptedVaultContentRepository(
         withContext(Dispatchers.IO) {
             val cipher = crypto ?: return@withContext UnhideResult()
             val targets = itemsState.value.filter { it.id in itemIds }
-            val outcomes = mutableListOf<UnhideOutcome>()
-            for (item in targets) {
-                // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
-                // resolveBlob handles both those and any legacy absolute paths.
-                val blob = item.encryptedPath?.let(::resolveBlob)
-                if (blob == null || !blob.exists()) {
-                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
-                    continue
-                }
-                // Stream blob → decrypt → public storage without materializing the
-                // plaintext in memory (a vault video can be larger than the heap). Only on
-                // a confirmed write-back do we drop the vault copy — a failed decrypt or
-                // write leaves the encrypted original in place (never lose it), and
-                // MediaSink discards any partially written plaintext.
-                val result =
-                    mediaSink.writeBack(item, destination) { out ->
-                        blob.inputStream().use { source -> cipher.decrypt(source, out) }
+            // The whole batch runs as a tracked bulk op (spec §1.6 / W1-E3): foreground
+            // service + "Processing N of M" notification, per-item progress ticks.
+            withBulkOp("Unhiding files", targets.size) {
+                val outcomes = mutableListOf<UnhideOutcome>()
+                for ((index, item) in targets.withIndex()) {
+                    // Blobs are stored as bare UUID names under the current .CalcVault/ dir;
+                    // resolveBlob handles both those and any legacy absolute paths.
+                    val blob = item.encryptedPath?.let(::resolveBlob)
+                    if (blob == null || !blob.exists()) {
+                        outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                        BulkOpProgress.update(index + 1)
+                        continue
                     }
-                if (result.uri == null) {
-                    outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
-                    continue
+                    // Stream blob → decrypt → public storage without materializing the
+                    // plaintext in memory (a vault video can be larger than the heap). Only on
+                    // a confirmed write-back do we drop the vault copy — a failed decrypt or
+                    // write leaves the encrypted original in place (never lose it), and
+                    // MediaSink discards any partially written plaintext.
+                    val result =
+                        mediaSink.writeBack(item, destination) { out ->
+                            blob.inputStream().use { source -> cipher.decrypt(source, out) }
+                        }
+                    if (result.uri == null) {
+                        outcomes += UnhideOutcome(item.id, UnhideDisposition.FAILED)
+                        BulkOpProgress.update(index + 1)
+                        continue
+                    }
+                    // Securely wipe then unlink — the decrypted copy now lives in the gallery,
+                    // so the vault blob must leave no recoverable ciphertext behind. Also evict
+                    // the encrypted thumb cache: the item is no longer hidden (APP-244).
+                    secureWipe(blob)
+                    dropThumb(item)
+                    mutex.withLock {
+                        itemsState.value = itemsState.value.filterNot { it.id == item.id }
+                        persist()
+                    }
+                    outcomes += UnhideOutcome(item.id, result.disposition, result.destinationLabel)
+                    BulkOpProgress.update(index + 1)
                 }
-                // Securely wipe then unlink — the decrypted copy now lives in the gallery,
-                // so the vault blob must leave no recoverable ciphertext behind. Also evict
-                // the encrypted thumb cache: the item is no longer hidden (APP-244).
-                secureWipe(blob)
-                dropThumb(item)
-                mutex.withLock {
-                    itemsState.value = itemsState.value.filterNot { it.id == item.id }
-                    persist()
-                }
-                outcomes += UnhideOutcome(item.id, result.disposition, result.destinationLabel)
+                UnhideResult(outcomes)
             }
-            UnhideResult(outcomes)
         }
 
     override suspend fun moveToRecycleBin(itemIds: Set<String>) =
-        mutex.withLock {
-            val (moved, kept) = itemsState.value.partition { it.id in itemIds }
-            val now = System.currentTimeMillis()
-            binState.value = binState.value + moved.map { RecycleBinEntry(it, deletedAt = now) }
-            itemsState.value = kept
-            persist()
-        }
-
-    override suspend fun restore(itemIds: Set<String>) =
-        mutex.withLock {
-            val (restored, kept) = binState.value.partition { it.item.id in itemIds }
-            itemsState.value = itemsState.value + restored.map { it.item }
-            binState.value = kept
-            persist()
-        }
-
-    override suspend fun deleteForever(itemIds: Set<String>) =
-        mutex.withLock {
-            val (removed, kept) = binState.value.partition { it.item.id in itemIds }
-            removed.forEach {
-                it.item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
-                dropThumb(it.item)
-            }
-            binState.value = kept
-            persist()
-        }
-
-    override suspend fun permanentlyDelete(itemIds: Set<String>) =
         withContext(Dispatchers.IO) {
+            // Off the main thread (spec §1.6): persist() rewrites the encrypted index file.
             mutex.withLock {
-                // Secure blob wipe + index-entry removal, straight from the vault (the
-                // 2-step-confirmed permanent path, spec §1.5). Never routes through the bin.
-                val (removed, kept) = itemsState.value.partition { it.id in itemIds }
-                removed.forEach { it.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) } }
+                val (moved, kept) = itemsState.value.partition { it.id in itemIds }
+                val now = System.currentTimeMillis()
+                binState.value = binState.value + moved.map { RecycleBinEntry(it, deletedAt = now) }
                 itemsState.value = kept
                 persist()
             }
         }
 
+    override suspend fun restore(itemIds: Set<String>): Int =
+        withContext(Dispatchers.IO) {
+            // Index-only move back into the vault (W1-E4): the still-encrypted blob never
+            // left the store, so restore is fast — but it still runs as a tracked bulk op
+            // for a uniform §1.6 progress/summary surface on large selections.
+            withBulkOp("Restoring items", itemIds.size) {
+                mutex.withLock {
+                    val byId = binState.value.associateBy { it.item.id }
+                    val folderIds = foldersState.value.mapTo(mutableSetOf()) { it.id }
+                    val restored = mutableListOf<VaultItem>()
+                    for ((index, id) in itemIds.withIndex()) {
+                        val entry = byId[id]
+                        // An entry whose blob has vanished must not "restore" into a broken
+                        // grid tile — it stays in the bin and is reported via the count gap.
+                        val blobExists =
+                            entry?.item?.encryptedPath?.let { resolveBlob(it).exists() } == true
+                        if (entry == null || !blobExists) {
+                            BulkOpProgress.update(index + 1)
+                            continue
+                        }
+                        // Back to its album; a folder deleted while the item sat in the bin
+                        // falls back to the category root rather than an orphaned id.
+                        val item = entry.item
+                        restored +=
+                            if (item.folderId != null && item.folderId !in folderIds) {
+                                item.copy(folderId = null)
+                            } else {
+                                item
+                            }
+                        BulkOpProgress.update(index + 1)
+                    }
+                    val restoredIds = restored.mapTo(mutableSetOf()) { it.id }
+                    itemsState.value = itemsState.value + restored
+                    binState.value = binState.value.filterNot { it.item.id in restoredIds }
+                    persist()
+                    restored.size
+                }
+            }
+        }
+
+    override suspend fun deleteForever(itemIds: Set<String>): Int =
+        withContext(Dispatchers.IO) {
+            // Drop the index entries first (under the lock, persisted), then wipe the now-
+            // unreachable blobs outside the lock so a long overwrite pass over large videos
+            // never blocks a concurrent hide/unhide batch. The foreground service keeps the
+            // half-wiped batch alive (spec §1.6).
+            val removed =
+                mutex.withLock {
+                    val (removed, kept) = binState.value.partition { it.item.id in itemIds }
+                    binState.value = kept
+                    persist()
+                    removed
+                }
+            withBulkOp("Deleting forever", removed.size) {
+                removed.forEachIndexed { index, entry ->
+                    entry.item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
+                    dropThumb(entry.item)
+                    BulkOpProgress.update(index + 1)
+                }
+            }
+            removed.size
+        }
+
+    override suspend fun permanentlyDelete(itemIds: Set<String>): Int =
+        withContext(Dispatchers.IO) {
+            mutex.withLock {
+                // Secure blob wipe + index-entry removal, straight from the vault (the
+                // 2-step-confirmed permanent path, spec §1.5). Never routes through the bin.
+                // Runs as a tracked bulk op (W1-E3): a large selection's overwrite pass is
+                // slow, so the foreground service keeps the half-wiped batch alive. Stored
+                // thumbs are dropped too — a deleted photo must leave no preview behind.
+                val (removed, kept) = itemsState.value.partition { it.id in itemIds }
+                withBulkOp("Deleting files", removed.size) {
+                    removed.forEachIndexed { index, item ->
+                        item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
+                        dropThumb(item)
+                        BulkOpProgress.update(index + 1)
+                    }
+                }
+                itemsState.value = kept
+                persist()
+                removed.size
+            }
+        }
+
     override suspend fun purgeExpired(now: Long): Int =
-        mutex.withLock {
-            val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
+        withContext(Dispatchers.IO) {
+            val expired =
+                mutex.withLock {
+                    val (expired, kept) = RecycleBin.partitionExpired(binState.value, now)
+                    binState.value = kept
+                    persist()
+                    expired
+                }
             expired.forEach {
                 it.item.encryptedPath?.let { path -> secureWipe(resolveBlob(path)) }
                 dropThumb(it.item)
             }
-            binState.value = kept
-            persist()
             expired.size
         }
 

@@ -118,13 +118,14 @@ interface VaultContentRepository {
      * Permanently destroy the *vault* items [itemIds]: securely wipe each encrypted blob
      * (overwrite before unlink) and remove its index entry — the 2-step-confirmed
      * "Delete permanently" path (spec §1.5). Distinct from [deleteForever], which operates
-     * on items already sitting in the recycle bin. Default impl removes the index entries;
-     * the device repository adds the secure blob wipe.
+     * on items already sitting in the recycle bin. Returns how many items were actually
+     * destroyed so bulk summaries can report honestly (W1-E3). Default impl removes the
+     * index entries; the device repository adds the secure blob wipe + foreground service.
      */
-    suspend fun permanentlyDelete(itemIds: Set<String>) {
+    suspend fun permanentlyDelete(itemIds: Set<String>): Int {
         // In-memory fakes hold no blob; dropping the index entry is a full delete for them.
         moveToRecycleBin(itemIds)
-        deleteForever(itemIds)
+        return deleteForever(itemIds)
     }
 
     /**
@@ -150,11 +151,22 @@ interface VaultContentRepository {
     /** Send [itemIds] to the recycle bin (recoverable). */
     suspend fun moveToRecycleBin(itemIds: Set<String>)
 
-    /** Restore recycle-bin entries [itemIds] back to their category. */
-    suspend fun restore(itemIds: Set<String>)
+    /**
+     * Restore recycle-bin entries [itemIds] back to their album (the index entry returns
+     * with its folder intact; the still-encrypted blob never moved). Returns how many
+     * entries actually restored so bulk summaries can report honestly (W1-E4, spec §1.6):
+     * an id that no longer resolves to a bin entry — or whose blob has gone missing —
+     * stays in the bin and is *not* counted.
+     */
+    suspend fun restore(itemIds: Set<String>): Int
 
-    /** Permanently destroy recycle-bin entries [itemIds] (irreversible). */
-    suspend fun deleteForever(itemIds: Set<String>)
+    /**
+     * Permanently destroy recycle-bin entries [itemIds] (irreversible): secure blob wipe
+     * (overwrite before unlink) + index-entry removal on the device implementation.
+     * Returns how many entries were actually destroyed (ids not present in the bin are
+     * not counted) for the W1-E4 "X done, Y failed" summary.
+     */
+    suspend fun deleteForever(itemIds: Set<String>): Int
 
     /**
      * Purge recycle-bin entries past the auto-delete window, using [now] as the clock.
