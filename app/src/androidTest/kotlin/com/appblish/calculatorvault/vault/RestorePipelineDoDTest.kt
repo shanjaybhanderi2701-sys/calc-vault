@@ -18,8 +18,9 @@ import org.junit.runner.RunWith
  * Phase-1 DoD proof for the **restore (un-hide) pipeline** (APP-225, build spec §8/§11):
  * a hidden photo restored via [VaultContentRepository.unhideDetailed] returns to its
  * original public RELATIVE_PATH byte-for-byte and MediaStore indexes it again; when the
- * original location is unknown it lands in the **visible fallback** folder
- * (`DCIM/Restored/`, design call D-3 — restore never fails silently). Verified entirely
+ * original location is unknown it lands in the always-visible **Downloads** fallback
+ * (W1-E2 §7 destination contract, ratified in APP-259 — supersedes design call D-3's
+ * per-category `DCIM/Restored/`; restore still never fails silently). Verified entirely
  * with in-process MediaStore content queries on the CI instrumented matrix — no manual
  * emulator screenshots (board hard rule #2).
  */
@@ -76,7 +77,7 @@ class RestorePipelineDoDTest {
         }
 
     @Test
-    fun restoreWithoutOriginalPathLandsInVisibleRestoredFallbackFolder() =
+    fun restoreWithoutOriginalPathLandsInVisibleDownloadsFallback() =
         runBlocking {
             // relativePath = null models a hidden item whose original location is unknown /
             // no longer resolvable — MediaSink's documented fallback trigger. (A same-name
@@ -89,14 +90,14 @@ class RestorePipelineDoDTest {
             val summary = repo.unhideDetailed(setOf(stored.id))
 
             // Restore succeeded and never failed silently: the file is back in MediaStore,
-            // in the *visible* per-category fallback folder, and the summary classifies it
-            // as a fallback with the destination the D-3 snackbar shows (spec §8).
+            // in the always-visible Downloads fallback (§7), and the summary classifies it
+            // as a fallback with the destination the snackbar shows (spec §8 reporting).
             assertThat(summary.restored).isEqualTo(1)
             assertThat(summary.failed).isEqualTo(0)
             assertThat(summary.restoredToFallback).isEqualTo(1)
-            assertThat(summary.fallbackDestination).isEqualTo("DCIM/Restored")
+            assertThat(summary.fallbackDestination).isEqualTo("Downloads")
             assertThat(DoDTestSupport.imageRowCount(context, fallbackName)).isEqualTo(1)
-            assertThat(DoDTestSupport.imageRelativePath(context, fallbackName)).isEqualTo("DCIM/Restored/")
+            assertThat(DoDTestSupport.imageRelativePath(context, fallbackName)).isEqualTo("Download/")
             assertThat(DoDTestSupport.readImageBytes(context, fallbackName)).isEqualTo(original)
         }
 

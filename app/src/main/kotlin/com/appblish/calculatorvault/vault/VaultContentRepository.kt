@@ -129,14 +129,22 @@ interface VaultContentRepository {
 
     /**
      * [unhide] with the full per-operation outcome (spec §8 / design call D-3): how many
-     * items returned to their original location, how many fell back to a visible
-     * "Restored" folder (and where), and how many could not be written at all (left in the
-     * vault). Screens use this to surface the mandatory restore-fallback notice. The
-     * default wraps the legacy count so fakes keep working; real implementations override.
+     * items returned to their original location, how many fell back to the visible
+     * Downloads folder (§7 fallback — and where), and how many could not be written at all
+     * (left in the vault). Screens use this to surface the mandatory restore-fallback
+     * notice. Built from [unhideTo]'s per-item dispositions, so any implementation that
+     * reports destinations honestly gets honest summaries for free; fakes that only
+     * override [unhide] report every success as restored-to-original via the [unhideTo]
+     * default.
      */
     suspend fun unhideDetailed(itemIds: Set<String>): RestoreSummary {
-        val restored = unhide(itemIds)
-        return RestoreSummary(restoredToOriginal = restored, failed = itemIds.size - restored)
+        val result = unhideTo(itemIds, UnhideDestination.Original)
+        return RestoreSummary(
+            restoredToOriginal = result.requested,
+            restoredToFallback = result.fellBack,
+            fallbackDestination = result.fallbackDestination,
+            failed = result.failed,
+        )
     }
 
     /** Send [itemIds] to the recycle bin (recoverable). */

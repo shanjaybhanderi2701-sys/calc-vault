@@ -141,7 +141,7 @@ class MediaSink(
         relPath: String,
         writer: (OutputStream) -> Unit,
     ): Uri? {
-        val collection = collection(item.category)
+        val collection = collectionFor(item.category, relPath)
         val values =
             ContentValues().apply {
                 put(MediaStore.MediaColumns.DISPLAY_NAME, item.originalName)
@@ -201,6 +201,25 @@ class MediaSink(
             i++
         }
     }
+
+    /**
+     * MediaStore rejects an insert whose RELATIVE_PATH's primary directory is not legal
+     * for the collection — e.g. `Download/` into Images throws. The §7 Downloads fallback
+     * must therefore go through the Downloads collection regardless of media category
+     * (MediaStore still derives the media type from the MIME, so an image restored to
+     * Download/ remains visible to gallery Images queries).
+     */
+    private fun collectionFor(
+        category: VaultCategory,
+        relPath: String,
+    ): Uri =
+        if (relPath.substringBefore('/') == Environment.DIRECTORY_DOWNLOADS &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q
+        ) {
+            MediaStore.Downloads.EXTERNAL_CONTENT_URI
+        } else {
+            collection(category)
+        }
 
     private fun collection(category: VaultCategory): Uri =
         when (category) {
