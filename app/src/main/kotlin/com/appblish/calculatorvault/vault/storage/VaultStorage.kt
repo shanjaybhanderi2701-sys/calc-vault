@@ -35,6 +35,7 @@ object VaultStorage {
     const val DIR_NAME = ".CalcVault"
     const val INDEX_NAME = "index.enc"
     const val KEY_NAME = ".vaultkey"
+    const val RECOVERY_NAME = ".vaultrecovery"
     private const val NOMEDIA = ".nomedia"
 
     /**
@@ -74,11 +75,21 @@ object VaultStorage {
         namespace: String = VaultSession.namespace,
     ): File = File(vaultDir(context, namespace), INDEX_NAME)
 
-    /** The PIN-wrapped key file inside the active vault dir. */
+    /** The PIN-wrapped key file (Wrap A) inside the active vault dir. */
     fun keyFile(
         context: Context,
         namespace: String = VaultSession.namespace,
     ): File = File(vaultDir(context, namespace), KEY_NAME)
+
+    /**
+     * The recovery-wraps file (Wrap B + Wrap C) inside the active vault dir — sibling of
+     * [keyFile], so the security answer and recovery code survive uninstall like the PIN
+     * wrap (see [com.appblish.calculatorvault.vault.crypto.RecoveryEnvelope], APP-322).
+     */
+    fun recoveryFile(
+        context: Context,
+        namespace: String = VaultSession.namespace,
+    ): File = File(vaultDir(context, namespace), RECOVERY_NAME)
 
     /** The blob file for [blobName] (a bare UUID, no extension) inside the active vault dir. */
     fun blobFile(
