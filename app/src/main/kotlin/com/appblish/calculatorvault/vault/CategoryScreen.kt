@@ -67,6 +67,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.appblish.calculatorvault.navigation.SessionLock
 import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.components.FastScrollbar
@@ -595,7 +596,12 @@ fun CategoryScreen(
             originalSubtitle = "Each photo returns to where it came from",
             fallbackNote = "If an original folder isn't available, we'll save those photos to Downloads and tell you.",
             onChoiceChange = { unhideChoice = it },
-            onPickFolder = { unhideFolderPicker.launch(null) },
+            onPickFolder = {
+                // APP-301: the opaque DocumentsUI tree picker stops CalcVault; suppress the
+                // one-shot re-lock so returning with the picked folder resumes the unhide.
+                SessionLock.beginSafExcursion()
+                unhideFolderPicker.launch(null)
+            },
             onConfirm = { destination ->
                 viewModel.unhideSelectedAlbums(destination)
                 showAlbumUnhideDialog = false
@@ -696,7 +702,12 @@ fun CategoryScreen(
             originalSubtitle = "Each photo returns to where it came from",
             fallbackNote = "If an original folder isn't available, we'll save those photos to Downloads and tell you.",
             onChoiceChange = { unhideChoice = it },
-            onPickFolder = { unhideFolderPicker.launch(null) },
+            onPickFolder = {
+                // APP-301: the opaque DocumentsUI tree picker stops CalcVault; suppress the
+                // one-shot re-lock so returning with the picked folder resumes the unhide.
+                SessionLock.beginSafExcursion()
+                unhideFolderPicker.launch(null)
+            },
             onConfirm = { destination ->
                 viewModel.unhideOpenAlbum(destination)
                 showOpenAlbumUnhide = false
@@ -748,7 +759,12 @@ fun CategoryScreen(
             choice = unhideChoice,
             chosenFolder = chosenUnhideFolder,
             onChoiceChange = { unhideChoice = it },
-            onPickFolder = { unhideFolderPicker.launch(null) },
+            onPickFolder = {
+                // APP-301: the opaque DocumentsUI tree picker stops CalcVault; suppress the
+                // one-shot re-lock so returning with the picked folder resumes the unhide.
+                SessionLock.beginSafExcursion()
+                unhideFolderPicker.launch(null)
+            },
             onConfirm = { destination ->
                 viewModel.unhideSelected(destination)
                 showUnhideDialog = false

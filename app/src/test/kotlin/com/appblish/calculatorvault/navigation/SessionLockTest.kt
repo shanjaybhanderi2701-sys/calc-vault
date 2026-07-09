@@ -48,6 +48,28 @@ class SessionLockTest {
     }
 
     @Test
+    fun `SAF excursion arms the same one-shot suppression as a grant round-trip`() {
+        // APP-301: the unhide/category "Choose a folder…" picker (OpenDocumentTree) stops
+        // CalcVault exactly like the primer's Settings trip, so it must arm the identical
+        // one-shot re-lock suppression — otherwise the DocumentsUI ON_STOP relocks the vault
+        // and silently drops the in-flight unhide before the picked URI is consumed.
+        assertThat(SessionLock.consumeGrantRoundTrip()).isFalse()
+
+        SessionLock.beginSafExcursion()
+        // The very next background (the picker covering the app) is suppressed, then spent.
+        assertThat(SessionLock.consumeGrantRoundTrip()).isTrue()
+        assertThat(SessionLock.consumeGrantRoundTrip()).isFalse()
+    }
+
+    @Test
+    fun `a stale abandoned SAF excursion expires and does not mask a later re-lock`() {
+        // Armed but never consumed (user swiped the picker away): a background at/after the
+        // expiry must re-lock as normal, so an abandoned picker can't leave the vault open.
+        SessionLock.beginSafExcursion(nowMs = 1_000L)
+        assertThat(SessionLock.consumeGrantRoundTrip(nowMs = 1_000L + expiryMs)).isFalse()
+    }
+
+    @Test
     fun `grant round-trip suppression is one-shot`() {
         // Not armed: nothing suppressed.
         assertThat(SessionLock.consumeGrantRoundTrip()).isFalse()

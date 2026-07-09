@@ -57,6 +57,19 @@ internal object SessionLock {
     }
 
     /**
+     * Alias for [beginGrantRoundTrip] for a deliberate SAF folder-picker excursion (APP-301).
+     * The unhide/category "Choose a folder…" flow launches `OpenDocumentTree()`, whose opaque
+     * DocumentsUI activity *stops* CalcVault (unlike the translucent share chooser, which only
+     * pauses it) and would otherwise fire ON_STOP → [relock], tearing down the in-flight unhide
+     * before the picked tree Uri can be consumed and bouncing the user to the calculator. Arm
+     * this immediately before launching the picker so the return resumes the unhide instead of
+     * re-locking. Same one-shot semantics and same [GRANT_ROUND_TRIP_EXPIRY_MS] safety expiry as
+     * the primer grant round-trip, so a picker that is armed but abandoned can never mask a later,
+     * genuine backgrounding.
+     */
+    fun beginSafExcursion(nowMs: Long = System.currentTimeMillis()) = beginGrantRoundTrip(nowMs)
+
+    /**
      * Consume the one-shot suppression; true means "skip this re-lock". The flag is spent
      * either way, and an armed flag older than [GRANT_ROUND_TRIP_EXPIRY_MS] has already
      * expired and returns false, so a stale round-trip can never mask a real backgrounding.

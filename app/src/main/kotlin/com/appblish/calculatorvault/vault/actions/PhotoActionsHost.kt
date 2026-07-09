@@ -12,6 +12,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.platform.LocalContext
+import com.appblish.calculatorvault.navigation.SessionLock
 import com.appblish.calculatorvault.vault.model.UnhideDestination
 import com.appblish.calculatorvault.vault.model.VaultItem
 
@@ -122,7 +123,12 @@ private fun UnhideHost(
         choice = choice,
         chosenFolder = chosenFolder,
         onChoiceChange = { choice = it },
-        onPickFolder = { picker.launch(null) },
+        onPickFolder = {
+            // APP-301: the opaque DocumentsUI tree picker stops CalcVault; suppress the
+            // one-shot re-lock so returning with the picked folder resumes the unhide.
+            SessionLock.beginSafExcursion()
+            picker.launch(null)
+        },
         onConfirm = { destination ->
             callbacks.onUnhide(destination)
             controller.close()
