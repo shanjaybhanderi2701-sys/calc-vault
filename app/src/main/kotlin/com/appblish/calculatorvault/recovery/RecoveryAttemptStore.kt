@@ -4,6 +4,7 @@ import android.content.Context
 import com.appblish.calculatorvault.vault.crypto.RecoveryMethod
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import java.io.File
+import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -88,8 +89,14 @@ class FileRecoveryAttemptStore(
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(body)
         if (!tmp.renameTo(file)) {
+            // Fail closed, do NOT fall back to a direct `file.writeText`: that overwrite is
+            // non-atomic and an interrupted write can truncate `.recovery_attempts` so it reads
+            // back as zero failures and silently resets the survive-uninstall lockout to 0,
+            // handing an attacker a fresh unbounded guessing budget (spec §1.6, APP-331 O2).
+            // Throw like VaultKeyFile.writeSlots; the ViewModel catches and surfaces the honest
+            // error while the counter on disk stays intact.
             tmp.delete()
-            file.writeText(body)
+            throw IOException("Could not atomically replace the recovery attempt file")
         }
     }
 

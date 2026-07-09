@@ -106,32 +106,44 @@ class RecoveryUnlockViewModel(
         }
         _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            when (reKeyer.verify(method, secret)) {
-                RecoveryVerifyOutcome.CORRECT -> {
-                    attemptStore.clear(method)
-                    verifiedSecret = secret
-                    _state.update {
-                        it.copy(
-                            stage = RecoveryUnlockStage.NEW_PIN,
-                            error = null,
-                            lockoutRemainingMillis = 0L,
-                            busy = false,
-                        )
+            try {
+                when (reKeyer.verify(method, secret)) {
+                    RecoveryVerifyOutcome.CORRECT -> {
+                        attemptStore.clear(method)
+                        verifiedSecret = secret
+                        _state.update {
+                            it.copy(
+                                stage = RecoveryUnlockStage.NEW_PIN,
+                                error = null,
+                                lockoutRemainingMillis = 0L,
+                                busy = false,
+                            )
+                        }
                     }
-                }
 
-                RecoveryVerifyOutcome.WRONG_SECRET -> {
-                    attemptStore.recordFailure(method, now())
-                    _state.update {
-                        it.copy(error = wrongSecretMessage(), lockoutRemainingMillis = remainingLockout(), busy = false)
+                    RecoveryVerifyOutcome.WRONG_SECRET -> {
+                        attemptStore.recordFailure(method, now())
+                        _state.update {
+                            it.copy(
+                                error = wrongSecretMessage(),
+                                lockoutRemainingMillis = remainingLockout(),
+                                busy = false
+                            )
+                        }
                     }
+
+                    RecoveryVerifyOutcome.NOT_CONFIGURED ->
+                        _state.update { it.copy(stage = RecoveryUnlockStage.UNRECOVERABLE, busy = false) }
+
+                    RecoveryVerifyOutcome.STORAGE_UNAVAILABLE ->
+                        _state.update { it.copy(error = STORAGE_MESSAGE, busy = false) }
                 }
-
-                RecoveryVerifyOutcome.NOT_CONFIGURED ->
-                    _state.update { it.copy(stage = RecoveryUnlockStage.UNRECOVERABLE, busy = false) }
-
-                RecoveryVerifyOutcome.STORAGE_UNAVAILABLE ->
-                    _state.update { it.copy(error = STORAGE_MESSAGE, busy = false) }
+            } catch (e: Exception) {
+                // Fail closed: a malformed key file or a failed atomic backoff write
+                // (recordFailure/clear) must surface the honest error and release the spinner —
+                // never cancel the coroutine and strand busy=true (APP-331 O1). The on-disk
+                // attempt counter is untouched by a throw, so the lockout is not weakened.
+                _state.update { it.copy(error = STORAGE_MESSAGE, busy = false) }
             }
         }
     }
@@ -158,47 +170,61 @@ class RecoveryUnlockViewModel(
         }
         _state.update { it.copy(busy = true, error = null) }
         viewModelScope.launch {
-            when (reKeyer.resetPin(method, secret, pin)) {
-                RecoveryResetOutcome.RESET -> {
-                    // Envelope moved first (above); only now rotate the auth credential and the
-                    // live session so the new PIN both authenticates and unwraps the vault.
-                    credentialStore.setRealPin(pin)
-                    VaultSession.begin(pin)
-                    attemptStore.clear(method)
-                    verifiedSecret = null
-                    newPinDraft = null
-                    _state.update { it.copy(stage = RecoveryUnlockStage.DONE, error = null, busy = false) }
+            try {
+                when (reKeyer.resetPin(method, secret, pin)) {
+                    RecoveryResetOutcome.RESET -> {
+                        // Envelope moved first (above); only now rotate the auth credential and the
+                        // live session so the new PIN both authenticates and unwraps the vault.
+                        credentialStore.setRealPin(pin)
+                        VaultSession.begin(pin)
+                        attemptStore.clear(method)
+                        verifiedSecret = null
+                        newPinDraft = null
+                        _state.update { it.copy(stage = RecoveryUnlockStage.DONE, error = null, busy = false) }
+                    }
+
+                    RecoveryResetOutcome.WRONG_SECRET -> {
+                        attemptStore.recordFailure(method, now())
+                        verifiedSecret = null
+                        _state.update {
+                            it.copy(
+                                stage = RecoveryUnlockStage.ENTER_SECRET,
+                                error = wrongSecretMessage(),
+                                lockoutRemainingMillis = remainingLockout(),
+                                busy = false,
+                            )
+                        }
+                    }
+
+                    RecoveryResetOutcome.NOT_CONFIGURED ->
+                        _state.update { it.copy(stage = RecoveryUnlockStage.UNRECOVERABLE, busy = false) }
+
+                    RecoveryResetOutcome.STORAGE_UNAVAILABLE ->
+                        _state.update {
+                            it.copy(stage = RecoveryUnlockStage.NEW_PIN, error = STORAGE_MESSAGE, busy = false)
+                        }
+
+                    RecoveryResetOutcome.FAILED ->
+                        _state.update {
+                            it.copy(
+                                stage = RecoveryUnlockStage.NEW_PIN,
+                                error = "Couldn't set your new PIN. Your vault is unchanged — please try again.",
+                                busy = false,
+                            )
+                        }
                 }
-
-                RecoveryResetOutcome.WRONG_SECRET -> {
-                    attemptStore.recordFailure(method, now())
-                    verifiedSecret = null
-                    _state.update {
-                        it.copy(
-                            stage = RecoveryUnlockStage.ENTER_SECRET,
-                            error = wrongSecretMessage(),
-                            lockoutRemainingMillis = remainingLockout(),
-                            busy = false,
-                        )
-                    }
+            } catch (e: Exception) {
+                // Fail closed like onSubmitSecret: an unexpected throw (backoff write, credential
+                // rotation) must land on a recoverable error with the spinner released, never a
+                // stuck busy=true (APP-331 O1). The commit-ordering invariant already guarantees the
+                // envelope moved before setRealPin, so the vault is never left half-reset.
+                _state.update {
+                    it.copy(
+                        stage = RecoveryUnlockStage.NEW_PIN,
+                        error = "Couldn't set your new PIN. Your vault is unchanged — please try again.",
+                        busy = false,
+                    )
                 }
-
-                RecoveryResetOutcome.NOT_CONFIGURED ->
-                    _state.update { it.copy(stage = RecoveryUnlockStage.UNRECOVERABLE, busy = false) }
-
-                RecoveryResetOutcome.STORAGE_UNAVAILABLE ->
-                    _state.update {
-                        it.copy(stage = RecoveryUnlockStage.NEW_PIN, error = STORAGE_MESSAGE, busy = false)
-                    }
-
-                RecoveryResetOutcome.FAILED ->
-                    _state.update {
-                        it.copy(
-                            stage = RecoveryUnlockStage.NEW_PIN,
-                            error = "Couldn't set your new PIN. Your vault is unchanged — please try again.",
-                            busy = false,
-                        )
-                    }
             }
         }
     }

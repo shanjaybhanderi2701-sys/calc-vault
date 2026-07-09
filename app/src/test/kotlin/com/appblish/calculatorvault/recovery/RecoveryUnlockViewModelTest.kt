@@ -201,6 +201,66 @@ class RecoveryUnlockViewModelTest {
             assertThat(viewModel.state.value.stage).isEqualTo(RecoveryUnlockStage.UNRECOVERABLE)
         }
 
+    @Test
+    fun `a seam that throws clears the spinner instead of hanging it (APP-331 O1)`() =
+        runTest(dispatcher) {
+            // Simulate storage lost / a malformed key file mid-verify: the seam throws instead of
+            // returning an outcome. The launch must catch it, surface the honest error and release
+            // busy — never cancel the coroutine and strand busy=true (a permanently spinning verify).
+            val throwingReKeyer =
+                object : RecoveryReKeyer {
+                    override suspend fun verify(
+                        method: RecoveryMethod,
+                        secret: String,
+                    ): RecoveryVerifyOutcome = throw java.io.IOException("storage lost mid-verify")
+
+                    override suspend fun resetPin(
+                        method: RecoveryMethod,
+                        secret: String,
+                        newPin: String,
+                    ) = RecoveryResetOutcome.RESET
+                }
+            val viewModel = vm(throwingReKeyer, RecordingStore())
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.onSubmitSecret(CODE)
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertThat(viewModel.state.value.busy).isFalse()
+            assertThat(viewModel.state.value.error).isNotNull()
+            // Stays on the entry step — no phantom advance to NEW_PIN on an unproven identity.
+            assertThat(viewModel.state.value.stage).isEqualTo(RecoveryUnlockStage.ENTER_SECRET)
+        }
+
+    @Test
+    fun `a backoff write failure on a wrong secret clears the spinner (APP-331 O1 O2)`() =
+        runTest(dispatcher) {
+            // The atomic attempt store now throws when it cannot persist (APP-331 O2). A wrong
+            // secret triggers recordFailure; if that throw escaped it would strand busy=true. The
+            // launch's catch keeps the flow responsive.
+            val throwingStore =
+                object : RecoveryAttemptStore {
+                    override fun failedAttempts(method: RecoveryMethod): Int = 0
+
+                    override fun lastFailureAtMillis(method: RecoveryMethod): Long = 0L
+
+                    override fun recordFailure(
+                        method: RecoveryMethod,
+                        nowMillis: Long,
+                    ): Unit = throw java.io.IOException("could not persist attempt")
+
+                    override fun clear(method: RecoveryMethod) = Unit
+                }
+            val viewModel = vm(FakeReKeyer(correctSecret = CODE), RecordingStore(), attemptStore = throwingStore)
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.onSubmitSecret("WRONG")
+            dispatcher.scheduler.advanceUntilIdle()
+
+            assertThat(viewModel.state.value.busy).isFalse()
+            assertThat(viewModel.state.value.error).isNotNull()
+        }
+
     private companion object {
         const val CODE = "7K9F2XQP4MRT8WVN"
     }

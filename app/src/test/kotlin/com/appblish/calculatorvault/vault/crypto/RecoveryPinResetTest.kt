@@ -24,7 +24,11 @@ class RecoveryPinResetTest {
     @get:Rule
     val tmp = TemporaryFolder()
 
-    private fun keyFile(): File = File(tmp.newFolder(".CalcVault"), ".vaultkey")
+    private var vaultDirCount = 0
+
+    // A unique vault dir per call — some tests set up two independent vaults in one method, so a
+    // fixed folder name would make the second newFolder() throw "folder already exists".
+    private fun keyFile(): File = File(tmp.newFolder("vault${vaultDirCount++}"), ".vaultkey")
 
     /** A vault set up with a PIN and both recovery wraps configured. */
     private fun setUpConfiguredVault(file: File): javax.crypto.SecretKey {
@@ -154,6 +158,27 @@ class RecoveryPinResetTest {
         VaultKeyFile(fresh).unlockOrCreate(PIN)
         assertThat(RecoveryEnvelope.verify(VaultKeyFile(fresh), RecoveryMethod.RECOVERY_CODE, CODE))
             .isEqualTo(RecoveryVerifyOutcome.NOT_CONFIGURED)
+    }
+
+    @Test
+    fun `a corrupt envelope fails closed instead of crashing (APP-331 O1)`() {
+        val file = keyFile()
+        setUpConfiguredVault(file)
+        // Corrupt the key file so the reader's require()/toInt() throws IllegalArgumentException
+        // (a malformed slot) rather than returning parseable slots. A configured-then-damaged
+        // envelope must NOT let the exception escape the pure core: verify()/resetPin() catch it
+        // and surface the fail-closed STORAGE_UNAVAILABLE, leaving the file byte-for-byte intact.
+        file.writeText("v2\nnot:a:valid:slot\n")
+        val before = file.readBytes()
+
+        val verify = RecoveryEnvelope.verify(VaultKeyFile(file), RecoveryMethod.SECURITY_ANSWER, ANSWER)
+        assertThat(verify).isEqualTo(RecoveryVerifyOutcome.STORAGE_UNAVAILABLE)
+
+        val reset = RecoveryEnvelope.resetPin(VaultKeyFile(file), RecoveryMethod.RECOVERY_CODE, CODE, NEW_PIN)
+        assertThat(reset).isEqualTo(RecoveryResetOutcome.STORAGE_UNAVAILABLE)
+
+        // Nothing was mutated by the failed, fail-closed attempts.
+        assertThat(file.readBytes()).isEqualTo(before)
     }
 
     private fun assertThatWrongPassphrase(block: () -> Unit) {

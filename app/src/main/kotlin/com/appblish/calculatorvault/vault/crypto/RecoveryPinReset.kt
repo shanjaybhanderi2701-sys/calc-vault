@@ -5,6 +5,7 @@ import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 
 /** Which recovery secret the user is proving identity with (spec §5 — Wrap B vs Wrap C). */
 enum class RecoveryMethod {
@@ -70,14 +71,28 @@ object RecoveryEnvelope {
         method: RecoveryMethod,
         secret: String,
     ): RecoveryVerifyOutcome {
-        if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) return RecoveryVerifyOutcome.NOT_CONFIGURED
         return try {
+            // The config guard reads the key file, so it lives INSIDE the try: a malformed/corrupt
+            // envelope makes isRecoveryConfigured() throw (require/check in the reader) and must fail
+            // closed here too, not escape the pure core (APP-331 O1).
+            if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) return RecoveryVerifyOutcome.NOT_CONFIGURED
             unlock(keyFile, method, secret)
             RecoveryVerifyOutcome.CORRECT
         } catch (e: VaultKeyFile.WrongPassphraseException) {
             RecoveryVerifyOutcome.WRONG_SECRET
         } catch (e: VaultKeyFile.NoSuchWrapException) {
             RecoveryVerifyOutcome.NOT_CONFIGURED
+        } catch (e: IOException) {
+            // An unreadable/malformed key file (or All-Files-Access revoked mid-read): fail closed
+            // to the honest STORAGE_UNAVAILABLE surface rather than letting the exception escape and
+            // hang the verify spinner (APP-331 O1). Nothing is mutated.
+            RecoveryVerifyOutcome.STORAGE_UNAVAILABLE
+        } catch (e: IllegalStateException) {
+            // `check(...)` inside the key-file reader on a truncated/corrupt envelope — same surface.
+            RecoveryVerifyOutcome.STORAGE_UNAVAILABLE
+        } catch (e: IllegalArgumentException) {
+            // `require(...)` on an empty/malformed slot (e.g. bad base64/IV length) — same surface.
+            RecoveryVerifyOutcome.STORAGE_UNAVAILABLE
         }
     }
 
@@ -94,14 +109,24 @@ object RecoveryEnvelope {
         secret: String,
         newPin: String,
     ): RecoveryResetOutcome {
-        if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) return RecoveryResetOutcome.NOT_CONFIGURED
         val dek =
             try {
+                // Config guard inside the try (as in verify): a corrupt envelope must fail closed,
+                // never escape the pure core (APP-331 O1).
+                if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) return RecoveryResetOutcome.NOT_CONFIGURED
                 unlock(keyFile, method, secret)
             } catch (e: VaultKeyFile.WrongPassphraseException) {
                 return RecoveryResetOutcome.WRONG_SECRET
             } catch (e: VaultKeyFile.NoSuchWrapException) {
                 return RecoveryResetOutcome.NOT_CONFIGURED
+            } catch (e: IOException) {
+                // Unreadable/malformed key file or storage lost mid-unlock: fail closed before any
+                // re-wrap, leaving the envelope byte-for-byte intact (APP-331 O1).
+                return RecoveryResetOutcome.STORAGE_UNAVAILABLE
+            } catch (e: IllegalStateException) {
+                return RecoveryResetOutcome.STORAGE_UNAVAILABLE
+            } catch (e: IllegalArgumentException) {
+                return RecoveryResetOutcome.STORAGE_UNAVAILABLE
             }
         return try {
             keyFile.replacePinWrap(dek, newPin)
