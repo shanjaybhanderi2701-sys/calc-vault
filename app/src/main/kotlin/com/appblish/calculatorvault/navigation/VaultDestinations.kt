@@ -31,6 +31,7 @@ internal object VaultDestinations {
     const val SETTINGS_CHANGE_PIN = "settings/change_pin"
     const val SETTINGS_PERMISSIONS = "settings/permissions"
     const val SETTINGS_LANGUAGE = "settings/language"
+    const val SETTINGS_PIN_RECOVERY = "settings/pin_recovery"
 
     // --- Vault spine ---
 

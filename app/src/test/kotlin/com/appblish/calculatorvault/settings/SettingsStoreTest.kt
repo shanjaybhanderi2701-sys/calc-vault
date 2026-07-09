@@ -24,6 +24,8 @@ class SettingsStoreTest {
             assertThat(settings.relockOnBackgroundEnabled).isTrue()
             assertThat(settings.shufflePinPadEnabled).isFalse()
             assertThat(settings.incorrectVibrationEnabled).isTrue()
+            // PIN Recovery W4: screenshots are blocked (FLAG_SECURE on) by default.
+            assertThat(settings.allowScreenshotsEnabled).isFalse()
         }
 
     @Test
@@ -41,6 +43,7 @@ class SettingsStoreTest {
                     relockOnBackgroundEnabled = false,
                     shufflePinPadEnabled = true,
                     incorrectVibrationEnabled = false,
+                    allowScreenshotsEnabled = true,
                 )
             store.save(saved)
             assertThat(store.load()).isEqualTo(saved)

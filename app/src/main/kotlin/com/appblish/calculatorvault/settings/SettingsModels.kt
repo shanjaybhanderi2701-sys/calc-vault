@@ -98,6 +98,15 @@ data class VaultSettings(
      * privacy layer. Exposed as an opt-in Settings toggle.
      */
     val hideFromRecentsEnabled: Boolean = false,
+    /**
+     * Allow screenshots + screen-recording of vault content. **Off by default** for privacy
+     * (PIN Recovery W4 / spec §6): when off, the release build applies `FLAG_SECURE`, which
+     * blocks screenshots and blanks the recents/app-switcher preview. Turning it on removes
+     * `FLAG_SECURE` so screenshots work (and vault content may then appear in the recents
+     * preview). Coexists with the debug-only `calcvault_allow_screenshots` capture gate
+     * (APP-233): either one allowing screenshots is enough to drop `FLAG_SECURE`.
+     */
+    val allowScreenshotsEnabled: Boolean = false,
     /** The app language chosen at onboarding / in Settings ("Default" = follow system). */
     val appLanguage: String = "Default",
 )

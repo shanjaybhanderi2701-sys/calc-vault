@@ -11,6 +11,8 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
@@ -22,11 +24,12 @@ import com.appblish.calculatorvault.ui.components.ListRow
 import com.appblish.calculatorvault.ui.components.RowTrailing
 
 /**
- * Minimal Phase-1 Settings root (build spec §0 caps Settings at "the minimum needed for
- * the flows"; row set per design sign-off S22 on APP-224): App language, Change password,
- * Switch app icon, Theme, All files access, the opt-in Hide-from-recents toggle (spec
- * §10), and version/about. Everything else — backup, fake passwords, break-in alerts,
- * prevent-uninstall, recovery — is hidden this phase, not teased.
+ * Settings root: App language, Change password, Switch app icon, Theme, All files access,
+ * the opt-in Hide-from-recents toggle (spec §10), and version/about (row set per design
+ * sign-off S22 on APP-224). PIN Recovery W4 adds the **PIN Recovery** entry (management hub,
+ * screen 14) and the **Allow screenshots** toggle (release-build FLAG_SECURE, default OFF —
+ * screen 15) to the Privacy section. Everything else — backup, fake passwords, break-in
+ * alerts, prevent-uninstall — stays hidden this phase, not teased.
  */
 @Composable
 fun SettingsScreen(
@@ -35,6 +38,7 @@ fun SettingsScreen(
     onTheme: () -> Unit,
     onPermissions: () -> Unit,
     onLanguage: () -> Unit,
+    onPinRecovery: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: SettingsViewModel = viewModel(),
 ) {
@@ -80,6 +84,31 @@ fun SettingsScreen(
                 RowTrailing.Toggle(settings.disguiseIconEnabled) { enabled ->
                     DisguiseManager.setAlternate(context, enabled)
                     viewModel.setDisguiseIcon(enabled)
+                },
+        )
+        ListRow(
+            title = "PIN Recovery",
+            subtitle =
+                if (state.hasRecovery) {
+                    "Recovery is set up · view question, regenerate code"
+                } else {
+                    "Set up a way back in if you forget your PIN"
+                },
+            leadingIcon = Icons.Filled.Star,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = onPinRecovery,
+        )
+        ListRow(
+            title = "Allow screenshots",
+            subtitle = "Off blocks screenshots inside the vault and hides it from the app switcher.",
+            leadingIcon = Icons.Filled.Warning,
+            trailing =
+                RowTrailing.Toggle(settings.allowScreenshotsEnabled) { enabled ->
+                    // Flip FLAG_SECURE on the live window immediately for instant feedback;
+                    // MainActivity re-applies from the persisted value on its next resume.
+                    // Off (default) → secure; on → screenshots allowed.
+                    context.applyWindowSecure(secure = !enabled)
+                    viewModel.setAllowScreenshots(enabled)
                 },
         )
         ListRow(

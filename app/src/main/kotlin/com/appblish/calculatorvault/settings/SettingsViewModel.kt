@@ -73,6 +73,17 @@ class SettingsViewModel(
      */
     fun setHideFromRecents(enabled: Boolean) = mutate { it.copy(hideFromRecentsEnabled = enabled) }
 
+    /**
+     * "Allow screenshots" (PIN Recovery W4 — OFF by default). Persists the flag and warms the
+     * synchronous [SettingsGraph] cache immediately so [com.appblish.calculatorvault.MainActivity]
+     * reads the new value on its next `FLAG_SECURE` re-evaluation even before the async save
+     * lands. The live-window flag flip is applied by the screen (it owns an Activity).
+     */
+    fun setAllowScreenshots(enabled: Boolean) {
+        SettingsGraph.cacheAllowScreenshots(enabled)
+        mutate { it.copy(allowScreenshotsEnabled = enabled) }
+    }
+
     /** Persist the app language chosen in Settings → App language (or onboarding). */
     fun setAppLanguage(language: String) = mutate { it.copy(appLanguage = language) }
 

@@ -16,6 +16,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.lifecycleScope
 import com.appblish.calculatorvault.navigation.VaultNavHost
+import com.appblish.calculatorvault.settings.ScreenshotPolicy
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -40,12 +41,9 @@ class MainActivity : ComponentActivity() {
         // setting an operator flips explicitly per capture session —
         //   adb shell settings put global calcvault_allow_screenshots 1
         // (then relaunch; delete the setting to restore protection). Release ignores it.
-        if (!BuildConfig.DEBUG || !debugScreenshotsEnabled()) {
-            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                setRecentsScreenshotEnabled(false)
-            }
-        }
+        // The release-facing "Allow screenshots" toggle (PIN Recovery W4, default OFF) is the
+        // other input; either gate being on drops FLAG_SECURE (see [ScreenshotPolicy]).
+        applyScreenshotPolicy()
         applyPersistedHideFromRecents()
         // Edge-to-edge with VISIBLE system bars (APP-225 P2-4, supersedes APP-204's
         // immersive hide-bars mode): transparent bars with light icons over the dark theme.
@@ -65,6 +63,36 @@ class MainActivity : ComponentActivity() {
                     }
                 }
             }
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        // Re-evaluate FLAG_SECURE on every resume so flipping the "Allow screenshots" toggle in
+        // Settings takes effect the moment the user returns here, without a relaunch. (The
+        // Settings screen also flips the flag on the live window immediately for instant
+        // feedback; this is the durable re-apply from the persisted value.)
+        applyScreenshotPolicy()
+    }
+
+    /**
+     * Apply (or clear) `FLAG_SECURE` from the current [ScreenshotPolicy] decision. Secure by
+     * default; dropped only when the release toggle or the debug capture gate allows screenshots.
+     */
+    private fun applyScreenshotPolicy() {
+        val secure =
+            ScreenshotPolicy.shouldSecureWindow(
+                isDebugBuild = BuildConfig.DEBUG,
+                userAllowsScreenshots = SettingsGraph.allowScreenshotsEnabled,
+                debugCaptureGateEnabled = debugScreenshotsEnabled(),
+            )
+        if (secure) {
+            window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            setRecentsScreenshotEnabled(!secure)
         }
     }
 

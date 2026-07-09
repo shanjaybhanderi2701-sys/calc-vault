@@ -24,6 +24,18 @@ object SettingsGraph {
     var relockOnBackgroundEnabled: Boolean = true
         private set
 
+    /**
+     * Synchronously-readable snapshot of the "Allow screenshots" switch (PIN Recovery W4).
+     * [com.appblish.calculatorvault.MainActivity] decides `FLAG_SECURE` in `onCreate` /
+     * `onResume` on the main thread with no coroutine to await the suspend [SettingsStore],
+     * so the flag is cached here — warmed at startup ([warmCaches]) and updated the instant the
+     * user flips the toggle ([cacheAllowScreenshots]). Defaults to the secure choice (off →
+     * screenshots blocked) so protection holds even before the store has been read.
+     */
+    @Volatile
+    var allowScreenshotsEnabled: Boolean = false
+        private set
+
     /** Wire the production encrypted store. Idempotent — safe to call from Application.onCreate. */
     fun init(context: Context) {
         if (store == null) {
@@ -38,12 +50,21 @@ object SettingsGraph {
 
     /** Refresh the synchronous caches from persisted settings (called once at app startup). */
     suspend fun warmCaches() {
-        runCatching { relockOnBackgroundEnabled = settingsStore.load().relockOnBackgroundEnabled }
+        runCatching {
+            val settings = settingsStore.load()
+            relockOnBackgroundEnabled = settings.relockOnBackgroundEnabled
+            allowScreenshotsEnabled = settings.allowScreenshotsEnabled
+        }
     }
 
     /** Keep [relockOnBackgroundEnabled] in step with a live toggle change from Settings. */
     fun cacheRelockOnBackground(enabled: Boolean) {
         relockOnBackgroundEnabled = enabled
+    }
+
+    /** Keep [allowScreenshotsEnabled] in step with a live toggle change from Settings. */
+    fun cacheAllowScreenshots(enabled: Boolean) {
+        allowScreenshotsEnabled = enabled
     }
 
     val settingsStore: SettingsStore

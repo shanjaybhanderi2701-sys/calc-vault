@@ -49,6 +49,7 @@ abstract class BaseSettingsStore : SettingsStore {
             shufflePinPadEnabled = getBool(KEY_SHUFFLE, default = false),
             incorrectVibrationEnabled = getBool(KEY_VIBRATION, default = true),
             hideFromRecentsEnabled = getBool(KEY_HIDE_FROM_RECENTS, default = false),
+            allowScreenshotsEnabled = getBool(KEY_ALLOW_SCREENSHOTS, default = false),
             appLanguage = getValue(KEY_LANGUAGE) ?: "Default",
         )
 
@@ -63,6 +64,7 @@ abstract class BaseSettingsStore : SettingsStore {
         setValue(KEY_SHUFFLE, settings.shufflePinPadEnabled.toString())
         setValue(KEY_VIBRATION, settings.incorrectVibrationEnabled.toString())
         setValue(KEY_HIDE_FROM_RECENTS, settings.hideFromRecentsEnabled.toString())
+        setValue(KEY_ALLOW_SCREENSHOTS, settings.allowScreenshotsEnabled.toString())
         setValue(KEY_LANGUAGE, settings.appLanguage)
     }
 
@@ -86,6 +88,7 @@ abstract class BaseSettingsStore : SettingsStore {
         const val KEY_SHUFFLE = "shuffle_pin_pad"
         const val KEY_VIBRATION = "incorrect_vibration"
         const val KEY_HIDE_FROM_RECENTS = "hide_from_recents"
+        const val KEY_ALLOW_SCREENSHOTS = "allow_screenshots"
         const val KEY_LANGUAGE = "app_language"
 
         val KNOWN_KEYS =
@@ -100,6 +103,7 @@ abstract class BaseSettingsStore : SettingsStore {
                 KEY_SHUFFLE,
                 KEY_VIBRATION,
                 KEY_HIDE_FROM_RECENTS,
+                KEY_ALLOW_SCREENSHOTS,
                 KEY_LANGUAGE,
             )
     }

@@ -1,7 +1,9 @@
 package com.appblish.calculatorvault.auth
 
 import android.content.Context
+import com.appblish.calculatorvault.vault.crypto.RecoveryReWrapper
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFileReKeyer
+import com.appblish.calculatorvault.vault.crypto.VaultKeyFileRecoveryReWrapper
 import com.appblish.calculatorvault.vault.crypto.VaultReKeyer
 
 /**
@@ -21,6 +23,9 @@ object AuthGraph {
     @Volatile
     private var reKeyer: VaultReKeyer? = null
 
+    @Volatile
+    private var recoveryReWrapperImpl: RecoveryReWrapper? = null
+
     /** Wire the production encrypted store. Idempotent — safe to call from Application.onCreate. */
     fun init(context: Context) {
         if (store == null) {
@@ -28,6 +33,9 @@ object AuthGraph {
         }
         if (reKeyer == null) {
             reKeyer = VaultKeyFileReKeyer(context.applicationContext)
+        }
+        if (recoveryReWrapperImpl == null) {
+            recoveryReWrapperImpl = VaultKeyFileRecoveryReWrapper(context.applicationContext)
         }
     }
 
@@ -41,6 +49,11 @@ object AuthGraph {
         this.reKeyer = reKeyer
     }
 
+    /** Replace the recovery re-wrapper (tests / previews). */
+    fun overrideRecoveryReWrapper(reWrapper: RecoveryReWrapper) {
+        this.recoveryReWrapperImpl = reWrapper
+    }
+
     val credentialStore: CredentialStore
         get() = store ?: error("AuthGraph.init(context) must be called before use")
 
@@ -51,4 +64,12 @@ object AuthGraph {
      */
     val vaultReKeyer: VaultReKeyer
         get() = reKeyer ?: error("AuthGraph.init(context) must be called before use")
+
+    /**
+     * The Settings → PIN Recovery re-wrapper (PIN Recovery W4). Re-wraps a single recovery
+     * slot (Wrap C on regenerate-code, Wrap B on change-question) over the same DEK via the W1
+     * envelope, so the shipped code that manages recovery is unit-testable against a fake.
+     */
+    val recoveryReWrapper: RecoveryReWrapper
+        get() = recoveryReWrapperImpl ?: error("AuthGraph.init(context) must be called before use")
 }
