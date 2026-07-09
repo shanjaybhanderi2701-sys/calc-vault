@@ -32,6 +32,25 @@ internal object VaultDestinations {
     const val SETTINGS_PERMISSIONS = "settings/permissions"
     const val SETTINGS_LANGUAGE = "settings/language"
 
+    // --- PIN Recovery (APP-321) ---
+
+    /** The recovery setup flow (W2, W0 02–06): security answer + recovery code → Wrap B/C. */
+    const val RECOVERY_SETUP = "recovery/setup"
+
+    /** The recovery-entry landing (W2, W0 08) both doorways open — opens only, resets nothing. */
+    const val RECOVERY_ENTRY = "recovery/entry"
+
+    const val ARG_RECOVERY_METHOD = "method"
+
+    /**
+     * The recovery-unlock seam (W0 09/10 → 11). W2 registers a placeholder here; W3 replaces
+     * it with the real unlock + set-new-PIN flow (unwrap via Wrap B/C, then re-wrap Wrap A).
+     * [method] is `answer` or `code`.
+     */
+    const val RECOVERY_UNLOCK = "recovery/unlock/{$ARG_RECOVERY_METHOD}"
+
+    fun recoveryUnlock(method: String) = "recovery/unlock/$method"
+
     // --- Vault spine ---
 
     /** Post-auth landing: the vault home dashboard (root — no shell/tabs in Phase 1). */

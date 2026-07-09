@@ -68,6 +68,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.appblish.calculatorvault.navigation.SessionLock
+import com.appblish.calculatorvault.recovery.RecoveryGridBanner
 import com.appblish.calculatorvault.ui.components.DateGroupedMediaGrid
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.components.FastScrollbar
@@ -124,6 +125,7 @@ fun CategoryScreen(
     onOpenItem: (VaultItem) -> Unit,
     onHide: () -> Unit,
     modifier: Modifier = Modifier,
+    onSetUpRecovery: () -> Unit = {},
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val colors = VaultTheme.colors
@@ -299,6 +301,14 @@ fun CategoryScreen(
                         onSortClick = { showSortSheet = true },
                     )
             }
+
+            // PIN Recovery grid banner (W0 07, ruling R2): pinned under the top bar on the
+            // album/photo/video grids until recovery is configured. Hidden in selection mode
+            // (the selection bars own the header) and on non-media categories.
+            RecoveryGridBanner(
+                onSetUp = onSetUpRecovery,
+                eligible = usesGrid && !state.selectionMode && !state.albumSelectionMode,
+            )
 
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when {

@@ -26,6 +26,13 @@ internal object SessionLock {
             VaultDestinations.GATE,
             VaultDestinations.ONBOARDING,
             VaultDestinations.CALCULATOR,
+            // PIN Recovery doorways (APP-321 W2): reached from the calculator with NO session,
+            // so they are in front of the vault. Without this they'd be flagged as a
+            // "restored corpse" (vault surface + null session) and bounced straight back to
+            // the calculator the instant the doorway opened. RECOVERY_SETUP is deliberately
+            // absent — it runs behind the unlocked vault and must re-lock on background.
+            VaultDestinations.RECOVERY_ENTRY,
+            VaultDestinations.RECOVERY_UNLOCK,
         )
 
     /**
