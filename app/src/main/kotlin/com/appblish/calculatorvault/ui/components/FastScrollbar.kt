@@ -3,15 +3,22 @@ package com.appblish.calculatorvault.ui.components
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.grid.LazyGridState
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -41,13 +48,17 @@ private const val HIDE_DELAY_MS = 1_000L
 /** Below this many lazy cells the container is short enough that fast-scroll is noise. */
 private const val FAST_SCROLL_MIN_ITEMS = 30
 
-// APP-293 item 14 — gallery-grade thumb geometry: a clearly grabbable pill (not a thin
-// line), a wider invisible touch column, and the date bubble that rides beside it while
-// dragging. All colors come from the Filora tokens (accent / onAccent / surface) — no
-// ad-hoc hues in this file.
-private val HANDLE_WIDTH = 8.dp
+// APP-293 item 14 / APP-320 — gallery-grade thumb geometry: a clearly grabbable pill (not
+// a thin line) **bearing an up/down double-arrow (chevron)** the way Samsung / Google
+// Photos / MIUI draw their fast-scroll handle, a wider invisible touch column, and the
+// date bubble that rides beside it while dragging. All colors come from the Filora tokens
+// (accent / onAccent / surface) — no ad-hoc hues in this file.
+private val HANDLE_WIDTH = 28.dp
 private val HANDLE_HEIGHT = 56.dp
-private val TOUCH_WIDTH = 32.dp
+private val CHEVRON_SIZE = 18.dp
+// Overlap the two stacked arrows so they read as one tight up/down double-chevron glyph.
+private val CHEVRON_OVERLAP = 8.dp
+private val TOUCH_WIDTH = 40.dp
 private val BUBBLE_HEIGHT = 36.dp
 
 /**
@@ -240,9 +251,12 @@ private fun FastScrollbarImpl(
                         }
                     },
         ) {
-            // The pill handle (item 14): a clearly grabbable rounded handle in the accent
-            // token — replaces the old 4dp line; no track behind it, gallery-style.
+            // The pill handle (item 14 / APP-320): a clearly grabbable rounded accent-token
+            // pill — replaces the old thin line — **bearing an up/down double-arrow chevron**
+            // (two stacked keyboard arrows, tinted onAccent) so it reads as a drag handle the
+            // way Samsung/Photos/MIUI do. No track behind it, gallery-style.
             Box(
+                contentAlignment = Alignment.Center,
                 modifier =
                     Modifier
                         .align(Alignment.TopCenter)
@@ -253,7 +267,26 @@ private fun FastScrollbarImpl(
                         .height(HANDLE_HEIGHT)
                         .background(colors.accent, VaultTheme.shapes.pill)
                         .testTag("fast-scroll-handle"),
-            )
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(-CHEVRON_OVERLAP),
+                    modifier = Modifier.testTag("fast-scroll-chevron"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowUp,
+                        contentDescription = null,
+                        tint = colors.onAccent,
+                        modifier = Modifier.size(CHEVRON_SIZE),
+                    )
+                    Icon(
+                        imageVector = Icons.Filled.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = colors.onAccent,
+                        modifier = Modifier.size(CHEVRON_SIZE),
+                    )
+                }
+            }
         }
     }
 }
