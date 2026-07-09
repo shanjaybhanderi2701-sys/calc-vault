@@ -5,8 +5,11 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.appblish.calculatorvault.vault.VaultSession
+import com.appblish.calculatorvault.vault.crypto.InMemoryRecoveryReKeyer
+import com.appblish.calculatorvault.vault.crypto.RecoveryReKeyer
 import com.appblish.calculatorvault.vault.crypto.RecoverySecrets
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
+import com.appblish.calculatorvault.vault.crypto.VaultKeyFileRecoveryReKeyer
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -168,13 +171,28 @@ object RecoveryGraph {
     @Volatile
     private var manager: RecoveryManager? = null
 
-    /** Install the device-backed manager. Idempotent; safe to call from onCreate. */
+    @Volatile
+    private var reKeyer: RecoveryReKeyer? = null
+
+    @Volatile
+    private var attemptStore: RecoveryAttemptStore? = null
+
+    /** Install the device-backed manager + reset seam + backoff store. Idempotent. */
     fun init(context: Context) {
+        val app = context.applicationContext
         if (manager == null) {
             synchronized(this) {
-                if (manager == null) {
-                    manager = VaultKeyFileRecoveryManager(context.applicationContext)
-                }
+                if (manager == null) manager = VaultKeyFileRecoveryManager(app)
+            }
+        }
+        if (reKeyer == null) {
+            synchronized(this) {
+                if (reKeyer == null) reKeyer = VaultKeyFileRecoveryReKeyer(app)
+            }
+        }
+        if (attemptStore == null) {
+            synchronized(this) {
+                if (attemptStore == null) attemptStore = RecoveryAttemptStores.device(app)
             }
         }
     }
@@ -184,9 +202,33 @@ object RecoveryGraph {
         this.manager = manager
     }
 
+    /** Replace the reset seam (instrumented / preview). */
+    fun overrideReKeyer(reKeyer: RecoveryReKeyer) {
+        this.reKeyer = reKeyer
+    }
+
+    /** Replace the backoff attempt store (instrumented / preview). */
+    fun overrideAttemptStore(attemptStore: RecoveryAttemptStore) {
+        this.attemptStore = attemptStore
+    }
+
     val recoveryManager: RecoveryManager
         get() =
             manager ?: synchronized(this) {
                 manager ?: InMemoryRecoveryManager().also { manager = it }
+            }
+
+    /** The W3 recovery unlock + PIN-reset seam; an in-memory dead-end fallback if uninitialised. */
+    val recoveryReKeyer: RecoveryReKeyer
+        get() =
+            reKeyer ?: synchronized(this) {
+                reKeyer ?: InMemoryRecoveryReKeyer().also { reKeyer = it }
+            }
+
+    /** The survive-uninstall backoff store; a non-persistent fallback if uninitialised. */
+    val recoveryAttemptStore: RecoveryAttemptStore
+        get() =
+            attemptStore ?: synchronized(this) {
+                attemptStore ?: InMemoryRecoveryAttemptStore().also { attemptStore = it }
             }
 }
