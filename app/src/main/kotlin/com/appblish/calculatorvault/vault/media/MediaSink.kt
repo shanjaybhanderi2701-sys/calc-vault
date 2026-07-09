@@ -35,6 +35,32 @@ internal fun writeStrategyOrder(destination: UnhideDestination): List<WriteStrat
     }
 
 /**
+ * The name-collision suffix rule (spec §2.4): if [name] is already taken in the target
+ * folder, append ` (n)` before the extension — `IMG.jpg → IMG (1).jpg → IMG (2).jpg …` —
+ * picking the first free index. Split out pure (the `exists` probe is injected) so the
+ * legacy-file un-hide route's collision handling is unit-testable without a device; the
+ * SAF-tree and MediaStore routes lean on the provider/OS to uniquify instead.
+ *
+ * The extension is the last `.` that is not the leading char, so a dotfile (`.env`) is
+ * treated as an all-stem name (`.env (1)`), never `. env`.
+ */
+internal fun uniqueChildName(
+    name: String,
+    exists: (String) -> Boolean,
+): String {
+    if (!exists(name)) return name
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val ext = if (dot > 0) name.substring(dot) else ""
+    var i = 1
+    while (true) {
+        val next = "$stem ($i)$ext"
+        if (!exists(next)) return next
+        i++
+    }
+}
+
+/**
  * The un-hide (restore-to-gallery) counterpart of [MediaSource]: writes a vault item's
  * decrypted bytes back to *public* storage so the file returns to the exact place the
  * user hid it from, and the system gallery re-indexes it.
@@ -276,19 +302,7 @@ class MediaSink(
     private fun uniqueFile(
         dir: File,
         name: String,
-    ): File {
-        val candidate = File(dir, name)
-        if (!candidate.exists()) return candidate
-        val dot = name.lastIndexOf('.')
-        val stem = if (dot > 0) name.substring(0, dot) else name
-        val ext = if (dot > 0) name.substring(dot) else ""
-        var i = 1
-        while (true) {
-            val next = File(dir, "$stem ($i)$ext")
-            if (!next.exists()) return next
-            i++
-        }
-    }
+    ): File = File(dir, uniqueChildName(name) { File(dir, it).exists() })
 
     /**
      * MediaStore rejects an insert whose RELATIVE_PATH's primary directory is not legal
