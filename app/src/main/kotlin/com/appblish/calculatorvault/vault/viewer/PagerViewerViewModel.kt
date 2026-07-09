@@ -35,6 +35,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.util.UUID
+import kotlin.coroutines.CoroutineContext
 
 /**
  * The pager viewer's page set: every item of the opened context (folder or category
@@ -114,6 +115,12 @@ class PagerViewerViewModel(
     private val folderId: String?,
     context: Context? = null,
     private val repository: VaultContentRepository = VaultGraph.contentRepository,
+    // The decrypt off-main hop, injectable so a unit test can pass its own test scheduler
+    // (StandardTestDispatcher/UnconfinedTestDispatcher). Under the real dispatcher the
+    // decrypt runs on IO; under the test dispatcher advanceUntilIdle() fully awaits the
+    // decrypt + its cacheBytes/decryptJobs.remove continuation, making the fullDecrypts
+    // dedup deterministic (APP-317: the P0 proof was flaky on a hard-coded Dispatchers.IO).
+    private val ioDispatcher: CoroutineContext = Dispatchers.IO,
 ) : ViewModel() {
     // Application context only — needed for the cache dir and the restore-outcome Toast.
     private val appContext: Context? = context?.applicationContext
@@ -366,7 +373,7 @@ class PagerViewerViewModel(
             null -> PageContent.Error
             VaultCategory.VIDEOS, VaultCategory.AUDIOS -> decryptToCache(itemId)
             else -> {
-                val bytes = withContext(Dispatchers.IO) { repository.openDecrypted(itemId) }
+                val bytes = withContext(ioDispatcher) { repository.openDecrypted(itemId) }
                 if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
             }
         }
@@ -503,7 +510,7 @@ class PagerViewerViewModel(
             val item = repository.allItems().first().firstOrNull { it.id == id }
             val session =
                 item?.let {
-                    withContext(Dispatchers.IO) { VaultShare.prepare(context, repository, listOf(it)) }
+                    withContext(ioDispatcher) { VaultShare.prepare(context, repository, listOf(it)) }
                 }
             if (session == null) {
                 _message.value = "Couldn't share."
@@ -619,7 +626,7 @@ class PagerViewerViewModel(
         // Stream blob → cipher → file so a large video is never held in memory (spec §11);
         // decryptToFile deletes any partial file on failure.
         val ok =
-            withContext(Dispatchers.IO) {
+            withContext(ioDispatcher) {
                 target.parentFile?.mkdirs()
                 repository.decryptToFile(itemId, target)
             }

@@ -59,6 +59,11 @@ class PagerViewerViewModelTest {
         folderId = folderId,
         context = null,
         repository = repository,
+        // Decrypt on the SAME test scheduler as Main so advanceUntilIdle()/first{} fully
+        // await the decrypt + its cacheBytes/decryptJobs.remove continuation. Without this
+        // the decrypt hops to a real IO thread the scheduler can't track, and the
+        // fullDecrypts dedup races on a loaded CI runner (APP-317).
+        ioDispatcher = dispatcher,
     )
 
     @Test
@@ -291,6 +296,7 @@ class PagerViewerViewModelTest {
                     folderId = null,
                     context = null,
                     repository = counting,
+                    ioDispatcher = dispatcher,
                 )
 
             viewModel.setActivePage(stored[0].id)
@@ -369,6 +375,7 @@ class PagerViewerViewModelTest {
                     folderId = null,
                     context = null,
                     repository = counting,
+                    ioDispatcher = dispatcher,
                 )
             viewModel.state.first { it.loaded && it.pages.size == 3 }
 
