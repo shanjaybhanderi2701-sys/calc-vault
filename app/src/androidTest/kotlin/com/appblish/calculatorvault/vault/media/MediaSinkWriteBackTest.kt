@@ -30,14 +30,43 @@ class MediaSinkWriteBackTest {
 
     private val displayName = "calcvault_unhide_probe_${System.nanoTime()}.jpg"
 
+    private val collisionName = "calcvault_collision_${System.nanoTime()}.jpg"
+
     @After
     fun cleanup() {
-        // Leave the gallery as we found it: drop the row we published.
-        context.contentResolver.delete(
+        // Leave the gallery as we found it: drop the probe row and every row the collision
+        // test published into its dedicated folder (original + `(1)` suffix).
+        val resolver = context.contentResolver
+        resolver.delete(
             MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
             "${MediaStore.MediaColumns.DISPLAY_NAME} = ?",
             arrayOf(displayName),
         )
+        resolver.delete(
+            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+            "${MediaStore.MediaColumns.RELATIVE_PATH} LIKE ?",
+            arrayOf("DCIM/CalcVaultCollisionTest/%"),
+        )
+    }
+
+    /** All DISPLAY_NAMEs MediaStore.Images currently indexes under [relPath]. */
+    private fun displayNamesIn(relPath: String): List<String> =
+        context.contentResolver
+            .query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+                arrayOf(relPath),
+                null,
+            )?.use { c ->
+                val col = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                buildList { while (c.moveToNext()) add(c.getString(col)) }
+            } ?: emptyList()
+
+    private fun solidJpegBytes(color: Int): ByteArray {
+        val bmp = Bitmap.createBitmap(64, 64, Bitmap.Config.ARGB_8888)
+        Canvas(bmp).drawColor(color)
+        return ByteArrayOutputStream().also { bmp.compress(Bitmap.CompressFormat.JPEG, 90, it) }.toByteArray()
     }
 
     @Test
@@ -76,6 +105,60 @@ class MediaSinkWriteBackTest {
         val readBack =
             context.contentResolver.openInputStream(published!!)?.use { it.readBytes() } ?: ByteArray(0)
         assertTrue("Published file is empty", readBack.isNotEmpty())
+    }
+
+    /**
+     * APP-303 on-device collision spot-check (the residual the APP-302 gate could not capture
+     * because a concurrent run on emulator-5554 corrupted the fixture): un-hide the *same*
+     * display name into a folder that already holds a file of that name and confirm the
+     * restore lands as `NAME (1).jpg` **without clobbering** the pre-existing file.
+     *
+     * This exercises the real device path — MediaStore uniquifies a colliding DISPLAY_NAME
+     * on API 29+ (the JVM [UniqueChildNameTest] pins the legacy in-app suffix logic). Runs
+     * on the dedicated-AVD CI matrix, so it is the deterministic version of the manual
+     * spot-check the acceptance bar asked for.
+     */
+    @Test
+    fun unhideCollisionSuffixesRestoredFileAndKeepsExistingIntact() {
+        val name = collisionName
+        val folder = "DCIM/CalcVaultCollisionTest/"
+
+        fun itemFor(bytesColor: Int) =
+            VaultItem(
+                id = "collision",
+                category = VaultCategory.PHOTOS,
+                originalName = name,
+                dateLabel = "Today",
+                sortKey = 0L,
+                mimeType = "image/jpeg",
+                relativePath = folder,
+            ) to solidJpegBytes(bytesColor)
+
+        val sink = MediaSink(context)
+
+        // 1) Pre-place the original (green) file in the target folder.
+        val (firstItem, greenBytes) = itemFor(Color.rgb(20, 180, 90))
+        val firstUri = sink.writeBack(firstItem, greenBytes)
+        assertNotNull("pre-existing file did not reach public storage", firstUri)
+
+        // 2) Un-hide a *different* (red) file with the SAME display name into the SAME folder.
+        val (secondItem, redBytes) = itemFor(Color.rgb(200, 40, 40))
+        val secondUri = sink.writeBack(secondItem, redBytes)
+        assertNotNull("collision write-back returned null", secondUri)
+
+        // 3) Two distinct MediaStore rows — the second did not overwrite the first.
+        assertTrue("collision reused the same row — existing file was clobbered", firstUri != secondUri)
+
+        // 4) The pre-existing file's bytes are intact (still green, not the red overwrite).
+        val firstReadBack =
+            context.contentResolver.openInputStream(firstUri!!)?.use { it.readBytes() } ?: ByteArray(0)
+        assertTrue("pre-existing file was clobbered by the collision write", firstReadBack.contentEquals(greenBytes))
+
+        // 5) The folder now holds exactly the original name AND the `(1)`-suffixed restore.
+        val names = displayNamesIn(folder)
+        assertTrue("original name missing after collision restore: $names", names.contains(name))
+        val suffixed = name.replace(".jpg", " (1).jpg")
+        assertTrue("restored file was not suffixed to '$suffixed' (got $names)", names.contains(suffixed))
     }
 
     /**

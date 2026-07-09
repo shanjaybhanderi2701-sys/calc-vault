@@ -35,6 +35,35 @@ internal fun writeStrategyOrder(destination: UnhideDestination): List<WriteStrat
     }
 
 /**
+ * The collision-safe display name for restoring [name] into a directory where [exists]
+ * reports whether a candidate name is already taken (spec §2.4 name-collision contract):
+ * `IMG.jpg → IMG (1).jpg → IMG (2).jpg …`. The suffix is inserted before the extension so
+ * the file keeps its type, and an extension-less name (or a leading-dot name like
+ * `.nomedia`, where the dot is not a real extension separator) is suffixed at the end.
+ *
+ * Split out pure so the suffix contract is unit-testable without a filesystem (APP-303).
+ * This is the in-app collision guard used by the legacy (API ≤28) [MediaSink.uniqueFile]
+ * write path; on API 29+ the MediaStore/SAF providers uniquify a colliding DISPLAY_NAME
+ * themselves, so both paths land the restored file beside — never on top of — an existing
+ * same-named file.
+ */
+internal fun uniqueChildName(
+    name: String,
+    exists: (String) -> Boolean,
+): String {
+    if (!exists(name)) return name
+    val dot = name.lastIndexOf('.')
+    val stem = if (dot > 0) name.substring(0, dot) else name
+    val ext = if (dot > 0) name.substring(dot) else ""
+    var i = 1
+    while (true) {
+        val candidate = "$stem ($i)$ext"
+        if (!exists(candidate)) return candidate
+        i++
+    }
+}
+
+/**
  * The un-hide (restore-to-gallery) counterpart of [MediaSource]: writes a vault item's
  * decrypted bytes back to *public* storage so the file returns to the exact place the
  * user hid it from, and the system gallery re-indexes it.
@@ -276,19 +305,7 @@ class MediaSink(
     private fun uniqueFile(
         dir: File,
         name: String,
-    ): File {
-        val candidate = File(dir, name)
-        if (!candidate.exists()) return candidate
-        val dot = name.lastIndexOf('.')
-        val stem = if (dot > 0) name.substring(0, dot) else name
-        val ext = if (dot > 0) name.substring(dot) else ""
-        var i = 1
-        while (true) {
-            val next = File(dir, "$stem ($i)$ext")
-            if (!next.exists()) return next
-            i++
-        }
-    }
+    ): File = File(dir, uniqueChildName(name) { File(dir, it).exists() })
 
     /**
      * MediaStore rejects an insert whose RELATIVE_PATH's primary directory is not legal
