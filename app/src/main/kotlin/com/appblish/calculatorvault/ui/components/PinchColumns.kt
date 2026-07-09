@@ -101,7 +101,8 @@ class PinchColumnsState internal constructor(
 fun rememberPinchColumnsState(
     initialColumns: Int = 3,
     minColumns: Int = 2,
-    maxColumns: Int = 5,
+    // APP-314 item 3: the vault grids pinch from a dense 6 up to a roomy 2 (was capped at 5).
+    maxColumns: Int = 6,
 ): PinchColumnsState {
     val scope = rememberCoroutineScope()
     return remember { PinchColumnsState(initialColumns, minColumns, maxColumns, scope) }

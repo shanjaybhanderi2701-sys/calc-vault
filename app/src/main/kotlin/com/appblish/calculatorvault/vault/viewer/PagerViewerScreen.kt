@@ -178,6 +178,9 @@ private fun ViewerPager(
     onInfo: (VaultItem) -> Unit,
     onUnhide: (VaultItem) -> Unit,
 ) {
+    // APP-314 P0: the whole decrypted window {n-1, n, n+1} — every composed page renders its
+    // own already-decrypted bytes from here, so a forward/back swipe never shows a spinner.
+    val pageWindow by viewModel.pageWindow.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState(initialPage = state.startIndex) { state.pages.size }
     var zoomed by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
@@ -228,12 +231,9 @@ private fun ViewerPager(
             val isCurrent = pagerState.settledPage == page
             ViewerPage(
                 item = item,
-                content =
-                    if (activePage != null && activePage.itemId == item.id) {
-                        activePage.content
-                    } else {
-                        PageContent.Loading
-                    },
+                // Render from the pre-decrypted window: the settled page and both neighbours
+                // already hold Bytes; only a page outside {n-1, n, n+1} shows Loading.
+                content = pageWindow[item.id] ?: PageContent.Loading,
                 isCurrent = isCurrent,
                 // Non-settled pages show their own persisted orientation (peek/swipe-by).
                 rotationDegrees = if (isCurrent) rotationDegrees else item.rotationDegrees,

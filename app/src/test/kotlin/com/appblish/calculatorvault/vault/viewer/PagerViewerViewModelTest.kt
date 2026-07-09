@@ -307,4 +307,80 @@ class PagerViewerViewModelTest {
             assertThat(back?.content).isInstanceOf(PageContent.Bytes::class.java)
             assertThat(decrypts).isEqualTo(2)
         }
+
+    @Test
+    fun `settling pre-decrypts both neighbours into the window as bytes`() =
+        runTest(dispatcher) {
+            // APP-314 P0 — the gap the existing (green) cache test does NOT cover: settling on
+            // n must leave n-1 AND n+1 already holding Bytes (not Loading) so a swipe is instant
+            // in either direction. Single-active-page never pre-decrypted the forward neighbour.
+            val repo = InMemoryVaultContentRepository(seed = false)
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("a", sortKey = 3),
+                        staged("b", sortKey = 2),
+                        staged("c", sortKey = 1),
+                    ),
+                )
+            val ids = stored.associate { it.originalName to it.id }
+            val viewModel = vm(repo, startItemId = ids.getValue("b.jpg"))
+            // Load the page set so the window has real neighbours (a, c) to reach for.
+            viewModel.state.first { it.loaded && it.pages.size == 3 }
+
+            viewModel.setActivePage(ids.getValue("b.jpg"))
+            dispatcher.scheduler.advanceUntilIdle()
+
+            // Newest-first order is [a, b, c]; settling on the middle page b pre-decrypts BOTH
+            // neighbours — every windowed page is Bytes, none is left on PageContent.Loading.
+            val window = viewModel.pageWindow.value
+            assertThat(window[ids.getValue("a.jpg")]).isInstanceOf(PageContent.Bytes::class.java)
+            assertThat(window[ids.getValue("b.jpg")]).isInstanceOf(PageContent.Bytes::class.java)
+            assertThat(window[ids.getValue("c.jpg")]).isInstanceOf(PageContent.Bytes::class.java)
+        }
+
+    @Test
+    fun `a forward-then-back slide never re-decrypts any revisited page`() =
+        runTest(dispatcher) {
+            // APP-314 P0 proof #1 (fullDecrypts discipline): A→B→C→B→A decrypts each distinct
+            // page exactly once — the pre-decrypt window + LRU serve every revisit from cache.
+            val repo = InMemoryVaultContentRepository(seed = false)
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("a", sortKey = 3),
+                        staged("b", sortKey = 2),
+                        staged("c", sortKey = 1),
+                    ),
+                )
+            val ids = stored.associate { it.originalName to it.id }
+            val decryptCounts = mutableMapOf<String, Int>()
+            val counting =
+                object : VaultContentRepository by repo {
+                    override suspend fun openDecrypted(itemId: String): ByteArray? {
+                        decryptCounts[itemId] = (decryptCounts[itemId] ?: 0) + 1
+                        return repo.openDecrypted(itemId)
+                    }
+                }
+            val viewModel =
+                PagerViewerViewModel(
+                    startItemId = ids.getValue("a.jpg"),
+                    category = VaultCategory.PHOTOS,
+                    folderId = null,
+                    context = null,
+                    repository = counting,
+                )
+            viewModel.state.first { it.loaded && it.pages.size == 3 }
+
+            listOf("a.jpg", "b.jpg", "c.jpg", "b.jpg", "a.jpg").forEach { name ->
+                viewModel.setActivePage(ids.getValue(name))
+                dispatcher.scheduler.advanceUntilIdle()
+            }
+
+            assertThat(decryptCounts).containsExactly(
+                ids.getValue("a.jpg"), 1,
+                ids.getValue("b.jpg"), 1,
+                ids.getValue("c.jpg"), 1,
+            )
+        }
 }

@@ -143,8 +143,23 @@ class PagerViewerViewModel(
 
     private val _activePage = MutableStateFlow<ActivePage?>(null)
 
-    /** The settled page's decrypted content; pages other than [ActivePage.itemId] show a spinner. */
+    /** The settled page's decrypted content (drives rotate-enable + mirrored in [pageWindow]). */
     val activePage: StateFlow<ActivePage?> = _activePage.asStateFlow()
+
+    // --- APP-314 P0 · decrypted window {n-1, n, n+1} -----------------------------------
+    // The board's on-device miss was a *visible re-load* on every forward slide. The old
+    // single-active-page model only ever held the settled page's bytes, so a composed
+    // neighbour (beyondViewportPageCount = 1) had nothing but PageContent.Loading until the
+    // user landed on it → spinner → decrypt → decode on arrival. The fix pre-decrypts BOTH
+    // neighbours the moment the pager settles, so their pages already carry Bytes before the
+    // swipe. The screen renders each page from this map (Loading only for a page outside the
+    // window); the byte/media LRU below is the swipe-back reuse + memory backstop.
+    private val _pageWindow = MutableStateFlow<Map<String, PageContent>>(emptyMap())
+    val pageWindow: StateFlow<Map<String, PageContent>> = _pageWindow.asStateFlow()
+
+    // The settled page id (window anchor) and the {n-1,n,n+1} id set currently kept decrypted.
+    private var settledId: String? = null
+    private var windowIds: Set<String> = emptySet()
 
     // The currently settled page's item id — the target of every §6–§9 single-photo action.
     private val activeItemId = MutableStateFlow<String?>(null)
@@ -188,7 +203,9 @@ class PagerViewerViewModel(
         _message.value = null
     }
 
-    private var decryptJob: Job? = null
+    // One in-flight decrypt per windowed item; neighbours are never cancelled on settle —
+    // only pages that fall out of the window are (see [setActivePage]).
+    private val decryptJobs = mutableMapOf<String, Job>()
 
     // Every temp file this session created, so onCleared can also sweep up a file whose
     // decrypt job was cancelled mid-write (IO may finish the write after the cancel).
@@ -250,49 +267,119 @@ class PagerViewerViewModel(
     }
 
     /**
-     * Make [itemId] the one decrypted page. Called by the screen when the pager settles on
-     * a page; the previous page's decrypt is cancelled and its temp file deleted before the
-     * new decrypt starts, so at most one cleartext blob exists at a time.
+     * Settle the pager on [itemId]: decrypt it **and** proactively pre-decrypt its neighbours
+     * n-1 / n+1 into the [pageWindow] (bounded, no cancel of the neighbours themselves), so a
+     * forward or backward swipe finds Bytes already in hand — never a Loading spinner. Pages
+     * that fall outside the new window have their in-flight decrypt cancelled and their window
+     * entry dropped; the byte/media LRU still holds their plaintext for an instant revisit.
      */
     fun setActivePage(itemId: String) {
-        if (_activePage.value?.itemId == itemId) return
+        if (settledId == itemId) return
         // Page change is a rotate-commit boundary (W3-D §8): flush the previous page's
         // pending net orientation before this page takes over — never lost on swipe.
         commitPendingRotation()
-        decryptJob?.cancel()
+        settledId = itemId
         // Retarget the §6–§9 single-photo actions at the newly settled page.
         activeItemId.value = itemId
-        // In-session cache hit (P0-4): reuse the already-decrypted payload — instant
-        // swipe-back, zero additional decrypts.
+
+        val pages = state.value.pages
+        val idx = pages.indexOfFirst { it.id == itemId }
+        // The decrypted window {n-1, n, n+1}; when the page set isn't loaded yet (a test
+        // driving the VM directly) it degenerates to the settled page alone.
+        val windowItems =
+            if (idx < 0) {
+                listOf(itemId)
+            } else {
+                listOfNotNull(pages.getOrNull(idx - 1)?.id, itemId, pages.getOrNull(idx + 1)?.id)
+            }
+        windowIds = windowItems.toSet()
+
+        // Anything no longer in the window: cancel its in-flight decrypt and drop its window
+        // entry (the LRU keeps the plaintext for a cheap revisit — this only bounds live work).
+        decryptJobs.keys.filter { it !in windowIds }.forEach { decryptJobs.remove(it)?.cancel() }
+        _pageWindow.value = _pageWindow.value.filterKeys { it in windowIds }
+
+        // Settled page drives [activePage] immediately (cache hit = no Loading flash).
         val cached = cachedContent(itemId)
         if (cached != null) {
             _activePage.value = ActivePage(itemId, cached)
-            return
+            putWindow(itemId, cached)
+        } else {
+            _activePage.value = ActivePage(itemId, PageContent.Loading)
+            decryptInto(itemId)
         }
-        _activePage.value = ActivePage(itemId, PageContent.Loading)
-        decryptJob =
+
+        // Neighbours: pre-decrypt now so their composed page already holds Bytes on arrival.
+        // Skip heavy video/audio neighbours — those stream to a temp file and decode only
+        // once settled (isCurrent), so eager decrypt would just churn large temp files.
+        windowItems.forEach { neighbourId ->
+            if (neighbourId == itemId) return@forEach
+            val nCached = cachedContent(neighbourId)
+            when {
+                nCached != null -> putWindow(neighbourId, nCached)
+                isHeavyMedia(neighbourId) -> Unit
+                else -> decryptInto(neighbourId)
+            }
+        }
+    }
+
+    /** Put [content] into the window map for [itemId] (the screen renders pages from here). */
+    private fun putWindow(
+        itemId: String,
+        content: PageContent,
+    ) {
+        _pageWindow.value = _pageWindow.value + (itemId to content)
+    }
+
+    /** True for video/audio — pre-decrypting these eagerly would write large temp files. */
+    private fun isHeavyMedia(itemId: String): Boolean =
+        when (state.value.pages.firstOrNull { it.id == itemId }?.category) {
+            VaultCategory.VIDEOS, VaultCategory.AUDIOS -> true
+            else -> false
+        }
+
+    /**
+     * Ensure exactly one decrypt runs for [itemId]; on completion cache the plaintext and
+     * publish it to the window (and to [activePage] if it is still the settled page). A page
+     * already decrypting (launched as a neighbour, then settled onto) is not decrypted twice —
+     * its single job publishes to whichever role the page holds when it finishes.
+     */
+    private fun decryptInto(itemId: String) {
+        if (decryptJobs.containsKey(itemId)) return
+        val job =
             viewModelScope.launch {
-                val item = repository.allItems().first().firstOrNull { it.id == itemId }
-                val content =
-                    when (item?.category) {
-                        null -> PageContent.Error
-                        VaultCategory.VIDEOS, VaultCategory.AUDIOS -> decryptToCache(itemId)
-                        else -> {
-                            val bytes = withContext(Dispatchers.IO) { repository.openDecrypted(itemId) }
-                            if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
-                        }
-                    }
+                val content = decryptContent(itemId)
                 when (content) {
                     is PageContent.Bytes -> cacheBytes(itemId, content)
                     is PageContent.Media -> cacheMedia(itemId, content.file)
                     else -> Unit
                 }
-                // Publish only if this page is still the active one (guards a stale decrypt
-                // finishing after a fast swipe re-keyed the active page).
-                if (_activePage.value?.itemId == itemId) {
-                    _activePage.value = ActivePage(itemId, content)
-                }
+                decryptJobs.remove(itemId)
+                publish(itemId, content)
             }
+        decryptJobs[itemId] = job
+    }
+
+    /** Decrypt one item to its [PageContent] — in-memory bytes, or a media temp file. */
+    private suspend fun decryptContent(itemId: String): PageContent {
+        val item = repository.allItems().first().firstOrNull { it.id == itemId }
+        return when (item?.category) {
+            null -> PageContent.Error
+            VaultCategory.VIDEOS, VaultCategory.AUDIOS -> decryptToCache(itemId)
+            else -> {
+                val bytes = withContext(Dispatchers.IO) { repository.openDecrypted(itemId) }
+                if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
+            }
+        }
+    }
+
+    /** Route a finished decrypt to the window and, if still settled, to [activePage]. */
+    private fun publish(
+        itemId: String,
+        content: PageContent,
+    ) {
+        if (itemId in windowIds) putWindow(itemId, content)
+        if (itemId == settledId) _activePage.value = ActivePage(itemId, content)
     }
 
     /** Send [itemId] to the recycle bin (the safe default of the delete-choice modal). */
@@ -546,7 +633,9 @@ class PagerViewerViewModel(
     // [commitScope] because viewModelScope is already cancelled here.
     override fun onCleared() {
         commitPendingRotation()
-        decryptJob?.cancel()
+        decryptJobs.values.forEach { it.cancel() }
+        decryptJobs.clear()
+        _pageWindow.value = emptyMap()
         byteCache.clear()
         byteCacheSize = 0L
         mediaCache.clear()
