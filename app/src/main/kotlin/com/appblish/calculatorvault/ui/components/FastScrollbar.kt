@@ -56,6 +56,7 @@ private const val FAST_SCROLL_MIN_ITEMS = 30
 private val HANDLE_WIDTH = 28.dp
 private val HANDLE_HEIGHT = 56.dp
 private val CHEVRON_SIZE = 18.dp
+
 // Overlap the two stacked arrows so they read as one tight up/down double-chevron glyph.
 private val CHEVRON_OVERLAP = 8.dp
 private val TOUCH_WIDTH = 40.dp
