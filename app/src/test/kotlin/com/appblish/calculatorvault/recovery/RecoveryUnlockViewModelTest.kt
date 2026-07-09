@@ -162,6 +162,38 @@ class RecoveryUnlockViewModelTest {
         }
 
     @Test
+    fun `a seam exception lands on the dead-end and clears the spinner`() =
+        runTest {
+            // Simulate All-Files-Access revoked mid-flow: the seam throws instead of returning.
+            // The verify must not cancel the coroutine and strand verifying=true (APP-331 O1).
+            val pinReset =
+                object : RecoveryPinReset {
+                    override suspend fun lockoutRemainingMillis(method: RecoveryMethod): Long = 0L
+
+                    override suspend fun verify(
+                        method: RecoveryMethod,
+                        secret: String,
+                    ): RecoveryVerifyOutcome = throw java.io.IOException("storage lost mid-verify")
+
+                    override suspend fun resetPin(newPin: String): RecoveryResetOutcome =
+                        RecoveryResetOutcome.NOT_VERIFIED
+                }
+            val model =
+                RecoveryUnlockViewModel(
+                    method = RecoveryMethod.SECURITY_ANSWER,
+                    pinReset = pinReset,
+                    recoveryManager = InMemoryRecoveryManager(configured = true),
+                    store = InMemoryCredentialStore(),
+                )
+
+            model.onSecretChanged("whatever")
+            model.onSubmitSecret()
+
+            assertThat(model.state.value.stage).isEqualTo(RecoveryUnlockStage.UNAVAILABLE)
+            assertThat(model.state.value.verifying).isFalse()
+        }
+
+    @Test
     fun `a blank secret is refused without calling the seam`() =
         runTest {
             val pinReset = FakePinReset()

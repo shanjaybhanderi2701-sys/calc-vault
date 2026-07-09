@@ -9,6 +9,7 @@ import com.appblish.calculatorvault.vault.crypto.RecoveryMethod
 import com.appblish.calculatorvault.vault.crypto.RecoveryPinReset
 import com.appblish.calculatorvault.vault.crypto.RecoveryResetOutcome
 import com.appblish.calculatorvault.vault.crypto.RecoveryVerifyOutcome
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -90,7 +91,18 @@ class RecoveryUnlockViewModel(
         }
         _state.update { it.copy(verifying = true, error = null) }
         viewModelScope.launch {
-            when (val outcome = pinReset.verify(current.method, current.secretInput)) {
+            val outcome =
+                try {
+                    pinReset.verify(current.method, current.secretInput)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // The seam maps storage loss to Unavailable, but never let an escaped exception
+                    // cancel this coroutine and strand `verifying = true` as a dead spinner — fall
+                    // back to the honest UNAVAILABLE dead-end (APP-331 O1, belt-and-suspenders).
+                    RecoveryVerifyOutcome.Unavailable
+                }
+            when (outcome) {
                 RecoveryVerifyOutcome.Verified ->
                     _state.update {
                         it.copy(

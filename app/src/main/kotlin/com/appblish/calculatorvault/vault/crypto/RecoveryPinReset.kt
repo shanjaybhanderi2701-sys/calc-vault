@@ -5,6 +5,7 @@ import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import java.security.GeneralSecurityException
 import javax.crypto.SecretKey
 
@@ -130,30 +131,44 @@ class VaultKeyFileRecoveryPinReset(
     ): RecoveryVerifyOutcome =
         withContext(Dispatchers.IO) {
             if (!StoragePermissions.hasAllFilesAccess(appContext)) return@withContext RecoveryVerifyOutcome.Unavailable
-            val keyFile = keyFile()
-            if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) {
-                return@withContext RecoveryVerifyOutcome.Unavailable
-            }
-            val store = backoffStore()
-            val before = store.read(method)
-            val locked = RecoveryBackoff.remainingLockoutMillis(before.failures, before.lastFailureAtMillis, now())
-            if (locked > 0L) return@withContext RecoveryVerifyOutcome.LockedOut(locked)
-
             try {
-                verifiedDek =
-                    when (method) {
-                        RecoveryMethod.SECURITY_ANSWER -> keyFile.unlockWithAnswer(secret)
-                        RecoveryMethod.RECOVERY_CODE -> keyFile.unlockWithRecoveryCode(secret)
-                    }
-                store.clear(method)
-                RecoveryVerifyOutcome.Verified
-            } catch (e: GeneralSecurityException) {
-                // WrongPassphraseException / NoSuchWrapException — a wrong secret, count it.
-                store.recordFailure(method, now())
-                val after = store.read(method)
-                RecoveryVerifyOutcome.WrongSecret(
-                    RecoveryBackoff.remainingLockoutMillis(after.failures, after.lastFailureAtMillis, now()),
-                )
+                val keyFile = keyFile()
+                if (!keyFile.exists() || !keyFile.isRecoveryConfigured()) {
+                    return@withContext RecoveryVerifyOutcome.Unavailable
+                }
+                val store = backoffStore()
+                val before = store.read(method)
+                val locked = RecoveryBackoff.remainingLockoutMillis(before.failures, before.lastFailureAtMillis, now())
+                if (locked > 0L) return@withContext RecoveryVerifyOutcome.LockedOut(locked)
+
+                try {
+                    verifiedDek =
+                        when (method) {
+                            RecoveryMethod.SECURITY_ANSWER -> keyFile.unlockWithAnswer(secret)
+                            RecoveryMethod.RECOVERY_CODE -> keyFile.unlockWithRecoveryCode(secret)
+                        }
+                    store.clear(method)
+                    RecoveryVerifyOutcome.Verified
+                } catch (e: GeneralSecurityException) {
+                    // WrongPassphraseException / NoSuchWrapException — a wrong secret, count it.
+                    store.recordFailure(method, now())
+                    val after = store.read(method)
+                    RecoveryVerifyOutcome.WrongSecret(
+                        RecoveryBackoff.remainingLockoutMillis(after.failures, after.lastFailureAtMillis, now()),
+                    )
+                }
+            } catch (e: IOException) {
+                // All-Files-Access revoked between the check and the read, or an unreadable/malformed
+                // key or backoff file: fail closed to the honest UNAVAILABLE dead-end (spec §1.5)
+                // instead of letting the exception escape the bare viewModelScope.launch and hang the
+                // verify spinner (APP-331 O1).
+                RecoveryVerifyOutcome.Unavailable
+            } catch (e: IllegalStateException) {
+                // `check(...)` in the key-file reader (e.g. no file to read) — same fail-closed surface.
+                RecoveryVerifyOutcome.Unavailable
+            } catch (e: IllegalArgumentException) {
+                // `require(...)` on an empty/malformed key file — same fail-closed surface.
+                RecoveryVerifyOutcome.Unavailable
             }
         }
 

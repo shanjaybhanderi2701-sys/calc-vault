@@ -1,6 +1,7 @@
 package com.appblish.calculatorvault.vault.crypto
 
 import java.io.File
+import java.io.IOException
 
 /** One secret's brute-force counter: how many consecutive failures and when the last one was. */
 data class RecoveryAttempt(
@@ -88,8 +89,12 @@ class FileRecoveryBackoffStore(
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(body)
         if (!tmp.renameTo(file)) {
+            // Keep the prior counter file intact rather than risk a torn in-place write: a crash mid
+            // `writeText` could truncate the file so it reads back empty and silently resets the
+            // lockout to zero (APP-331 O2). Fail closed like VaultKeyFile.writeSlots (throw, don't
+            // half-write) — the recording caller already treats a write loss as a fail-closed dead-end.
             tmp.delete()
-            file.writeText(body)
+            throw IOException("Could not atomically replace the recovery backoff file")
         }
     }
 
