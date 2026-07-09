@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes]
+    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes, app-301-saf-relock]
   pull_request:
   workflow_dispatch:
 
