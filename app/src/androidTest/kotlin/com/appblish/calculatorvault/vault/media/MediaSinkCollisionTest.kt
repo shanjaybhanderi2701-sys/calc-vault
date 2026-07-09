@@ -95,16 +95,17 @@ class MediaSinkCollisionTest {
 
     private fun displayNamesInAlbum(): List<String> {
         val out = mutableListOf<String>()
-        context.contentResolver.query(
-            MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
-            arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
-            "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
-            arrayOf(album),
-            null,
-        )?.use { c ->
-            val col = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-            while (c.moveToNext()) out += c.getString(col)
-        }
+        context.contentResolver
+            .query(
+                MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                arrayOf(MediaStore.MediaColumns.DISPLAY_NAME),
+                "${MediaStore.MediaColumns.RELATIVE_PATH} = ?",
+                arrayOf(album),
+                null,
+            )?.use { c ->
+                val col = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
+                while (c.moveToNext()) out += c.getString(col)
+            }
         return out
     }
 
