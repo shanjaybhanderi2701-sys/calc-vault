@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material3.Icon
@@ -33,6 +34,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
+import com.appblish.calculatorvault.ui.components.FastScrollbar
 import com.appblish.calculatorvault.ui.components.PillButton
 import com.appblish.calculatorvault.ui.components.pinchColumns
 import com.appblish.calculatorvault.ui.components.rememberPinchColumnsState
@@ -70,29 +72,40 @@ fun ChooseCoverScreen(
     BackHandler(onBack = onCancel)
 
     // APP-293 item 10: the cover picker pinches like every other grid.
-    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 6)
+    // APP-314 item 4: the cover picker is a long grid too — give it the same grabbable
+    // fast-scroll handle + date bubble as the category grids (was the only long grid without).
+    val gridState = rememberLazyGridState()
     Column(modifier = modifier.fillMaxSize().background(colors.canvas)) {
         VaultTopBar(title = "Choose cover", onBack = onCancel)
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(pinch.columns),
-            contentPadding = PaddingValues(vertical = spacing.md),
-            modifier =
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .padding(horizontal = spacing.lg)
-                    .pinchColumns(pinch)
-                    .testTag("choose-cover-grid"),
-        ) {
-            items(items, key = { it.id }) { item ->
-                CoverCandidateTile(
-                    item = item,
-                    selected = item.id == selectedId,
-                    isCurrent = item.id == currentCoverId,
-                    onClick = { selectedId = item.id },
-                    loadThumbnail = loadThumbnail,
-                )
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(pinch.columns),
+                state = gridState,
+                contentPadding = PaddingValues(vertical = spacing.md),
+                modifier =
+                    Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = spacing.lg)
+                        .pinchColumns(pinch)
+                        .testTag("choose-cover-grid"),
+            ) {
+                items(items, key = { it.id }) { item ->
+                    CoverCandidateTile(
+                        item = item,
+                        selected = item.id == selectedId,
+                        isCurrent = item.id == currentCoverId,
+                        onClick = { selectedId = item.id },
+                        loadThumbnail = loadThumbnail,
+                    )
+                }
             }
+            FastScrollbar(
+                state = gridState,
+                modifier = Modifier.align(Alignment.CenterEnd),
+                // The picker order is display order (§7), so the index maps 1:1 onto items.
+                labelForIndex = { index -> items.getOrNull(index)?.dateLabel },
+            )
         }
         val armedId = selectedId?.takeUnless { it == currentCoverId }
         PillButton(

@@ -254,7 +254,7 @@ private fun FolderGrid(
     val context = LocalContext.current
     val gridState = rememberLazyGridState()
     // APP-293 item 10: two-finger pinch rescales the folder grid fluidly (2–4 columns).
-    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 4)
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 6)
     Box(modifier = modifier.fillMaxWidth()) {
         LazyVerticalGrid(
             columns = GridCells.Fixed(pinch.columns),
@@ -392,7 +392,7 @@ private fun SectionedItemGrid(
 
     val gridState = rememberLazyGridState()
     // APP-293 item 10: pinch-to-change-columns, same fluid contract as the hidden grid.
-    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 6)
     Box(modifier = modifier.fillMaxWidth()) {
         LazyVerticalGrid(
             columns = GridCells.Fixed(pinch.columns),

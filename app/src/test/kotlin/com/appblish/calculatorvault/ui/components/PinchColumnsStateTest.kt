@@ -56,6 +56,15 @@ class PinchColumnsStateTest {
     }
 
     @Test
+    fun `the grid range reaches a dense 6 columns (APP-314 item 3)`() {
+        // The vault grids now pinch all the way to 6 (was capped at 5); a hard pinch-in from
+        // the default 3 must walk up to the new max and clamp there.
+        val s = state(initial = 3, min = 2, max = 6)
+        s.onPinch(0.01f)
+        assertThat(s.columns).isEqualTo(6)
+    }
+
+    @Test
     fun `a big continuous pinch crosses multiple column counts`() {
         val s = state(initial = 5, min = 2, max = 5)
         // 5→2 needs a total ratio of 5/2 = 2.5; one large pinch should walk all the way.

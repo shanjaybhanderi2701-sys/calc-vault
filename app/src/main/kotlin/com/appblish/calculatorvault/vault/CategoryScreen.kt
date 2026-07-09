@@ -321,7 +321,7 @@ fun CategoryScreen(
                         val mediaGridState = rememberLazyGridState()
                         // APP-293 item 10: two-finger pinch rescales the photo grid
                         // fluidly between 2 and 5 columns — no snap.
-                        val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 5)
+                        val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 6)
                         DateGroupedMediaGrid(
                             items = state.folderItems.map { it.toMediaItem() },
                             selectionMode = state.selectionMode,
@@ -959,7 +959,7 @@ private fun FolderTileGrid(
 ) {
     val spacing = VaultTheme.spacing
     // APP-293 item 10: the album grid pinches too (2–4 columns — tiles carry labels).
-    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 4)
+    val pinch = rememberPinchColumnsState(initialColumns = 3, minColumns = 2, maxColumns = 6)
     LazyVerticalGrid(
         columns = GridCells.Fixed(pinch.columns),
         modifier =
