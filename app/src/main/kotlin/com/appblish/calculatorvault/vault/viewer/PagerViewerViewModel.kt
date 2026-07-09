@@ -332,11 +332,10 @@ class PagerViewerViewModel(
     }
 
     /** True for video/audio — pre-decrypting these eagerly would write large temp files. */
-    private fun isHeavyMedia(itemId: String): Boolean =
-        when (state.value.pages.firstOrNull { it.id == itemId }?.category) {
-            VaultCategory.VIDEOS, VaultCategory.AUDIOS -> true
-            else -> false
-        }
+    private fun isHeavyMedia(itemId: String): Boolean {
+        val item = state.value.pages.firstOrNull { it.id == itemId } ?: return false
+        return item.category == VaultCategory.VIDEOS || item.category == VaultCategory.AUDIOS
+    }
 
     /**
      * Ensure exactly one decrypt runs for [itemId]; on completion cache the plaintext and
