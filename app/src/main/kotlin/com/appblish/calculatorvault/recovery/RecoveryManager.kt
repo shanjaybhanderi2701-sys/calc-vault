@@ -5,8 +5,13 @@ import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.appblish.calculatorvault.vault.VaultSession
+import com.appblish.calculatorvault.vault.crypto.RecoveryMethod
+import com.appblish.calculatorvault.vault.crypto.RecoveryPinReset
+import com.appblish.calculatorvault.vault.crypto.RecoveryResetOutcome
 import com.appblish.calculatorvault.vault.crypto.RecoverySecrets
+import com.appblish.calculatorvault.vault.crypto.RecoveryVerifyOutcome
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
+import com.appblish.calculatorvault.vault.crypto.VaultKeyFileRecoveryPinReset
 import com.appblish.calculatorvault.vault.storage.VaultStorage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -168,12 +173,23 @@ object RecoveryGraph {
     @Volatile
     private var manager: RecoveryManager? = null
 
-    /** Install the device-backed manager. Idempotent; safe to call from onCreate. */
+    @Volatile
+    private var pinResetFactory: (() -> RecoveryPinReset)? = null
+
+    /** Install the device-backed manager + pin-reset factory. Idempotent; safe from onCreate. */
     fun init(context: Context) {
+        val app = context.applicationContext
         if (manager == null) {
             synchronized(this) {
                 if (manager == null) {
-                    manager = VaultKeyFileRecoveryManager(context.applicationContext)
+                    manager = VaultKeyFileRecoveryManager(app)
+                }
+            }
+        }
+        if (pinResetFactory == null) {
+            synchronized(this) {
+                if (pinResetFactory == null) {
+                    pinResetFactory = { VaultKeyFileRecoveryPinReset(app) }
                 }
             }
         }
@@ -184,9 +200,38 @@ object RecoveryGraph {
         this.manager = manager
     }
 
+    /** Replace the pin-reset factory (tests inject a fake, or a temp-file-backed device one). */
+    fun overridePinResetFactory(factory: () -> RecoveryPinReset) {
+        this.pinResetFactory = factory
+    }
+
     val recoveryManager: RecoveryManager
         get() =
             manager ?: synchronized(this) {
                 manager ?: InMemoryRecoveryManager().also { manager = it }
             }
+
+    /**
+     * A **fresh** [RecoveryPinReset] for one forgot-PIN flow (W3). A new instance per flow keeps
+     * the DEK a successful verify holds from leaking into the next attempt. An uninitialised
+     * graph (unit tests / `@Preview`) falls back to an in-memory implementation.
+     */
+    fun newPinReset(): RecoveryPinReset = (pinResetFactory ?: { InMemoryRecoveryPinReset() }).invoke()
+}
+
+/**
+ * In-memory [RecoveryPinReset] for `@Preview` / an uninitialised graph: it neither reads a real
+ * key file nor resets anything, so recovery-unlock screens render without a device. Unit and
+ * instrumented tests that exercise real crypto inject a temp-file-backed
+ * [VaultKeyFileRecoveryPinReset] instead.
+ */
+class InMemoryRecoveryPinReset : RecoveryPinReset {
+    override suspend fun lockoutRemainingMillis(method: RecoveryMethod): Long = 0L
+
+    override suspend fun verify(
+        method: RecoveryMethod,
+        secret: String,
+    ): RecoveryVerifyOutcome = RecoveryVerifyOutcome.Unavailable
+
+    override suspend fun resetPin(newPin: String): RecoveryResetOutcome = RecoveryResetOutcome.NOT_VERIFIED
 }

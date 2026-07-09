@@ -44,7 +44,7 @@ import com.appblish.calculatorvault.onboarding.OnboardingRoute
 import com.appblish.calculatorvault.recovery.RecoveryEntryScreen
 import com.appblish.calculatorvault.recovery.RecoverySetupIntroHost
 import com.appblish.calculatorvault.recovery.RecoverySetupScreen
-import com.appblish.calculatorvault.recovery.RecoveryUnlockPlaceholderScreen
+import com.appblish.calculatorvault.recovery.RecoveryUnlockScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.SettingsLanguageScreen
@@ -64,6 +64,7 @@ import com.appblish.calculatorvault.vault.actions.PhotoAction
 import com.appblish.calculatorvault.vault.actions.PhotoActionCallbacks
 import com.appblish.calculatorvault.vault.actions.PhotoActionsHost
 import com.appblish.calculatorvault.vault.actions.rememberPhotoActionsController
+import com.appblish.calculatorvault.vault.crypto.RecoveryMethod
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
@@ -500,13 +501,20 @@ fun VaultNavHost() {
             )
         }
 
-        // W3 seam (W0 09/10 → 11): a placeholder until APP-325 wires the real unlock + reset.
+        // W3 (W0 09/10 → 11): verify via Wrap B/C, then set a new PIN → re-wrap Wrap A only.
         composable(
             route = VaultDestinations.RECOVERY_UNLOCK,
             arguments = listOf(navArgument(VaultDestinations.ARG_RECOVERY_METHOD) { type = NavType.StringType }),
         ) { entry ->
-            RecoveryUnlockPlaceholderScreen(
-                method = entry.arguments?.getString(VaultDestinations.ARG_RECOVERY_METHOD).orEmpty(),
+            RecoveryUnlockScreen(
+                method = RecoveryMethod.fromArg(entry.arguments?.getString(VaultDestinations.ARG_RECOVERY_METHOD)),
+                // PIN reset done: drop the whole recovery stack and return to the calculator gate
+                // so the owner signs in fresh with the new PIN (no lingering forgot-PIN session).
+                onDone = {
+                    navController.navigate(VaultDestinations.CALCULATOR) {
+                        popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
+                    }
+                },
                 onBack = { navController.popBackStack() },
             )
         }

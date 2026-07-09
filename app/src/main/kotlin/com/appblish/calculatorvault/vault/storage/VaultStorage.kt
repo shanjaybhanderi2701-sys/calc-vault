@@ -35,6 +35,7 @@ object VaultStorage {
     const val DIR_NAME = ".CalcVault"
     const val INDEX_NAME = "index.enc"
     const val KEY_NAME = ".vaultkey"
+    const val RECOVERY_BACKOFF_NAME = ".recovery_backoff"
     private const val NOMEDIA = ".nomedia"
 
     /**
@@ -79,6 +80,16 @@ object VaultStorage {
         context: Context,
         namespace: String = VaultSession.namespace,
     ): File = File(vaultDir(context, namespace), KEY_NAME)
+
+    /**
+     * The recovery-entry brute-force backoff counters (PIN Recovery §1.6), stored beside the
+     * key file so they **survive uninstall** with the vault they guard — a reinstall must not
+     * reset the lockout. See [com.appblish.calculatorvault.vault.crypto.FileRecoveryBackoffStore].
+     */
+    fun recoveryBackoffFile(
+        context: Context,
+        namespace: String = VaultSession.namespace,
+    ): File = File(vaultDir(context, namespace), RECOVERY_BACKOFF_NAME)
 
     /** The blob file for [blobName] (a bare UUID, no extension) inside the active vault dir. */
     fun blobFile(
