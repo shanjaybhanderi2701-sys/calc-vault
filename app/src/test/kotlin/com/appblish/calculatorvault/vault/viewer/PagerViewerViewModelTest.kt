@@ -378,9 +378,12 @@ class PagerViewerViewModelTest {
             }
 
             assertThat(decryptCounts).containsExactly(
-                ids.getValue("a.jpg"), 1,
-                ids.getValue("b.jpg"), 1,
-                ids.getValue("c.jpg"), 1,
+                ids.getValue("a.jpg"),
+                1,
+                ids.getValue("b.jpg"),
+                1,
+                ids.getValue("c.jpg"),
+                1,
             )
         }
 }
