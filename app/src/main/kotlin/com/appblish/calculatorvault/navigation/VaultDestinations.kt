@@ -50,14 +50,24 @@ internal object VaultDestinations {
     private const val SLIDESHOW_BASE = "slideshow"
 
     const val CATEGORY = "$CATEGORY_BASE/{$ARG_CATEGORY}"
-    const val HIDE = "$HIDE_BASE/{$ARG_CATEGORY}"
+    const val HIDE = "$HIDE_BASE/{$ARG_CATEGORY}?$ARG_FOLDER_ID={$ARG_FOLDER_ID}"
     const val VIEWER = "$VIEWER_BASE/{$ARG_CATEGORY}/{$ARG_ITEM_ID}?$ARG_FOLDER_ID={$ARG_FOLDER_ID}"
     const val SLIDESHOW = "$SLIDESHOW_BASE/{$ARG_CATEGORY}"
     const val RECYCLE_BIN = "recyclebin"
 
     fun category(category: VaultCategory) = "$CATEGORY_BASE/${category.name}"
 
-    fun hide(category: VaultCategory) = "$HIDE_BASE/${category.name}"
+    /**
+     * The hide/import flow for [category]. [destinationFolderId] is the **launch context**
+     * (APP-299 P1-3): when the flow is opened from inside an open vault album, every picked
+     * item lands flat in that album regardless of its source device bucket; null (launched
+     * from vault home / the album grid) keeps the S16 source-bucket folder mapping.
+     */
+    fun hide(
+        category: VaultCategory,
+        destinationFolderId: String? = null,
+    ) = "$HIDE_BASE/${category.name}" +
+        (destinationFolderId?.let { "?$ARG_FOLDER_ID=$it" } ?: "")
 
     /**
      * Pager viewer over one grid's page set (APP-235 P0): the [category]'s items filtered

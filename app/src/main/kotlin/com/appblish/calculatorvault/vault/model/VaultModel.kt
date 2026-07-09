@@ -86,12 +86,13 @@ sealed interface UnhideDestination {
     data object Original : UnhideDestination
 
     /**
-     * A user-picked destination folder (APP-293 P0-2). [relativePath] is the primary-volume
-     * MediaStore RELATIVE_PATH when the picked SAF tree parses to one — the preferred write
-     * route, gallery-indexed on insert. [treeUri] is the SAF tree the user actually picked;
-     * it is the direct write route whenever the RELATIVE_PATH route is unavailable or fails
-     * (non-primary volume, MediaStore-illegal primary directory), so any picked folder is
-     * honored instead of silently degrading. [label] names the folder in the result copy.
+     * A user-picked destination folder (APP-293 P0-2 / APP-299 P0-2). [treeUri] is the SAF
+     * tree the user actually picked and granted — the **primary** write route for a chosen
+     * folder, because writing straight into that tree is the only way to reliably land in
+     * the picked folder on a real device (MediaStore rejects/normalizes non-standard chosen
+     * roots). [relativePath] is the reconstructed primary-volume MediaStore RELATIVE_PATH
+     * when the tree parses to one; it is now a gallery-indexed *fallback* used only if the
+     * SAF-tree write fails. [label] names the folder in the result copy.
      */
     data class Chosen(
         val relativePath: String? = null,

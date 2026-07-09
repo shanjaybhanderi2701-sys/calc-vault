@@ -15,6 +15,25 @@ import com.appblish.calculatorvault.vault.model.VaultItem
 import java.io.File
 import java.io.OutputStream
 
+/** The ordered write routes [MediaSink.writeBack] attempts (APP-299 P0-2). */
+internal enum class WriteStrategy { SAF_TREE, RELATIVE_PATH, DOWNLOADS }
+
+/**
+ * The write-route order for [destination] (APP-299 P0-2), split out pure so the "chosen
+ * folder is served through its granted SAF tree first" contract is unit-testable without a
+ * device. An explicitly chosen folder that carries a tree Uri is written via that exact SAF
+ * tree first (the only route that reliably lands in the picked folder on a real device),
+ * then the reconstructed RELATIVE_PATH, then Downloads. Every other destination (the
+ * Original media dir, or a chosen folder with no tree grant) keeps the RELATIVE_PATH →
+ * Downloads order so restores stay gallery-indexed.
+ */
+internal fun writeStrategyOrder(destination: UnhideDestination): List<WriteStrategy> =
+    if ((destination as? UnhideDestination.Chosen)?.treeUri != null) {
+        listOf(WriteStrategy.SAF_TREE, WriteStrategy.RELATIVE_PATH, WriteStrategy.DOWNLOADS)
+    } else {
+        listOf(WriteStrategy.RELATIVE_PATH, WriteStrategy.DOWNLOADS)
+    }
+
 /**
  * The un-hide (restore-to-gallery) counterpart of [MediaSource]: writes a vault item's
  * decrypted bytes back to *public* storage so the file returns to the exact place the
@@ -92,31 +111,50 @@ class MediaSink(
     ): WriteBackResult {
         val chosen = destination as? UnhideDestination.Chosen
         val primary = primaryRelPath(item, destination)
-        if (primary != null) {
-            val uri = writeAt(item, primary, writer)
-            if (uri != null) {
-                return WriteBackResult(uri, UnhideDisposition.REQUESTED, chosen?.label ?: folderLabel(primary))
-            }
-        }
-        // A chosen folder the RELATIVE_PATH route couldn't serve (non-primary volume, or a
-        // primary directory MediaStore rejects for the media collection) is still honored by
-        // writing straight into the picked SAF tree (APP-293 P0-2) — the user's choice wins
-        // over a silent Downloads degrade.
-        val tree = chosen?.treeUri
-        if (tree != null) {
-            val uri = writeViaSafTree(item, tree, writer)
-            if (uri != null) {
-                return WriteBackResult(uri, UnhideDisposition.REQUESTED, chosen.label ?: CHOSEN_LABEL)
-            }
-        }
-        // Primary unavailable/unwritable (or unknown original) → fall back to Downloads and
-        // say so, rather than dropping the file or the message (spec §1.4).
-        val fallback = fallbackRelPath()
-        if (fallback != primary) {
-            val uri = writeAt(item, fallback, writer)
-            if (uri != null) {
-                return WriteBackResult(uri, UnhideDisposition.FALLBACK, FALLBACK_LABEL)
-            }
+        // APP-299 P0-2 — the strategy order decides where the file actually lands. For an
+        // explicitly chosen folder it is SAF_TREE first (see [writeStrategyOrder]); for the
+        // Original destination it is the RELATIVE_PATH media-store route. Iterating a pure,
+        // unit-tested order (rather than an ad-hoc if-ladder) makes the "chosen folder wins"
+        // contract regression-proof.
+        for (strategy in writeStrategyOrder(destination)) {
+            val result =
+                when (strategy) {
+                    // Write straight into the exact SAF tree the user granted — the only
+                    // route that reliably lands in the picked folder on a real device (no
+                    // path reconstruction, uses the persisted grant directly).
+                    WriteStrategy.SAF_TREE ->
+                        if (chosen?.treeUri != null) {
+                            writeViaSafTree(item, chosen.treeUri, writer)?.let {
+                                WriteBackResult(it, UnhideDisposition.REQUESTED, chosen.label ?: CHOSEN_LABEL)
+                            }
+                        } else {
+                            null
+                        }
+                    // Reconstructed RELATIVE_PATH → MediaStore insert (gallery-indexed). The
+                    // primary route for Original; a best-effort fallback for a chosen folder
+                    // whose SAF write failed. MediaStore rejects/normalizes non-standard
+                    // roots on device, which is exactly why it can't be the chosen-folder
+                    // primary anymore.
+                    WriteStrategy.RELATIVE_PATH ->
+                        primary?.let { rel ->
+                            writeAt(item, rel, writer)?.let {
+                                WriteBackResult(it, UnhideDisposition.REQUESTED, chosen?.label ?: folderLabel(rel))
+                            }
+                        }
+                    // Last resort so a restore never fails silently (spec §1.4 / §2.4):
+                    // land in Downloads and say so.
+                    WriteStrategy.DOWNLOADS -> {
+                        val fallback = fallbackRelPath()
+                        if (fallback != primary) {
+                            writeAt(item, fallback, writer)?.let {
+                                WriteBackResult(it, UnhideDisposition.FALLBACK, FALLBACK_LABEL)
+                            }
+                        } else {
+                            null
+                        }
+                    }
+                }
+            if (result != null) return result
         }
         return WriteBackResult(null, UnhideDisposition.FAILED, null)
     }

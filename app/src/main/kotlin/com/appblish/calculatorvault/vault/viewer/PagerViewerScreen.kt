@@ -4,6 +4,7 @@ import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -50,11 +51,13 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -82,6 +85,7 @@ import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 import android.graphics.Color as AndroidColor
@@ -183,6 +187,10 @@ private fun ViewerPager(
     // exit — W3-D §8), so four taps net to the stored value and write nothing.
     var rotationDegrees by remember { mutableIntStateOf(0) }
     var showDeleteChoice by remember { mutableStateOf(false) }
+    // APP-299 P0-1: retain the decoded bitmaps of recently-viewed pages so swipe-back is
+    // instant (no re-decode) even though the pager disposes off-screen pages. Small cap —
+    // decoded full-res bitmaps are heavy; a handful covers "swipe forward then back".
+    val bitmapCache = remember { ViewerBitmapCache<ImageBitmap>(BITMAP_CACHE_MAX) }
 
     // Decrypt only the settled page (spec §1/§7): re-keying the VM's active page deletes the
     // previous page's temp file / drops its bytes. Also re-runs when a delete shrinks the
@@ -210,6 +218,9 @@ private fun ViewerPager(
             state = pagerState,
             // Zoomed pan must not fight the pager: swiping is only a pager gesture at 1x.
             userScrollEnabled = !zoomed,
+            // Keep the immediate neighbours composed (APP-299 P0-1) so the common
+            // swipe-forward-then-back never even disposes the page — instant return.
+            beyondViewportPageCount = 1,
             key = { index -> state.pages[index].id },
             modifier = Modifier.fillMaxSize(),
         ) { page ->
@@ -229,6 +240,7 @@ private fun ViewerPager(
                 onZoomedChanged = { if (isCurrent) zoomed = it },
                 // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
                 onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
+                bitmapCache = bitmapCache,
             )
         }
 
@@ -299,6 +311,7 @@ private fun ViewerPage(
     rotationDegrees: Int,
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
+    bitmapCache: ViewerBitmapCache<ImageBitmap>,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -327,6 +340,7 @@ private fun ViewerPage(
                             rotationDegrees = rotationDegrees,
                             onZoomedChanged = onZoomedChanged,
                             onToggleChrome = onToggleChrome,
+                            bitmapCache = bitmapCache,
                         )
                 }
         }
@@ -352,17 +366,27 @@ private fun ImagePage(
     rotationDegrees: Int,
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
+    bitmapCache: ViewerBitmapCache<ImageBitmap>,
 ) {
     val colors = VaultTheme.colors
-    // Decode off the main thread (board complaint P0-2: no jank, no silent blank).
-    val decoded by produceState<Decoded>(initialValue = Decoded.Pending, bytes) {
+    // APP-299 P0-1: an already-decoded page is served straight from the in-session bitmap
+    // cache — no Pending flash, no re-decode — so swipe-back is instant. A cold page decodes
+    // off the main thread (board complaint P0-2: no jank, no silent blank) then caches the
+    // result. Keyed on the item id so a swipe-back to the same page reuses the cache.
+    val cached = bitmapCache.get(item.id)
+    val decoded by produceState<Decoded>(
+        initialValue = if (cached != null) Decoded.Ready(cached) else Decoded.Pending,
+        item.id,
+        bytes,
+    ) {
+        if (bitmapCache.get(item.id) != null) return@produceState // cache hit → already Ready
         value =
             withContext(Dispatchers.Default) {
                 BitmapFactory
                     .decodeByteArray(bytes, 0, bytes.size)
                     ?.asImageBitmap()
                     ?.let { Decoded.Ready(it) } ?: Decoded.Failed
-            }
+            }.also { if (it is Decoded.Ready) bitmapCache.put(item.id, it.bitmap) }
     }
     when (val result = decoded) {
         Decoded.Pending ->
@@ -401,24 +425,40 @@ private fun ZoomableImage(
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
 ) {
-    var scale by remember { mutableFloatStateOf(1f) }
+    // Pinch/pan write scale+offset synchronously (the pager reads `userScrollEnabled =
+    // !zoomed` off this the same frame — a zoomed pan and a page swipe must never fight).
+    // The double-tap runs a short coroutine that animates the same plain state, so the step
+    // is smooth without making pinch async.
+    var scale by remember { mutableFloatStateOf(MIN_ZOOM) }
     var offset by remember { mutableStateOf(Offset.Zero) }
     var containerSize by remember { mutableStateOf(IntSize.Zero) }
+    val scope = rememberCoroutineScope()
 
-    // Keep the scaled image covering the container: max translation is the overflow half.
-    fun clampOffset(
+    // Pan bounds derive from the *fitted* image, not the container (APP-299 P2-4): a
+    // ContentScale.Fit image is letterboxed, so clamping to the container let the user drag
+    // an edge inside the frame ("past edges"). Fitted-content bounds make every corner
+    // reachable and no edge overscroll, and stay correct for a rotated (90/270°) photo.
+    fun clampAt(
         candidate: Offset,
         atScale: Float,
     ): Offset {
-        val maxX = containerSize.width * (atScale - 1f) / 2f
-        val maxY = containerSize.height * (atScale - 1f) / 2f
-        return Offset(candidate.x.coerceIn(-maxX, maxX), candidate.y.coerceIn(-maxY, maxY))
+        val fitted =
+            ViewerZoomMath.fittedContentSize(
+                containerSize.width.toFloat(),
+                containerSize.height.toFloat(),
+                bitmap.width.toFloat(),
+                bitmap.height.toFloat(),
+                rotationDegrees,
+            )
+        val max =
+            ViewerZoomMath.maxPan(containerSize.width.toFloat(), containerSize.height.toFloat(), fitted, atScale)
+        return ViewerZoomMath.clamp(candidate, max)
     }
 
     val transformState =
         rememberTransformableState { zoomChange, panChange, _ ->
             scale = (scale * zoomChange).coerceIn(MIN_ZOOM, MAX_ZOOM)
-            offset = if (scale > MIN_ZOOM) clampOffset(offset + panChange, scale) else Offset.Zero
+            offset = if (scale > MIN_ZOOM) clampAt(offset + panChange, scale) else Offset.Zero
         }
 
     LaunchedEffect(scale > MIN_ZOOM) {
@@ -453,14 +493,39 @@ private fun ZoomableImage(
                 .pointerInput(Unit) {
                     detectTapGestures(
                         onTap = { onToggleChrome() },
+                        // Double-tap steps to a ~2× zoom centred on the tapped point, and a
+                        // second double-tap steps back out — both smoothly animated over a
+                        // single fraction so scale and pan stay in lock-step.
                         onDoubleTap = { tap ->
-                            if (scale > MIN_ZOOM) {
-                                scale = MIN_ZOOM
-                                offset = Offset.Zero
-                            } else {
-                                scale = DOUBLE_TAP_ZOOM
-                                val center = Offset(containerSize.width / 2f, containerSize.height / 2f)
-                                offset = clampOffset((center - tap) * DOUBLE_TAP_ZOOM, DOUBLE_TAP_ZOOM)
+                            val startScale = scale
+                            val startOffset = offset
+                            val targetScale = if (scale > MIN_ZOOM) MIN_ZOOM else DOUBLE_TAP_ZOOM
+                            val targetOffset =
+                                if (targetScale > MIN_ZOOM) {
+                                    // Keep the tapped point stationary under the zoom (correct
+                                    // centring is (center − tap)·(scale − 1), not ·scale), then
+                                    // clamp so the step never lands outside the pannable bounds.
+                                    clampAt(
+                                        ViewerZoomMath.focusOffset(
+                                            tap,
+                                            containerSize.width.toFloat(),
+                                            containerSize.height.toFloat(),
+                                            targetScale,
+                                        ),
+                                        targetScale,
+                                    )
+                                } else {
+                                    Offset.Zero
+                                }
+                            scope.launch {
+                                animate(0f, 1f, animationSpec = tween(DOUBLE_TAP_ANIM_MS)) { t, _ ->
+                                    scale = startScale + (targetScale - startScale) * t
+                                    offset =
+                                        Offset(
+                                            startOffset.x + (targetOffset.x - startOffset.x) * t,
+                                            startOffset.y + (targetOffset.y - startOffset.y) * t,
+                                        )
+                                }
                             }
                         },
                     )
@@ -786,9 +851,89 @@ private fun ViewerAction(
     }
 }
 
+// Retained decoded bitmaps for instant swipe-back (APP-299 P0-1). Kept small: a decoded
+// full-res photo is heavy, and `beyondViewportPageCount = 1` already keeps the neighbours
+// composed, so this mainly covers stepping back a page or two.
+private const val BITMAP_CACHE_MAX = 4
+
 private const val MIN_ZOOM = 1f
 private const val MAX_ZOOM = 5f
-private const val DOUBLE_TAP_ZOOM = 2.5f
+
+// A ~2× step (the Samsung/Oppo gallery feel), not a jump to max, so a double-tap inspects
+// detail while a second tap returns to fit (APP-299 P2-4).
+private const val DOUBLE_TAP_ZOOM = 2f
+private const val DOUBLE_TAP_ANIM_MS = 220
+
+/**
+ * Pure zoom/pan geometry for the viewer (APP-299 P2-4), split out so the double-tap
+ * centring and the pan-bounds contract are unit-testable without a device. All values are
+ * in the container's pixel space; translation is measured from the centre (graphicsLayer's
+ * default transform origin).
+ */
+internal object ViewerZoomMath {
+    /**
+     * On-screen size of a [contentW]×[contentH] image drawn `ContentScale.Fit` inside a
+     * [containerW]×[containerH] box at scale 1. A 90°/270° [rotationDegrees] swaps the
+     * image's effective aspect (the rotated bitmap is what must fit), so pan bounds stay
+     * correct for a rotated photo. Degenerate inputs fall back to the container size.
+     */
+    fun fittedContentSize(
+        containerW: Float,
+        containerH: Float,
+        contentW: Float,
+        contentH: Float,
+        rotationDegrees: Int,
+    ): Size {
+        if (containerW <= 0f || containerH <= 0f || contentW <= 0f || contentH <= 0f) {
+            return Size(containerW, containerH)
+        }
+        val quarter = ((rotationDegrees % 360) + 360) % 360
+        val rotated = quarter == 90 || quarter == 270
+        val cw = if (rotated) contentH else contentW
+        val ch = if (rotated) contentW else contentH
+        val fit = minOf(containerW / cw, containerH / ch)
+        return Size(cw * fit, ch * fit)
+    }
+
+    /**
+     * Max |translation| per axis (from centre) that keeps a [fitted] image scaled by [scale]
+     * from being dragged past its own edge into the container's empty margin — every corner
+     * reachable, no edge overscroll. 0 on an axis the scaled image doesn't overflow (e.g. a
+     * letterboxed dimension at low zoom).
+     */
+    fun maxPan(
+        containerW: Float,
+        containerH: Float,
+        fitted: Size,
+        scale: Float,
+    ): Offset =
+        Offset(
+            ((fitted.width * scale - containerW) / 2f).coerceAtLeast(0f),
+            ((fitted.height * scale - containerH) / 2f).coerceAtLeast(0f),
+        )
+
+    /**
+     * Translation (from centre) that keeps the screen point [tap] stationary when zooming to
+     * [scale]. Derivation: a point maps to `C + scale·(p − C) + t`; holding the tapped point
+     * fixed ⇒ `t = (C − tap)·(scale − 1)`. The prior code used `·scale`, which over-shot the
+     * centring — the concrete bug behind "not centred on the tap".
+     */
+    fun focusOffset(
+        tap: Offset,
+        containerW: Float,
+        containerH: Float,
+        scale: Float,
+    ): Offset {
+        val center = Offset(containerW / 2f, containerH / 2f)
+        return (center - tap) * (scale - 1f)
+    }
+
+    /** Clamp [candidate] to ±[max] per axis. */
+    fun clamp(
+        candidate: Offset,
+        max: Offset,
+    ): Offset = Offset(candidate.x.coerceIn(-max.x, max.x), candidate.y.coerceIn(-max.y, max.y))
+}
 
 // Viewer chrome colors (design §3 VaultViewerTokens): a true-black canvas so the photo is
 // the hero, on-canvas glyphs/text in white, and a 50%-ink scrim behind the floating bars.

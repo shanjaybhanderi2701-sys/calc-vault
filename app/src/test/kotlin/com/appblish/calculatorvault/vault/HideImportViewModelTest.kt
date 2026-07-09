@@ -252,6 +252,52 @@ class HideImportViewModelTest {
         assertNull(vm.state.value.selectedAlbumId)
     }
 
+    // --- APP-299 P1-3: launch context overrides the source-bucket mapping ---
+
+    @Test
+    fun hideNow_launchedInsideVaultAlbum_landsEveryItemFlatInThatAlbum_ignoringSourceBuckets() {
+        // Launch context = the open vault album A. Pick from the Recent aggregate, whose
+        // sample items deliberately span several real device buckets (Camera/Screenshots/
+        // Download) — the exact "mixed sources" case in the bug report.
+        val vm =
+            HideImportViewModel(
+                category = VaultCategory.PHOTOS,
+                repository = repository,
+                mediaSource = null,
+                destinationFolderId = "album_A",
+            )
+        vm.selectAlbum(SourceAlbum.RECENT_ID)
+        vm.toggleAll()
+        vm.hideNow()
+
+        assertEquals(9, repository.hidden.size)
+        // Every item lands flat in A, regardless of which phone folder it came from…
+        repository.hidden.forEach { assertEquals("album_A", it.folderId) }
+        // …and NO source-named vault folder ("Camera"/"Screenshots"/"Download") is created.
+        assertEquals(emptyList<String>(), repository.createdFolderNames)
+        assertTrue(vm.state.value.done)
+    }
+
+    @Test
+    fun hideNow_launchedInsideVaultAlbum_fromFolderStep_stillLandsFlat() {
+        // The S14 whole-folder path must honor the launch context too: staging phone folder
+        // "C" (screenshots) from inside album A puts its items flat in A, never a "C" album.
+        val vm =
+            HideImportViewModel(
+                category = VaultCategory.PHOTOS,
+                repository = repository,
+                mediaSource = null,
+                destinationFolderId = "album_A",
+            )
+        vm.toggleFolder("camera")
+        vm.toggleFolder("screenshots")
+        vm.hideNow()
+
+        assertEquals(18, repository.hidden.size)
+        repository.hidden.forEach { assertEquals("album_A", it.folderId) }
+        assertEquals(emptyList<String>(), repository.createdFolderNames)
+    }
+
     // --- P2-3: operation feedback (hide summary + bulk progress passthrough) ---
 
     @Test

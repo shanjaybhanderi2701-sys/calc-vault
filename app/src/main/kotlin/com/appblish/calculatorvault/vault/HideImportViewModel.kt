@@ -174,6 +174,11 @@ class HideImportViewModel(
     val category: VaultCategory,
     private val repository: VaultContentRepository = VaultGraph.contentRepository,
     private val mediaSource: MediaSource? = null,
+    // APP-299 P1-3 · launch context: the vault album this hide flow was opened from. When
+    // set, every picked item lands flat in that album (its source device bucket is ignored,
+    // and no bucket-named folders are created); null (launched from vault home / the album
+    // grid) keeps the S16 source-bucket mapping below.
+    private val destinationFolderId: String? = null,
 ) : ViewModel() {
     private val _state = MutableStateFlow(initialState(category, mediaSource))
     val state: StateFlow<HideImportState> = _state.asStateFlow()
@@ -356,14 +361,22 @@ class HideImportViewModel(
                 _state.update { it.copy(hiding = false, selectedFolderIds = emptySet()) }
                 return@launch
             }
-            // S16: each item lands in a vault folder named after its source device bucket
-            // (Camera → "Camera"…), found or created per distinct bucket, so the category
-            // screen's folder tiles mirror the source albums. Items browsed via the Recent
-            // aggregate carry their *real* bucket name (MediaSource keeps it per row).
-            val folderIdByBucket =
-                folderIdsForBuckets(chosen.mapNotNull { src -> src.albumName.takeIf { it.isNotBlank() } }.toSet())
+            // APP-299 P1-3 — destination is the launch context, source bucket names are
+            // irrelevant. Launched from inside album A: every picked item lands *flat* in A
+            // (even mixed phone-folder sources), never recreating a "Camera"/"C" album inside
+            // A. Launched from vault home / the album grid ([destinationFolderId] null): keep
+            // the S16 mapping — each item lands in a vault folder named after its source
+            // device bucket (Camera → "Camera"…), found or created per distinct bucket, so
+            // the category screen's folder tiles mirror the source albums. Items browsed via
+            // the Recent aggregate carry their *real* bucket name (MediaSource keeps it).
             val stored =
-                repository.hide(chosen.map { src -> src.toVaultItem(category, folderIdByBucket[src.albumName]) })
+                if (destinationFolderId != null) {
+                    repository.hide(chosen.map { src -> src.toVaultItem(category, destinationFolderId) })
+                } else {
+                    val bucketNames = chosen.mapNotNull { src -> src.albumName.takeIf { it.isNotBlank() } }.toSet()
+                    val folderIdByBucket = folderIdsForBuckets(bucketNames)
+                    repository.hide(chosen.map { src -> src.toVaultItem(category, folderIdByBucket[src.albumName]) })
+                }
             // P2-3 operation feedback: publish the "N hidden" / "N hidden, M failed"
             // summary (failures = requested − stored). The screen pops on completion, so
             // the CategoryScreen the user returns to renders it (see [hideSummary]).

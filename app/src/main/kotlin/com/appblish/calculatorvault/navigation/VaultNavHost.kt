@@ -45,6 +45,7 @@ import com.appblish.calculatorvault.settings.SettingsLanguageScreen
 import com.appblish.calculatorvault.settings.SettingsScreen
 import com.appblish.calculatorvault.settings.ThemeScreen
 import com.appblish.calculatorvault.vault.CategoryScreen
+import com.appblish.calculatorvault.vault.CategoryState
 import com.appblish.calculatorvault.vault.CategoryViewModel
 import com.appblish.calculatorvault.vault.HideImportScreen
 import com.appblish.calculatorvault.vault.HideImportViewModel
@@ -311,22 +312,48 @@ fun VaultNavHost() {
                         VaultDestinations.viewer(it.id, category, vm.state.value.openFolderId),
                     )
                 },
-                onHide = { navController.navigate(VaultDestinations.hide(category)) },
+                onHide = {
+                    // APP-299 P1-3: opened from inside a real vault album → hide flat into
+                    // it; from vault home / the album grid (or the "Recent" pseudo-folder)
+                    // → null, keeping the S16 source-bucket mapping.
+                    val destinationFolderId =
+                        vm.state.value.openFolderId
+                            ?.takeUnless { it == CategoryState.RECENT_FOLDER_ID }
+                    navController.navigate(VaultDestinations.hide(category, destinationFolderId))
+                },
             )
         }
 
         composable(
             route = VaultDestinations.HIDE,
-            arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
+            arguments =
+                listOf(
+                    navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
+                    navArgument(VaultDestinations.ARG_FOLDER_ID) {
+                        type = NavType.StringType
+                        nullable = true
+                        defaultValue = null
+                    },
+                ),
         ) { entry ->
             val category = entry.category()
+            // APP-299 P1-3 launch context: non-null → hide flat into that vault album.
+            val destinationFolderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
             val hideContext = LocalContext.current.applicationContext
             val vm: HideImportViewModel =
                 viewModel(
-                    key = "hide-${category.name}",
+                    // Key includes the destination so opening the flow from album A gets a
+                    // distinct VM from the vault-home flow (never reuses the wrong context).
+                    key = "hide-${category.name}-${destinationFolderId ?: "root"}",
                     factory =
                         viewModelFactory {
-                            initializer { HideImportViewModel(category, mediaSource = MediaSource(hideContext)) }
+                            initializer {
+                                HideImportViewModel(
+                                    category,
+                                    mediaSource = MediaSource(hideContext),
+                                    destinationFolderId = destinationFolderId,
+                                )
+                            }
                         },
                 )
             HideImportScreen(
