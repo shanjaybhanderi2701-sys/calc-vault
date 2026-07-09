@@ -192,13 +192,15 @@ class InMemoryRecoveryReKeyer(
     override suspend fun verify(
         method: RecoveryMethod,
         secret: String,
-    ): RecoveryVerifyOutcome =
-        if (configured) RecoveryVerifyOutcome.WRONG_SECRET else RecoveryVerifyOutcome.NOT_CONFIGURED
+    ): RecoveryVerifyOutcome {
+        return if (configured) RecoveryVerifyOutcome.WRONG_SECRET else RecoveryVerifyOutcome.NOT_CONFIGURED
+    }
 
     override suspend fun resetPin(
         method: RecoveryMethod,
         secret: String,
         newPin: String,
-    ): RecoveryResetOutcome =
-        if (configured) RecoveryResetOutcome.WRONG_SECRET else RecoveryResetOutcome.NOT_CONFIGURED
+    ): RecoveryResetOutcome {
+        return if (configured) RecoveryResetOutcome.WRONG_SECRET else RecoveryResetOutcome.NOT_CONFIGURED
+    }
 }
