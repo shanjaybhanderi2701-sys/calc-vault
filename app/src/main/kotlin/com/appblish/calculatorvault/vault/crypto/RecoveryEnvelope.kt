@@ -120,7 +120,13 @@ class RecoveryEnvelope(
 
     /** Parse the file into a slot→payload map, ignoring unknown slot labels and blank lines. */
     private fun read(): Map<Slot, String> {
-        val lines = file.readText().trim().split("\n").map(String::trim).filter(String::isNotEmpty)
+        val lines =
+            file
+                .readText()
+                .trim()
+                .split("\n")
+                .map(String::trim)
+                .filter(String::isNotEmpty)
         require(lines.isNotEmpty() && lines[0] == VERSION.toString()) { "Malformed recovery envelope" }
         val out = linkedMapOf<Slot, String>()
         for (line in lines.drop(1)) {
