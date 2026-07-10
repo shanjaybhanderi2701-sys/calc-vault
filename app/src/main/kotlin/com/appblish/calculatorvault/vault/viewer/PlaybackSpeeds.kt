@@ -7,8 +7,14 @@ package com.appblish.calculatorvault.vault.viewer
  * default `SonicAudioProcessor`, spec §5b).
  */
 object PlaybackSpeeds {
-    /** The exact dialog choices per spec §5c: 0.5 / 0.75 / 1 / 1.5 / 2×. */
-    val OPTIONS: List<Float> = listOf(0.5f, 0.75f, 1.0f, 1.5f, 2.0f)
+    // APP-381 · the owner design-reference doc lists 0.5 / 1.0 / 1.5 / 2.0 ("0.5× increments,
+    // 0.5×–2.0×"). The doc's prose says "five speed settings" but only names these four — the
+    // intended 5th step (e.g. 0.75× or 2.5×) is flagged to the owner for confirmation, so we ship
+    // the four unambiguous values. The label formatter keeps its two-decimal branch so a future
+    // 0.75× the owner may confirm renders correctly without another change.
+
+    /** The exact dialog choices per the owner design reference: 0.5 / 1.0 / 1.5 / 2×. */
+    val OPTIONS: List<Float> = listOf(0.5f, 1.0f, 1.5f, 2.0f)
 
     /** Normal speed; where playback starts and what the speed button resets to. */
     const val DEFAULT: Float = 1.0f

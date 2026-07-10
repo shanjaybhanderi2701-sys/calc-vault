@@ -9,19 +9,22 @@ import org.junit.Test
  */
 class PlaybackSpeedsTest {
     @Test
-    fun `options are exactly the spec set 0_5 to 2x`() {
+    fun `options are exactly the design-reference set 0_5 to 2x`() {
+        // APP-381 — the four 0.5x-increment values from the owner design-reference doc; the 5th
+        // step the doc's "five settings" prose alludes to is flagged for owner confirmation.
         assertThat(PlaybackSpeeds.OPTIONS)
-            .containsExactly(0.5f, 0.75f, 1.0f, 1.5f, 2.0f)
+            .containsExactly(0.5f, 1.0f, 1.5f, 2.0f)
             .inOrder()
     }
 
     @Test
-    fun `labels render round steps with one decimal and 0_75 with two`() {
+    fun `labels render round steps with one decimal and non-round with two`() {
         assertThat(PlaybackSpeeds.label(0.5f)).isEqualTo("0.5x")
-        assertThat(PlaybackSpeeds.label(0.75f)).isEqualTo("0.75x")
         assertThat(PlaybackSpeeds.label(1.0f)).isEqualTo("1.0x")
         assertThat(PlaybackSpeeds.label(1.5f)).isEqualTo("1.5x")
         assertThat(PlaybackSpeeds.label(2.0f)).isEqualTo("2.0x")
+        // Defensive: a future owner-confirmed 0.75x step still renders with two decimals.
+        assertThat(PlaybackSpeeds.label(0.75f)).isEqualTo("0.75x")
     }
 
     @Test
@@ -32,7 +35,7 @@ class PlaybackSpeedsTest {
 
     @Test
     fun `nearest snaps arbitrary speeds to the closest option`() {
-        assertThat(PlaybackSpeeds.nearest(0.8f)).isEqualTo(0.75f)
+        assertThat(PlaybackSpeeds.nearest(0.6f)).isEqualTo(0.5f)
         assertThat(PlaybackSpeeds.nearest(1.9f)).isEqualTo(2.0f)
         assertThat(PlaybackSpeeds.nearest(1.1f)).isEqualTo(1.0f)
     }

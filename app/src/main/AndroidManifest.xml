@@ -75,8 +75,18 @@
           blanked. FLAG_SECURE (set in code) blanks the recents thumbnail; fully hiding the
           task is an opt-in Settings toggle applied at runtime via setExcludeFromRecents.
         -->
+        <!--
+          APP-381 #1 — handle rotation / size configuration changes in-process instead of
+          recreating the activity. This single-activity host is 100% Jetpack Compose, which
+          re-lays-out reactively on a configuration change, so keeping the activity alive means
+          the immersive video player's ExoPlayer keeps playing seamlessly across a device
+          rotation (no restart-from-zero, no re-decrypt of the encrypted stream). A forced
+          recreate / process-death restore is still covered by RetainedPlaybackEffect
+          (rememberSaveable playhead + play/pause).
+        -->
         <activity
             android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|keyboardHidden|density|uiMode"
             android:exported="false"
             android:theme="@style/Theme.CalculatorVault" />
 

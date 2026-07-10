@@ -105,6 +105,9 @@ internal fun VideoPlayerControlsOverlay(
     onRotationChanged: (Int) -> Unit,
     muted: Boolean,
     onMutedChanged: (Boolean) -> Unit,
+    // APP-381 #4: Full Screen — hide/show the system bars for a larger viewing area (design ref).
+    fullscreen: Boolean,
+    onFullscreenChanged: (Boolean) -> Unit,
     // APP-371 F1–F3: the §5d playlist (current-folder videos, order modes, Next/Prev/tap-switch).
     playlist: VideoPlaylistController,
     // APP-371 F4: side-loaded external subtitle state + loaders (device SAF / vault-hidden).
@@ -268,6 +271,18 @@ internal fun VideoPlayerControlsOverlay(
                     Icon(
                         imageVector = VaultActionIcons.AspectRatio,
                         contentDescription = "Display mode",
+                        tint = Color.White,
+                    )
+                }
+                // Full Screen: toggle the system status/navigation bars for a larger viewing area
+                // (APP-381 #4, design-reference "Full Screen").
+                IconButton(onClick = {
+                    onFullscreenChanged(!fullscreen)
+                    resetAutoHide()
+                }) {
+                    Icon(
+                        imageVector = VaultActionIcons.Fullscreen,
+                        contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
                         tint = Color.White,
                     )
                 }
@@ -464,7 +479,7 @@ internal fun VideoPlayerControlsOverlay(
             }
         }
 
-        // ---- Speed dialog: 5-chip segmented selector (spec §5c) ----
+        // ---- Speed dialog: segmented chip selector, one chip per PlaybackSpeeds.OPTIONS ----
         if (speedDialogVisible) {
             AlertDialog(
                 onDismissRequest = { speedDialogVisible = false },

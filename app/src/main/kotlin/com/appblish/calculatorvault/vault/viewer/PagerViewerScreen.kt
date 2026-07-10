@@ -67,6 +67,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -86,6 +87,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.C
@@ -1016,6 +1020,11 @@ private fun MediaPlayerPage(
         }
     }
 
+    // APP-381 #1 · restore the playhead + play/pause after an activity recreation (forced
+    // recreate / process-death). Real device rotation is already seamless via MainActivity's
+    // android:configChanges — this is the safety net for a genuine teardown+rebuild.
+    RetainedPlaybackEffect(player = player, itemId = itemId)
+
     // F3 · REPEAT_CURRENT loops the single item in place (never reaches STATE_ENDED); every
     // other mode advances across pages, so the player itself must not auto-repeat.
     LaunchedEffect(playlist.orderMode) {
@@ -1079,10 +1088,39 @@ private fun MediaPlayerPage(
     var scale by remember(itemId) { mutableFloatStateOf(VideoZoomMath.MIN_SCALE) }
     var panX by remember(itemId) { mutableFloatStateOf(0f) }
     var panY by remember(itemId) { mutableFloatStateOf(0f) }
+    // APP-381 #4 · Full Screen — hides the system status/navigation bars for a larger viewing
+    // area (design-reference "Full Screen"). Survives a config change/recreate (rememberSaveable).
+    var fullscreen by rememberSaveable(itemId) { mutableStateOf(false) }
 
     // Propagate speed + mute to ExoPlayer whenever they change.
     LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
     LaunchedEffect(muted) { player.volume = if (muted) 0f else 1f }
+
+    // APP-381 #4 · apply the Full Screen system-bar state to the host window, and ALWAYS restore
+    // the bars when the player leaves composition so the calculator / grid is never stuck
+    // immersive. The bars re-hide on any config change because this effect re-runs with the
+    // retained [fullscreen] flag.
+    val activity = remember(context) { context.findActivityOrNull() }
+    DisposableEffect(activity, fullscreen) {
+        val window = activity?.window
+        if (window != null) {
+            val controller = WindowCompat.getInsetsController(window, window.decorView)
+            if (fullscreen) {
+                controller.systemBarsBehavior =
+                    WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                controller.hide(WindowInsetsCompat.Type.systemBars())
+            } else {
+                controller.show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+        onDispose {
+            activity?.window?.let { w ->
+                WindowCompat
+                    .getInsetsController(w, w.decorView)
+                    .show(WindowInsetsCompat.Type.systemBars())
+            }
+        }
+    }
 
     val resizeMode = when (aspectMode) {
         VideoScaleMath.AspectMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -1134,6 +1172,8 @@ private fun MediaPlayerPage(
                 onRotationChanged = { rotationDegrees = it },
                 muted = muted,
                 onMutedChanged = { muted = it },
+                fullscreen = fullscreen,
+                onFullscreenChanged = { fullscreen = it },
                 playlist = playlist,
                 currentSubtitleLabel = subtitle?.label,
                 onLoadDeviceSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
