@@ -74,13 +74,19 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.calculatorvault.vault.player.EncryptedVaultDataSource
+import com.appblish.calculatorvault.vault.player.VaultPlaybackSource
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
@@ -241,6 +247,8 @@ private fun ViewerPager(
                 // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
                 onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
                 bitmapCache = bitmapCache,
+                resolvePlaybackSource = viewModel::playbackSource,
+                loadPoster = viewModel::videoPoster,
             )
         }
 
@@ -312,6 +320,8 @@ private fun ViewerPage(
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
     bitmapCache: ViewerBitmapCache<ImageBitmap>,
+    resolvePlaybackSource: suspend (String) -> VaultPlaybackSource?,
+    loadPoster: suspend (String) -> ByteArray?,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -326,6 +336,19 @@ private fun ViewerPage(
                 // Only the settled page previews/plays; a page peeked mid-swipe spins.
                 if (isCurrent) {
                     VideoPage(mediaFile = content.file, onToggleChrome = onToggleChrome)
+                } else {
+                    CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
+                }
+            is PageContent.Video ->
+                // Encrypted video streams via the seekable DataSource — no plaintext temp
+                // file (APP-347). Only the settled page plays; a peeked page spins.
+                if (isCurrent) {
+                    EncryptedVideoPage(
+                        itemId = content.itemId,
+                        resolveSource = resolvePlaybackSource,
+                        loadPoster = loadPoster,
+                        onToggleChrome = onToggleChrome,
+                    )
                 } else {
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
                 }
@@ -651,6 +674,197 @@ private fun MediaPlayerPage(mediaFile: File) {
         },
         update = { view -> view.player = player },
     )
+}
+
+/**
+ * Encrypted-video page (APP-347): playback streams the blob one chunk at a time through the
+ * seekable [EncryptedVaultDataSource] — **no plaintext temp file is ever written** (spec
+ * §1.1). Like the cache-temp path it is **tap-to-start** (APP-293 P0-3): until the user
+ * taps play the page shows the stored encrypted thumbnail poster under a play button, and a
+ * tap outside toggles the chrome. Tapping play resolves the blob+key off-main and swaps in
+ * ExoPlayer with its built-in transport controls (seekbar + play/pause).
+ */
+@Composable
+private fun EncryptedVideoPage(
+    itemId: String,
+    resolveSource: suspend (String) -> VaultPlaybackSource?,
+    loadPoster: suspend (String) -> ByteArray?,
+    onToggleChrome: () -> Unit,
+) {
+    var playing by remember(itemId) { mutableStateOf(false) }
+    if (playing) {
+        EncryptedMediaPlayerPage(itemId = itemId, resolveSource = resolveSource)
+    } else {
+        EncryptedVideoPreview(
+            itemId = itemId,
+            loadPoster = loadPoster,
+            onPlay = { playing = true },
+            onToggleChrome = onToggleChrome,
+        )
+    }
+}
+
+/** Pre-playback preview: the stored **encrypted** thumbnail poster + play button on black. */
+@Composable
+private fun EncryptedVideoPreview(
+    itemId: String,
+    loadPoster: suspend (String) -> ByteArray?,
+    onPlay: () -> Unit,
+    onToggleChrome: () -> Unit,
+) {
+    // Poster from the small encrypted grid thumbnail — never a full-frame decrypt, never a
+    // plaintext file. Null (no thumb yet) simply shows the play button on the black canvas.
+    val frame by produceState<ImageBitmap?>(initialValue = null, itemId) {
+        value =
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    loadPoster(itemId)?.let { bytes ->
+                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+                    }
+                }.getOrNull()
+            }
+    }
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier =
+            Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) { detectTapGestures(onTap = { onToggleChrome() }) },
+    ) {
+        frame?.let { bmp ->
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier =
+                Modifier
+                    .size(72.dp)
+                    .clip(CircleShape)
+                    .background(ViewerScrim)
+                    .clickable(onClick = onPlay),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.PlayArrow,
+                contentDescription = "Play",
+                tint = ViewerOnCanvas,
+                modifier = Modifier.size(44.dp),
+            )
+        }
+    }
+}
+
+/**
+ * Resolves the blob+key off-main, then plays via ExoPlayer over the seekable
+ * [EncryptedVaultDataSource]. A locked/missing source or an undecodable format surfaces as
+ * an explicit overlay — never a crash (spec §6). The URI carries only an opaque item id: no
+ * file path, no key (W1 security condition #4).
+ */
+@Composable
+private fun EncryptedMediaPlayerPage(
+    itemId: String,
+    resolveSource: suspend (String) -> VaultPlaybackSource?,
+) {
+    val colors = VaultTheme.colors
+    val resolution by produceState<PlaybackResolution>(initialValue = PlaybackResolution.Loading, itemId) {
+        value = resolveSource(itemId)?.let(PlaybackResolution::Ready) ?: PlaybackResolution.Failed
+    }
+    when (val r = resolution) {
+        PlaybackResolution.Loading ->
+            CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
+        PlaybackResolution.Failed -> ErrorPage()
+        is PlaybackResolution.Ready -> EncryptedPlayerSurface(itemId = itemId, source = r.source)
+    }
+}
+
+/** Off-main resolution of a video's blob+key: in flight, failed (locked/missing), or ready. */
+private sealed interface PlaybackResolution {
+    data object Loading : PlaybackResolution
+
+    data object Failed : PlaybackResolution
+
+    data class Ready(
+        val source: VaultPlaybackSource,
+    ) : PlaybackResolution
+}
+
+/** The ExoPlayer surface bound to a resolved [source]; released when it leaves composition. */
+@androidx.annotation.OptIn(UnstableApi::class)
+@Composable
+private fun EncryptedPlayerSurface(
+    itemId: String,
+    source: VaultPlaybackSource,
+) {
+    val context = LocalContext.current
+    var unsupported by remember(source) { mutableStateOf(false) }
+    val player =
+        remember(source) {
+            ExoPlayer.Builder(context).build().apply {
+                // Plain ProgressiveMediaSource over the decrypting DataSource — NO
+                // CacheDataSource/SimpleCache (persisting plaintext to disk would break
+                // §1.1; W1 security condition #1). Opaque item URI: no path, no key.
+                val mediaSource =
+                    ProgressiveMediaSource
+                        .Factory(EncryptedVaultDataSource.Factory(source))
+                        .createMediaSource(MediaItem.fromUri(Uri.parse("vault://item/$itemId")))
+                setMediaSource(mediaSource)
+                prepare()
+                playWhenReady = true
+                addListener(
+                    object : Player.Listener {
+                        override fun onPlayerError(error: PlaybackException) {
+                            // Undecodable container/codec (no FFmpeg this phase, §6) or a
+                            // vault I/O error → graceful overlay, never a crash.
+                            unsupported = true
+                        }
+                    },
+                )
+            }
+        }
+    DisposableEffect(source) {
+        onDispose { player.release() }
+    }
+    if (unsupported) {
+        VideoUnsupportedPage()
+    } else {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                PlayerView(ctx).apply {
+                    this.player = player
+                    setBackgroundColor(AndroidColor.BLACK)
+                }
+            },
+            update = { view -> view.player = player },
+        )
+    }
+}
+
+/** Graceful "format not supported" page for videos ExoPlayer can't decode (spec §6). */
+@Composable
+private fun VideoUnsupportedPage() {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(VaultTheme.spacing.md),
+        modifier = Modifier.padding(VaultTheme.spacing.xl),
+    ) {
+        Icon(
+            imageVector = Icons.Filled.Warning,
+            contentDescription = null,
+            tint = ViewerOnCanvasMuted,
+            modifier = Modifier.size(48.dp),
+        )
+        Text(
+            text = "This video format isn't supported",
+            style = VaultTheme.typography.bodyMedium,
+            color = ViewerOnCanvasMuted,
+            textAlign = TextAlign.Center,
+        )
+    }
 }
 
 /** Decrypt failure page — an explicit glyph + message, never a blank screen (P0-2). */

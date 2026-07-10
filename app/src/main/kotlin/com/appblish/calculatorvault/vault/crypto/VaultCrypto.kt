@@ -44,7 +44,7 @@ import javax.crypto.spec.GCMParameterSpec
  *
  * Pure JVM crypto (javax.crypto) so the round-trip is unit-testable off-device.
  */
-class VaultCrypto(
+open class VaultCrypto(
     private val key: SecretKey,
     private val random: SecureRandom = SecureRandom(),
 ) {
@@ -137,6 +137,36 @@ class VaultCrypto(
         return cipher.doFinal(sealed)
     }
 
+    /**
+     * Decrypt a single v2 chunk in isolation — the one crypto primitive the seekable
+     * [com.appblish.calculatorvault.vault.player.EncryptedVaultDataSource] shares with
+     * the streaming [decrypt] path (APP-347 §8.1: one code path, no duplicated crypto).
+     *
+     * [sealed] must be exactly the on-disk `sealedᵢ` bytes for chunk [counter] (ciphertext
+     * + 16-byte GCM tag). [isFinal] must match how the chunk was sealed — a mismatch fails
+     * the tag (that is the format's truncation defense, preserved on the random-access
+     * path). Throws [GeneralSecurityException] on tamper / wrong key / boundary truncation.
+     * The nonce derivation is byte-identical to [encrypt]'s, so a seek reader driven by
+     * this method serves plaintext indistinguishable from the original file.
+     */
+    open fun decryptChunk(
+        noncePrefix: ByteArray,
+        counter: Int,
+        isFinal: Boolean,
+        sealed: ByteArray,
+    ): ByteArray = openChunk(noncePrefix, counter, isFinal, sealed)
+
+    /**
+     * Decrypt a legacy v1 blob body (post-IV) with a caller-supplied [iv], for the
+     * forward-only v1 fallback DataSource (§5). Returns a [Cipher] initialised for
+     * streaming; the caller wraps the ciphertext stream in a `CipherInputStream`. Kept
+     * here so v1 IV/transformation handling is never duplicated outside this class.
+     */
+    fun legacyDecryptCipher(iv: ByteArray): Cipher =
+        Cipher.getInstance(TRANSFORMATION).apply {
+            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
+        }
+
     /** 12-byte per-chunk nonce: `prefix(7) ‖ counter(4, big-endian) ‖ finalFlag(1)`. */
     private fun chunkNonce(
         noncePrefix: ByteArray,
@@ -201,18 +231,30 @@ class VaultCrypto(
 
     companion object {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
-        private const val IV_LENGTH = 12
-        private const val NONCE_PREFIX_LENGTH = 7
+        internal const val IV_LENGTH = 12
+        internal const val NONCE_PREFIX_LENGTH = 7
         private const val TAG_BITS = 128
         private const val BUFFER = 64 * 1024
         private val EMPTY = ByteArray(0)
         const val KEY_BITS = 256
 
+        /** GCM tag bytes appended to every sealed chunk (128-bit tag). */
+        internal const val TAG_BYTES = TAG_BITS / 8
+
         /** v2 chunked-format marker ("CVCHUNK1"). A v1 blob starts with a random IV. */
         internal val MAGIC = byteArrayOf(0x43, 0x56, 0x43, 0x48, 0x55, 0x4E, 0x4B, 0x31)
 
+        /**
+         * Fixed on-disk header of a v2 blob: `MAGIC(8) ‖ noncePrefix(7)`. The random-access
+         * reader computes chunk file offsets from this ([EncryptedVaultDataSource] §2.1).
+         */
+        internal const val V2_HEADER_BYTES = 8 + NONCE_PREFIX_LENGTH
+
         /** Plaintext bytes per sealed chunk — the peak per-file memory of a crypto pass. */
         internal const val CHUNK_BYTES = 512 * 1024
+
+        /** On-disk size of a non-final sealed chunk: plaintext + GCM tag. */
+        internal const val SEALED_CHUNK_BYTES = CHUNK_BYTES + TAG_BYTES
 
         /** Generate a fresh 256-bit AES key for a first-run install. */
         fun newKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(KEY_BITS) }.generateKey()

@@ -757,6 +757,24 @@ class EncryptedVaultContentRepository(
             out.toByteArray()
         }
 
+    override suspend fun videoPlaybackSource(
+        itemId: String,
+    ): com.appblish.calculatorvault.vault.player.VaultPlaybackSource? =
+        withContext(Dispatchers.IO) {
+            // The blob + live session cipher for a seekable, zero-plaintext-on-disk stream
+            // (APP-347). No plaintext is produced here — decrypt happens lazily, one chunk
+            // at a time, on ExoPlayer's loader thread. Null when locked / item or blob gone.
+            val cipher = crypto ?: return@withContext null
+            val item =
+                itemsState.value.firstOrNull { it.id == itemId }
+                    ?: binState.value.firstOrNull { it.item.id == itemId }?.item
+                    ?: return@withContext null
+            val blob = item.encryptedPath?.let(::resolveBlob) ?: return@withContext null
+            if (!blob.exists()) return@withContext null
+            com.appblish.calculatorvault.vault.player
+                .VaultPlaybackSource(blob, cipher)
+        }
+
     override suspend fun decryptToFile(
         itemId: String,
         dest: File,

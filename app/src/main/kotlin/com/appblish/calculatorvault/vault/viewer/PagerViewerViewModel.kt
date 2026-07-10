@@ -66,9 +66,20 @@ sealed interface PageContent {
         val bytes: ByteArray,
     ) : PageContent
 
-    /** App-private cache temp file holding a decrypted video/audio blob for ExoPlayer. */
+    /** App-private cache temp file holding a decrypted **audio** blob for ExoPlayer. */
     class Media(
         val file: File,
+    ) : PageContent
+
+    /**
+     * A vault **video**, streamed on demand through the seekable
+     * [com.appblish.calculatorvault.vault.player.EncryptedVaultDataSource] (APP-347) — the
+     * blob is decrypted one chunk at a time inside ExoPlayer, so **no plaintext video temp
+     * file is ever written** (spec §1.1). Carries only the opaque [itemId]; the screen
+     * resolves the blob + key off-main via [playbackSource].
+     */
+    class Video(
+        val itemId: String,
     ) : PageContent
 
     /** Decrypt failed — the page shows an error glyph + "Couldn't open this file". */
@@ -371,13 +382,35 @@ class PagerViewerViewModel(
         val item = repository.allItems().first().firstOrNull { it.id == itemId }
         return when (item?.category) {
             null -> PageContent.Error
-            VaultCategory.VIDEOS, VaultCategory.AUDIOS -> decryptToCache(itemId)
+            // Video streams through the seekable EncryptedVaultDataSource — resolved lazily
+            // by the screen, decrypted one chunk at a time, never a plaintext temp file
+            // (APP-347 §1.1). Audio keeps the small in-cache temp path for now.
+            VaultCategory.VIDEOS -> PageContent.Video(itemId)
+            VaultCategory.AUDIOS -> decryptToCache(itemId)
             else -> {
                 val bytes = withContext(ioDispatcher) { repository.openDecrypted(itemId) }
                 if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
             }
         }
     }
+
+    /**
+     * Resolve [itemId] to the blob + session cipher the seekable video DataSource streams
+     * from (APP-347). Suspends on IO; returns null when the vault is locked or the blob is
+     * gone (the screen then shows the error overlay, never a crash). No plaintext is
+     * produced here — decrypt happens lazily inside ExoPlayer, one chunk per read.
+     */
+    suspend fun playbackSource(itemId: String,): com.appblish.calculatorvault.vault.player.VaultPlaybackSource? =
+        withContext(ioDispatcher) { repository.videoPlaybackSource(itemId) }
+
+    /**
+     * The stored **encrypted** grid thumbnail for [itemId], decoded off-main as the video
+     * page's tap-to-play poster. Uses the same small encrypted thumb the grid does — never
+     * a full-frame decrypt of the video, never a plaintext file (APP-244/APP-347). Null
+     * when no thumb exists yet; the poster then falls back to a plain play button on black.
+     */
+    suspend fun videoPoster(itemId: String,): ByteArray? =
+        withContext(ioDispatcher) { repository.openThumbnail(itemId) }
 
     /** Route a finished decrypt to the window and, if still settled, to [activePage]. */
     private fun publish(

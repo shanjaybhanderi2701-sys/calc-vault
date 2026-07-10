@@ -237,8 +237,25 @@ class PagerViewerViewModelTest {
         }
 
     @Test
-    fun `a failed decrypt surfaces an explicit error - unknown item and no-cache video`() =
+    fun `an unknown item surfaces an explicit error, never a blank page`() =
         runTest(dispatcher) {
+            val repo = InMemoryVaultContentRepository(seed = false)
+            repo.hide(listOf(staged("pic", sortKey = 1)))
+            val viewModel = vm(repo, startItemId = "pic")
+
+            // The item vanished between settle and decrypt: an explicit error, not a blank.
+            viewModel.setActivePage("gone")
+            val missing = viewModel.activePage.first { it != null && it.content != PageContent.Loading }
+            assertThat(missing?.content).isEqualTo(PageContent.Error)
+        }
+
+    @Test
+    fun `a video resolves to a stream-on-demand Video page, never a plaintext temp file`() =
+        runTest(dispatcher) {
+            // APP-347: video no longer decrypts to a cache temp file, so it resolves to a
+            // Video page (blob+key resolved lazily by the screen through the seekable
+            // EncryptedVaultDataSource) with NO dependency on a cache dir — the ViewModel is
+            // built without a Context here, proving the old cacheDir requirement is gone.
             val repo = InMemoryVaultContentRepository(seed = false)
             val video =
                 repo
@@ -246,18 +263,13 @@ class PagerViewerViewModelTest {
                     .single()
             val viewModel = vm(repo, startItemId = video.id, category = VaultCategory.VIDEOS)
 
-            // Unknown id: the item vanished between settle and decrypt.
-            viewModel.setActivePage("gone")
-            val missing = viewModel.activePage.first { it != null && it.content != PageContent.Loading }
-            assertThat(missing?.content).isEqualTo(PageContent.Error)
-
-            // Video with no cache dir (context null): the temp-file route cannot run.
             viewModel.setActivePage(video.id)
-            val noCache =
+            val page =
                 viewModel.activePage.first {
                     it != null && it.itemId == video.id && it.content != PageContent.Loading
                 }
-            assertThat(noCache?.content).isEqualTo(PageContent.Error)
+            assertThat(page?.content).isInstanceOf(PageContent.Video::class.java)
+            assertThat((page?.content as PageContent.Video).itemId).isEqualTo(video.id)
         }
 
     @Test

@@ -351,6 +351,18 @@ interface VaultContentRepository {
     suspend fun openDecrypted(itemId: String): ByteArray?
 
     /**
+     * Resolve [itemId] to the blob + session cipher an
+     * [com.appblish.calculatorvault.vault.player.EncryptedVaultDataSource] streams from —
+     * the seekable, zero-plaintext-on-disk video path (APP-347). Returns null when the
+     * vault is locked, the item/blob is missing, or the implementation holds no on-disk
+     * blob (the default, so in-memory/preview fakes keep compiling). The device
+     * implementation resolves the blob file and hands back the live [VaultCrypto]; no key
+     * material is copied out.
+     */
+    suspend fun videoPlaybackSource(itemId: String,): com.appblish.calculatorvault.vault.player.VaultPlaybackSource? =
+        null
+
+    /**
      * Decrypt [itemId]'s blob straight into [dest] — the large-media seam for viewers that
      * must not hold a whole video in memory (bulk-op hardening, spec §11). The device
      * implementation streams blob → cipher → file and returns false (leaving no partial
