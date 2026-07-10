@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.AlertDialog
@@ -90,6 +91,10 @@ internal fun VideoPlayerControlsOverlay(
     player: Player,
     controlsVisible: Boolean,
     onToggleControls: () -> Unit,
+    // APP-379: the vault file actions (back + Info/Share/Move/Unhide/Delete). Back is a
+    // top-start button; the rest live in the ⋯ overflow — the immersive player never wears a
+    // permanent Share/Delete/Unhide bar.
+    fileActions: ViewerFileActions,
     locked: Boolean,
     onLockChanged: (Boolean) -> Unit,
     speed: Float,
@@ -185,6 +190,28 @@ internal fun VideoPlayerControlsOverlay(
                     .height(80.dp)
                     .background(TopGradient),
             )
+        }
+
+        // ---- Top-left: back (exit the immersive player, APP-379) ----
+        AnimatedVisibility(
+            visible = controlsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopStart),
+        ) {
+            IconButton(
+                onClick = {
+                    fileActions.onBack()
+                    resetAutoHide()
+                },
+                modifier = Modifier.padding(top = 4.dp, start = 4.dp),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.KeyboardArrowLeft,
+                    contentDescription = "Back",
+                    tint = Color.White,
+                )
+            }
         }
 
         // ---- §5c quick-control row ----
@@ -363,6 +390,13 @@ internal fun VideoPlayerControlsOverlay(
                                 moreMenuExpanded = false
                                 speedDialogVisible = true
                             },
+                        )
+                        // APP-379: the vault file actions live here in the temporary ⋯
+                        // overflow — reachable, but never a permanent bar over the video.
+                        HorizontalDivider()
+                        FileActionMenuItems(
+                            fileActions = fileActions,
+                            closeMenu = { moreMenuExpanded = false },
                         )
                     }
                     SubtitleTrackMenu(

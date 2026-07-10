@@ -153,6 +153,23 @@ internal class VideoPlaylistController(
 )
 
 /**
+ * CalcVault Phase B · APP-379 — the vault file-management actions (back + Info/Share/Move/
+ * Unhide/Delete) for a video/audio page. On a photo page these live on the floating
+ * [ViewerBottomBar]; on a video/audio page that permanent bar (and the photo [ViewerTopBar])
+ * is suppressed so the player is edge-to-edge and immersive, and the same actions are reached
+ * only from the player's **temporary** top-bar ⋯ overflow — never a file-management bar
+ * wrapped around the video (spec §5c immersive contract; the tester's device-test complaint).
+ */
+internal class ViewerFileActions(
+    val onBack: () -> Unit,
+    val onInfo: () -> Unit,
+    val onShare: () -> Unit,
+    val onMove: () -> Unit,
+    val onUnhide: () -> Unit,
+    val onDelete: () -> Unit,
+)
+
+/**
  * CalcVault Phase B · Wave 1 · W1-E1 — full-screen photo-vault viewer (spec §2.1, design
  * sign-off [APP-253] §4). A [HorizontalPager] across the album's items (the context the
  * user opened the tapped item from), rendered full-bleed over a true-black canvas with
@@ -326,6 +343,22 @@ private fun ViewerPager(
     val currentItem = state.pages.getOrNull(pagerState.currentPage.coerceIn(0, state.pages.lastIndex))
     val position = "${pagerState.currentPage + 1} / ${state.pages.size}"
 
+    // APP-379: a video/audio page is an immersive player — it owns the whole screen and
+    // renders its OWN controls, so the photo-viewer's floating file-management chrome (the
+    // top bar + the Unhide/Delete/Move/Share bottom bar) must NOT wrap it. The same file
+    // actions are threaded into the player instead, reachable from its temporary ⋯ overflow.
+    val currentIsPlayable =
+        currentItem?.category == VaultCategory.VIDEOS || currentItem?.category == VaultCategory.AUDIOS
+    val fileActions =
+        ViewerFileActions(
+            onBack = onBack,
+            onInfo = { currentItem?.let(onInfo) },
+            onShare = { viewModel.share() },
+            onMove = { currentItem?.let(onMove) },
+            onUnhide = { currentItem?.let(onUnhide) },
+            onDelete = { showDeleteChoice = true },
+        )
+
     Box(modifier = Modifier.fillMaxSize()) {
         HorizontalPager(
             state = pagerState,
@@ -351,12 +384,15 @@ private fun ViewerPager(
                 // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
                 onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
                 bitmapCache = bitmapCache,
+                fileActions = fileActions,
                 playlist = playlistController,
             )
         }
 
+        // APP-379: the photo-viewer chrome only ever wraps a photo — a video/audio page is an
+        // immersive player that supplies its own controls + back + ⋯ file overflow.
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = chromeVisible && !currentIsPlayable,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter),
@@ -379,7 +415,7 @@ private fun ViewerPager(
         }
 
         AnimatedVisibility(
-            visible = chromeVisible,
+            visible = chromeVisible && !currentIsPlayable,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -423,6 +459,7 @@ private fun ViewerPage(
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
     bitmapCache: ViewerBitmapCache<ImageBitmap>,
+    fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
 ) {
     val colors = VaultTheme.colors
@@ -440,7 +477,7 @@ private fun ViewerPage(
                     VideoPage(
                         itemId = content.itemId,
                         hasVideoFrame = content.hasVideoFrame,
-                        onToggleChrome = onToggleChrome,
+                        fileActions = fileActions,
                         playlist = playlist,
                     )
                 } else {
@@ -664,12 +701,16 @@ private fun ZoomableImage(
  * plaintext temp file, APP-347) under a semi-transparent centred play button; the
  * surrounding chrome (Unhide/Delete/Move/More + Info) stays available exactly as on a photo
  * page, and a tap outside the button toggles it. Tapping play swaps in the ExoPlayer surface.
+ *
+ * APP-379: both the preview and the playing player are **immersive** — the photo-viewer's
+ * file-management chrome never wraps them. [fileActions] (back + Info/Share/Move/Unhide/
+ * Delete) is surfaced only through the temporary top-bar ⋯ overflow instead.
  */
 @Composable
 private fun VideoPage(
     itemId: String,
     hasVideoFrame: Boolean,
-    onToggleChrome: () -> Unit,
+    fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
 ) {
     // Wave 4 (APP-351): Expand from the mini player must resume the full player immediately —
@@ -677,25 +718,30 @@ private fun VideoPage(
     val session = rememberMiniPlayerSession()
     var playing by remember(itemId) { mutableStateOf(session.isExpandingInto(itemId)) }
     if (playing) {
-        MediaPlayerPage(itemId, playlist)
+        MediaPlayerPage(itemId, fileActions, playlist)
     } else {
         VideoPreviewPage(
             itemId = itemId,
             hasVideoFrame = hasVideoFrame,
             onPlay = { playing = true },
-            onToggleChrome = onToggleChrome,
+            fileActions = fileActions,
         )
     }
 }
 
-/** The pre-playback preview: decoded frame + `viewer.playButton` over the black canvas. */
+/**
+ * The pre-playback preview: decoded frame + `viewer.playButton` over the black canvas.
+ * APP-379: immersive — a tap toggles a **temporary** top bar (back + ⋯ file overflow), never
+ * the photo-viewer's permanent Unhide/Delete/Share bar.
+ */
 @Composable
 private fun VideoPreviewPage(
     itemId: String,
     hasVideoFrame: Boolean,
     onPlay: () -> Unit,
-    onToggleChrome: () -> Unit,
+    fileActions: ViewerFileActions,
 ) {
+    var barsVisible by remember(itemId) { mutableStateOf(true) }
     // First frame streamed straight off the encrypted blob (APP-347) — decrypt-on-demand via
     // a MediaDataSource, off the main thread, NEVER a plaintext temp file. Audio blobs (and
     // any read failure) simply have no frame — the play button over the canvas is the preview.
@@ -726,7 +772,7 @@ private fun VideoPreviewPage(
         modifier =
             Modifier
                 .fillMaxSize()
-                .pointerInput(Unit) { detectTapGestures(onTap = { onToggleChrome() }) },
+                .pointerInput(Unit) { detectTapGestures(onTap = { barsVisible = !barsVisible }) },
     ) {
         frame?.let { bmp ->
             Image(
@@ -753,7 +799,118 @@ private fun VideoPreviewPage(
                 modifier = Modifier.size(44.dp),
             )
         }
+        // APP-379: immersive temporary top bar — back + ⋯ file overflow, no permanent bars.
+        AnimatedVisibility(
+            visible = barsVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.align(Alignment.TopCenter),
+        ) {
+            ImmersivePlayerTopBar(fileActions = fileActions)
+        }
     }
+}
+
+/**
+ * APP-379 — the immersive player's **temporary** top bar for a video/audio page: a back
+ * button (start) and a ⋯ overflow (end) holding the vault file actions. It replaces the
+ * photo-viewer's permanent Unhide/Delete/Move/Share bottom bar on a playable page, so the
+ * player is edge-to-edge and the file actions stay reachable but out of the way (spec §5c).
+ */
+@Composable
+private fun ImmersivePlayerTopBar(
+    fileActions: ViewerFileActions,
+    modifier: Modifier = Modifier,
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier =
+            modifier
+                .fillMaxWidth()
+                .background(Brush.verticalGradient(listOf(ViewerScrim, Color.Transparent)))
+                .padding(horizontal = VaultTheme.spacing.sm, vertical = VaultTheme.spacing.sm),
+    ) {
+        IconButton(onClick = fileActions.onBack) {
+            Icon(Icons.Filled.KeyboardArrowLeft, contentDescription = "Back", tint = ViewerOnCanvas)
+        }
+        Box(modifier = Modifier.weight(1f))
+        FileActionsOverflow(fileActions = fileActions, tint = ViewerOnCanvas)
+    }
+}
+
+/**
+ * APP-379 — the ⋯ overflow button + menu carrying the vault file actions for a video/audio
+ * page (Info/Share/Move/Unhide/Delete). Shared by the preview's [ImmersivePlayerTopBar] and
+ * the playing overlay, so the file actions are surfaced identically in both states.
+ */
+@Composable
+internal fun FileActionsOverflow(
+    fileActions: ViewerFileActions,
+    tint: Color,
+    modifier: Modifier = Modifier,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Box(modifier = modifier) {
+        IconButton(onClick = { expanded = true }) {
+            Icon(Icons.Filled.MoreVert, contentDescription = "File actions", tint = tint)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            FileActionMenuItems(fileActions = fileActions, closeMenu = { expanded = false })
+        }
+    }
+}
+
+/**
+ * APP-379 — the five vault file-action rows (Info/Share/Move/Unhide/Delete) emitted inside a
+ * [DropdownMenu]. Shared so the preview's [FileActionsOverflow] and the playing player's ⋯
+ * menu ([VideoPlayerControlsOverlay]) surface exactly the same actions. [closeMenu] dismisses
+ * the host menu before the action fires.
+ */
+@Composable
+internal fun FileActionMenuItems(
+    fileActions: ViewerFileActions,
+    closeMenu: () -> Unit,
+) {
+    DropdownMenuItem(
+        text = { Text("Info") },
+        leadingIcon = { Icon(Icons.Filled.Info, contentDescription = null) },
+        onClick = {
+            closeMenu()
+            fileActions.onInfo()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("Share") },
+        leadingIcon = { Icon(Icons.Filled.Share, contentDescription = null) },
+        onClick = {
+            closeMenu()
+            fileActions.onShare()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("Move") },
+        leadingIcon = { Icon(VaultActionIcons.MoveTo, contentDescription = null) },
+        onClick = {
+            closeMenu()
+            fileActions.onMove()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("Unhide") },
+        leadingIcon = { Icon(VaultActionIcons.Unhide, contentDescription = null) },
+        onClick = {
+            closeMenu()
+            fileActions.onUnhide()
+        },
+    )
+    DropdownMenuItem(
+        text = { Text("Delete") },
+        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+        onClick = {
+            closeMenu()
+            fileActions.onDelete()
+        },
+    )
 }
 
 /**
@@ -778,6 +935,7 @@ private fun VideoPreviewPage(
 @Composable
 private fun MediaPlayerPage(
     itemId: String,
+    fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
 ) {
     val context = LocalContext.current
@@ -963,6 +1121,9 @@ private fun MediaPlayerPage(
                 player = player,
                 controlsVisible = controlsVisible,
                 onToggleControls = { controlsVisible = !controlsVisible },
+                // APP-379: back + the vault file actions (⋯ overflow) live in the player's
+                // temporary top bar — never a permanent file-management bar over the video.
+                fileActions = fileActions,
                 locked = locked,
                 onLockChanged = { locked = it },
                 speed = speed,
