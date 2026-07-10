@@ -70,7 +70,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -78,7 +77,6 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
-import androidx.media3.ui.PlayerView
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -91,7 +89,6 @@ import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import android.graphics.Color as AndroidColor
 
 /**
  * CalcVault Phase B · Wave 1 · W1-E1 — full-screen photo-vault viewer (spec §2.1, design
@@ -684,19 +681,11 @@ private fun MediaPlayerPage(itemId: String) {
     if (error != null) {
         UnsupportedMediaPage(error)
     } else {
-        AndroidView(
-            modifier = Modifier.fillMaxSize(),
-            factory = { ctx ->
-                // Stable PlayerView surface only (customization setters are @UnstableApi
-                // and would trip the UnsafeOptInUsageError lint gate); the default controller
-                // already provides the seekbar + play/pause.
-                PlayerView(ctx).apply {
-                    this.player = player
-                    setBackgroundColor(AndroidColor.BLACK)
-                }
-            },
-            update = { view -> view.player = player },
-        )
+        // Wave 2 (APP-349): the PlayerView is wrapped in the gesture surface — single tap
+        // toggles the controller, double-tap seeks ±10s, and single-pointer swipes drive
+        // brightness / volume / scrub (spec §3). The seekbar + play/pause still come from the
+        // built-in controller; this overlay only takes ownership of raw touches.
+        VideoPlayerSurface(player = player)
     }
 }
 
