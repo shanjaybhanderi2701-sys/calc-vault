@@ -18,7 +18,9 @@ import java.util.Random
  * *ends on its own*; manual Next/Prev always wrap so the user is never stuck at a boundary
  * (matches the reference player). Only [onCompletion] honours "stop at end".
  */
-enum class OrderMode(val label: String) {
+enum class OrderMode(
+    val label: String
+) {
     /** Play in the folder's original sequence; stop after the last video. */
     ORDER("Order"),
 

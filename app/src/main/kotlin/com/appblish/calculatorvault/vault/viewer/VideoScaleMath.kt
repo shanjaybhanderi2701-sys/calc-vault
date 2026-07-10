@@ -25,7 +25,9 @@ object VideoScaleMath {
      *  - [ZOOM] → same fill-crop family, exposed as its own menu entry per the reference doc.
      *  - [STRETCH] → stretches to fill ignoring ratio (`RESIZE_MODE_FILL`).
      */
-    enum class AspectMode(val label: String) {
+    enum class AspectMode(
+        val label: String
+    ) {
         FIT("Fit"),
         FILL("Fill"),
         ZOOM("Zoom"),

@@ -50,8 +50,7 @@ object VideoZoomMath {
         candidateY: Float,
         maxX: Float,
         maxY: Float,
-    ): Pair<Float, Float> =
-        candidateX.coerceIn(-maxX, maxX) to candidateY.coerceIn(-maxY, maxY)
+    ): Pair<Float, Float> = candidateX.coerceIn(-maxX, maxX) to candidateY.coerceIn(-maxY, maxY)
 
     /**
      * Resolves a full pinch update in one call: applies [pinchZoom] to [scale], clamps it, then
