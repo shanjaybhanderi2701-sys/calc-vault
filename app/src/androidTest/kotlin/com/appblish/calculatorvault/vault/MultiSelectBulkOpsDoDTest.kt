@@ -207,7 +207,7 @@ class MultiSelectBulkOpsDoDTest {
         compose.waitUntil(10_000) {
             compose.onAllNodesWithText("6 items deleted").fetchSemanticsNodes().isNotEmpty()
         }
-        compose.onNodeWithText("No Hidden Photos Yet").assertExists()
+        compose.onNodeWithTag("empty_go_to_hide").assertExists()
     }
 
     /** Six folder-less photos with descending sort keys → display order p0, p1, … p5. */
