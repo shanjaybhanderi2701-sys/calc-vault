@@ -107,6 +107,8 @@ internal fun VideoPlayerControlsOverlay(
     onLoadDeviceSubtitle: () -> Unit,
     onLoadVaultSubtitle: () -> Unit,
     onClearSubtitle: () -> Unit,
+    // APP-351 (Wave 4): minimize into the in-app floating mini player (§5c).
+    onMinimize: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -287,6 +289,17 @@ internal fun VideoPlayerControlsOverlay(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier.padding(top = 8.dp, end = 8.dp),
             ) {
+                // §5c Mini Player: minimize into the in-app floating window (APP-351 / Wave 4).
+                IconButton(onClick = {
+                    onMinimize()
+                    resetAutoHide()
+                }) {
+                    Icon(
+                        imageVector = VaultActionIcons.PictureInPicture,
+                        contentDescription = "Mini player",
+                        tint = Color.White,
+                    )
+                }
                 if (!PlaybackSpeeds.isDefault(speed)) {
                     Box(
                         modifier = Modifier

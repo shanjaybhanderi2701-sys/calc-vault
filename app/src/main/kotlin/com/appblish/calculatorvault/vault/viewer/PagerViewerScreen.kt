@@ -1,12 +1,14 @@
 package com.appblish.calculatorvault.vault.viewer
 
 import android.content.Context
+import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Looper
 import android.provider.OpenableColumns
+import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -85,6 +87,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
@@ -669,7 +672,10 @@ private fun VideoPage(
     onToggleChrome: () -> Unit,
     playlist: VideoPlaylistController,
 ) {
-    var playing by remember(itemId) { mutableStateOf(false) }
+    // Wave 4 (APP-351): Expand from the mini player must resume the full player immediately —
+    // start in the playing state (adopting the session's live player) instead of the preview.
+    val session = rememberMiniPlayerSession()
+    var playing by remember(itemId) { mutableStateOf(session.isExpandingInto(itemId)) }
     if (playing) {
         MediaPlayerPage(itemId, playlist)
     } else {
@@ -810,29 +816,46 @@ private fun MediaPlayerPage(
         return MergingMediaSource(videoSource, subSource)
     }
 
+    // Wave 4 (APP-351): while the player floats as a mini window it is owned by the
+    // activity-scoped [MiniPlayerSession]. On Expand this page adopts the session's *live*
+    // player (same instance — no re-decrypt from zero, APP-374 #6); otherwise it builds its own
+    // per-page player exactly as before.
+    val session = rememberMiniPlayerSession()
     val player =
         remember(itemId) {
-            ExoPlayer.Builder(context, legacySubtitleRenderersFactory(context)).build().apply {
-                setMediaSource(buildMediaSource(null))
-                prepare()
-                playWhenReady = true
-                addListener(
-                    object : Player.Listener {
-                        override fun onPlayerError(error: PlaybackException) {
-                            playbackError = error
-                        }
+            session.consumePlayerForExpand(itemId)
+                ?: ExoPlayer.Builder(context, legacySubtitleRenderersFactory(context)).build().apply {
+                    setMediaSource(buildMediaSource(null))
+                    prepare()
+                    playWhenReady = true
+                }
+        }
 
-                        override fun onPlaybackStateChanged(playbackState: Int) {
-                            // §5d auto-advance: the current video finished on its own → the
-                            // order mode decides where playback goes (or to stop).
-                            if (playbackState == Player.STATE_ENDED) currentPlaylist.onCompleted()
-                        }
-                    },
-                )
+    // The viewer's auto-advance + error listener, added for BOTH created and adopted players and
+    // removed on dispose — so a player handed off to the mini session never keeps this (soon
+    // disposed) pager's listener; the session installs its own for mini-mode auto-advance.
+    val viewerListener =
+        remember(itemId) {
+            object : Player.Listener {
+                override fun onPlayerError(error: PlaybackException) {
+                    playbackError = error
+                }
+
+                override fun onPlaybackStateChanged(playbackState: Int) {
+                    // §5d auto-advance: the current video finished on its own → the order mode
+                    // decides where playback goes (or to stop).
+                    if (playbackState == Player.STATE_ENDED) currentPlaylist.onCompleted()
+                }
             }
         }
-    DisposableEffect(itemId) {
-        onDispose { player.release() }
+    DisposableEffect(itemId, player) {
+        player.addListener(viewerListener)
+        onDispose {
+            player.removeListener(viewerListener)
+            // Never release a player the mini session has adopted (minimize handoff) — the
+            // session owns its lifecycle then. Release only a page-owned player.
+            if (!session.owns(player)) player.release()
+        }
     }
 
     // F3 · REPEAT_CURRENT loops the single item in place (never reaches STATE_ENDED); every
@@ -955,6 +978,26 @@ private fun MediaPlayerPage(
                 onLoadDeviceSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
                 onLoadVaultSubtitle = { showVaultSubPicker = true },
                 onClearSubtitle = { subtitle = null },
+                // §5c Mini Player (APP-351): hand the live player to the activity-scoped session
+                // and snapshot the current-folder video/audio playlist for the mini Next/Prev.
+                // VaultNavHost observes mode == MINI and pops back to the vault (Option A).
+                onMinimize = {
+                    val videos =
+                        playlist.items.filter {
+                            it.category == VaultCategory.VIDEOS || it.category == VaultCategory.AUDIOS
+                        }
+                    val current = playlist.items.firstOrNull { it.id == itemId }
+                    val videoIds = videos.map { it.id }
+                    session.minimize(
+                        exoPlayer = player,
+                        itemId = itemId,
+                        category = current?.category ?: VaultCategory.VIDEOS,
+                        folderId = current?.folderId,
+                        playlistVideoIds = videoIds,
+                        currentIndex = videoIds.indexOf(itemId).coerceAtLeast(0),
+                        order = playlist.orderMode,
+                    )
+                },
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })
@@ -1367,3 +1410,26 @@ private val ViewerCanvas = Color(0xFF000000)
 private val ViewerOnCanvas = Color(0xFFFFFFFF)
 private val ViewerOnCanvasMuted = Color(0xB3FFFFFF)
 private val ViewerScrim = Color(0x80000000)
+
+/**
+ * The one [MiniPlayerSession] for the whole vault, scoped to the hosting [ComponentActivity]'s
+ * `ViewModelStore` (APP-374 #1: activity-scoped, never a `@Singleton`/`object`). Every in-vault
+ * destination — the viewer and the `VaultNavHost` overlay — resolves the *same* instance, so the
+ * mini player survives the `VIEWER → vault` nav transition while dying with the Activity window.
+ */
+@Composable
+private fun rememberMiniPlayerSession(): MiniPlayerSession {
+    val context = LocalContext.current
+    val activity =
+        remember(context) { context.findComponentActivity() }
+            ?: error("MiniPlayerSession requires a ComponentActivity host")
+    return viewModel(viewModelStoreOwner = activity)
+}
+
+/** Walk the [Context] wrapper chain to the hosting [ComponentActivity] (the vault window). */
+private tailrec fun Context.findComponentActivity(): ComponentActivity? =
+    when (this) {
+        is ComponentActivity -> this
+        is ContextWrapper -> baseContext.findComponentActivity()
+        else -> null
+    }

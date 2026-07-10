@@ -83,6 +83,20 @@ object VaultActionIcons {
         )
     }
 
+    /**
+     * Material `picture_in_picture_alt` — the §5c Wave-4 **Mini Player** control glyph (APP-351):
+     * tap in the full player to minimize into the in-app floating window. Same glyph the mini
+     * window's Expand affordance inverts back to [Fullscreen].
+     */
+    val PictureInPicture: ImageVector by lazy {
+        icon(
+            name = "Filled.PictureInPictureAlt",
+            pathData =
+                "M19,11h-8v6h8V11zM17,15h-4v-2h4V15zM21,3H3c-1.1,0 -2,0.9 -2,2v14c0,1.1 0.9,2 2,2h18" +
+                    "c1.1,0 2,-0.9 2,-2V5C23,3.9 22.1,3 21,3zM21,19.01H3V4.98h18V19.01z",
+        )
+    }
+
     /** Material `volume_up` — the §5c Volume control, un-muted state. */
     val VolumeOn: ImageVector by lazy {
         icon(

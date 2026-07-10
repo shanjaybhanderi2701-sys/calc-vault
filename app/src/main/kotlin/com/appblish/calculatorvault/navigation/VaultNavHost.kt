@@ -71,6 +71,9 @@ import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
 import com.appblish.calculatorvault.vault.storage.ui.AllFilesPrimerSheet
 import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
+import com.appblish.calculatorvault.vault.viewer.MiniPlayerLayout
+import com.appblish.calculatorvault.vault.viewer.MiniPlayerSession
+import com.appblish.calculatorvault.vault.viewer.MiniPlayerWindow
 import com.appblish.calculatorvault.vault.viewer.PagerViewerScreen
 import com.appblish.calculatorvault.vault.viewer.PagerViewerViewModel
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
@@ -91,6 +94,12 @@ import kotlinx.coroutines.launch
 fun VaultNavHost() {
     val navController = rememberNavController()
     val context = LocalContext.current.applicationContext
+
+    // Wave 4 (APP-351) in-app Mini Player, Option A (APP-374): one activity-scoped session owns
+    // the ExoPlayer while it floats above the NavHost. Scoped here (VaultNavHost's store owner is
+    // the vault ComponentActivity), so it survives nav but dies with the Activity window — never
+    // a process/app singleton (it holds decrypted playback).
+    val miniSession: MiniPlayerSession = viewModel()
 
     // Open the encrypted public-storage vault for the current session and land on the
     // home, dropping the disguise spine so back returns to the calculator. unlock() derives
@@ -121,6 +130,11 @@ fun VaultNavHost() {
                     SessionLock.isVaultSurface(navController.currentDestination?.route) &&
                     !SessionLock.consumeGrantRoundTrip()
                 ) {
+                    // APP-374 #2: tear down the Mini Player's decrypted playback SYNCHRONOUSLY,
+                    // before navigating to the disguise, so nothing audible/decoded survives the
+                    // background. (The session also self-observes ON_STOP as a backstop; both are
+                    // idempotent.) No auto-resume — playback intentionally does not survive.
+                    miniSession.releaseAndClose()
                     SessionLock.relock()
                     navController.navigate(VaultDestinations.CALCULATOR) {
                         popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
@@ -148,420 +162,454 @@ fun VaultNavHost() {
         }
     }
 
-    NavHost(
-        navController = navController,
-        startDestination = VaultDestinations.GATE,
-    ) {
-        composable(VaultDestinations.GATE) {
-            GateScreen(
-                onOnboard = {
-                    navController.navigate(VaultDestinations.ONBOARDING) {
-                        popUpTo(VaultDestinations.GATE) { inclusive = true }
-                    }
-                },
-                onReady = {
-                    navController.navigate(VaultDestinations.CALCULATOR) {
-                        popUpTo(VaultDestinations.GATE) { inclusive = true }
-                    }
-                },
-            )
-        }
-
-        composable(VaultDestinations.ONBOARDING) {
-            OnboardingRoute(
-                // Spec §1.5: the last intro card lands on Home (Vault tab), not back on the
-                // calculator. The calculator is still planted beneath so back / re-lock from
-                // the home always reveals the disguise. The just-created PIN opens the real
-                // vault; a blank PIN (defensive — should not happen) falls back to the
-                // calculator alone.
-                onComplete = { pin ->
-                    navController.navigate(VaultDestinations.CALCULATOR) {
-                        popUpTo(VaultDestinations.ONBOARDING) { inclusive = true }
-                    }
-                    if (pin.isNotEmpty()) {
-                        VaultGraph.contentRepository.lock()
-                        VaultSession.begin(pin, VaultDestinations.storageId(VaultKind.Real))
-                        enterVault()
-                    }
-                },
-            )
-        }
-
-        composable(VaultDestinations.CALCULATOR) {
-            CalculatorScreen(
-                // A matched code both identifies the vault (real/decoy → storage namespace)
-                // and is the passphrase that derives its data key. Re-key the shared
-                // repository for this session first so a previous session's content can
-                // never leak across the calculator boundary (decoy isolation). The vault
-                // opens immediately; All Files Access is primed contextually inside (§5).
-                onUnlock = { kind, code ->
-                    VaultGraph.contentRepository.lock()
-                    VaultSession.begin(code, VaultDestinations.storageId(kind))
-                    enterVault()
-                },
-                // PIN Recovery doorways (spec §1.4): `11223344 =` and the 3-failed-attempt
-                // affordance open the recovery landing. A doorway only — it resets nothing.
-                onOpenRecovery = { navController.navigate(VaultDestinations.RECOVERY_ENTRY) },
-            )
-        }
-
-        composable(VaultDestinations.VAULT_HOME) {
-            val activityContext = LocalContext.current
-
-            // Back at the vault-home root leaves the app entirely (APP-248): the disguise
-            // and the unlocked vault must never share a back stack, so pressing back here
-            // exits to the device home screen with the vault LOCKED, rather than popping
-            // back to the calculator in an unlocked in-app session. Forget the session +
-            // data key first (APP-225 P1a — otherwise the repository stays unlocked in
-            // memory behind the disguise), then move the task to the background (launcher).
-            // Backgrounding fires the ON_STOP observer above, which additionally resets the
-            // restored spine onto the calculator lock, so the next foreground (warm or cold)
-            // shows the calculator disguise and demands the PIN again.
-            BackHandler {
-                SessionLock.lockNow()
-                activityContext.findActivity()?.moveTaskToBack(true)
-            }
-
-            // Contextual All-Files-Access gate (spec §5, design call D-2): content surfaces
-            // prompt via the primer bottom sheet on first tap; the tapped destination is
-            // parked and resumed the moment the grant round-trip returns successfully.
-            var pendingRoute by rememberSaveable { mutableStateOf<String?>(null) }
-            var showPrimer by rememberSaveable { mutableStateOf(false) }
-
-            fun openContent(route: String) {
-                if (StoragePermissions.hasAllFilesAccess(activityContext)) {
-                    VaultGraph.contentRepository.unlock()
-                    navController.navigate(route)
-                } else {
-                    pendingRoute = route
-                    showPrimer = true
+    // Wave 4 (APP-351): drive nav from the Mini Player mode. Minimize (→ MINI) returns the user
+    // to the vault by popping the viewer; Expand (→ FULL with a held item) re-opens the viewer on
+    // that item so it re-adopts the session's live player (Option A, APP-374). The overlay itself
+    // is drawn above the NavHost below.
+    LaunchedEffect(miniSession.mode) {
+        when (miniSession.mode) {
+            MiniPlayerLayout.Mode.MINI -> {
+                if (navController.currentDestination?.route == VaultDestinations.VIEWER) {
+                    navController.popBackStack()
                 }
             }
+            MiniPlayerLayout.Mode.FULL -> {
+                val itemId = miniSession.currentItemId
+                val category = miniSession.expandCategory
+                if (itemId != null &&
+                    category != null &&
+                    navController.currentDestination?.route != VaultDestinations.VIEWER
+                ) {
+                    navController.navigate(
+                        VaultDestinations.viewer(itemId, category, miniSession.expandFolderId),
+                    )
+                }
+            }
+            MiniPlayerLayout.Mode.CLOSED -> Unit
+        }
+    }
 
-            // Legacy (< API 30) grant path: a plain runtime dialog, no settings round-trip.
-            val legacyLauncher =
-                rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+    Box(modifier = Modifier.fillMaxSize()) {
+        NavHost(
+            navController = navController,
+            startDestination = VaultDestinations.GATE,
+        ) {
+            composable(VaultDestinations.GATE) {
+                GateScreen(
+                    onOnboard = {
+                        navController.navigate(VaultDestinations.ONBOARDING) {
+                            popUpTo(VaultDestinations.GATE) { inclusive = true }
+                        }
+                    },
+                    onReady = {
+                        navController.navigate(VaultDestinations.CALCULATOR) {
+                            popUpTo(VaultDestinations.GATE) { inclusive = true }
+                        }
+                    },
+                )
+            }
+
+            composable(VaultDestinations.ONBOARDING) {
+                OnboardingRoute(
+                    // Spec §1.5: the last intro card lands on Home (Vault tab), not back on the
+                    // calculator. The calculator is still planted beneath so back / re-lock from
+                    // the home always reveals the disguise. The just-created PIN opens the real
+                    // vault; a blank PIN (defensive — should not happen) falls back to the
+                    // calculator alone.
+                    onComplete = { pin ->
+                        navController.navigate(VaultDestinations.CALCULATOR) {
+                            popUpTo(VaultDestinations.ONBOARDING) { inclusive = true }
+                        }
+                        if (pin.isNotEmpty()) {
+                            VaultGraph.contentRepository.lock()
+                            VaultSession.begin(pin, VaultDestinations.storageId(VaultKind.Real))
+                            enterVault()
+                        }
+                    },
+                )
+            }
+
+            composable(VaultDestinations.CALCULATOR) {
+                CalculatorScreen(
+                    // A matched code both identifies the vault (real/decoy → storage namespace)
+                    // and is the passphrase that derives its data key. Re-key the shared
+                    // repository for this session first so a previous session's content can
+                    // never leak across the calculator boundary (decoy isolation). The vault
+                    // opens immediately; All Files Access is primed contextually inside (§5).
+                    onUnlock = { kind, code ->
+                        VaultGraph.contentRepository.lock()
+                        VaultSession.begin(code, VaultDestinations.storageId(kind))
+                        enterVault()
+                    },
+                    // PIN Recovery doorways (spec §1.4): `11223344 =` and the 3-failed-attempt
+                    // affordance open the recovery landing. A doorway only — it resets nothing.
+                    onOpenRecovery = { navController.navigate(VaultDestinations.RECOVERY_ENTRY) },
+                )
+            }
+
+            composable(VaultDestinations.VAULT_HOME) {
+                val activityContext = LocalContext.current
+
+                // Back at the vault-home root leaves the app entirely (APP-248): the disguise
+                // and the unlocked vault must never share a back stack, so pressing back here
+                // exits to the device home screen with the vault LOCKED, rather than popping
+                // back to the calculator in an unlocked in-app session. Forget the session +
+                // data key first (APP-225 P1a — otherwise the repository stays unlocked in
+                // memory behind the disguise), then move the task to the background (launcher).
+                // Backgrounding fires the ON_STOP observer above, which additionally resets the
+                // restored spine onto the calculator lock, so the next foreground (warm or cold)
+                // shows the calculator disguise and demands the PIN again.
+                BackHandler {
+                    SessionLock.lockNow()
+                    activityContext.findActivity()?.moveTaskToBack(true)
+                }
+
+                // Contextual All-Files-Access gate (spec §5, design call D-2): content surfaces
+                // prompt via the primer bottom sheet on first tap; the tapped destination is
+                // parked and resumed the moment the grant round-trip returns successfully.
+                var pendingRoute by rememberSaveable { mutableStateOf<String?>(null) }
+                var showPrimer by rememberSaveable { mutableStateOf(false) }
+
+                fun openContent(route: String) {
+                    if (StoragePermissions.hasAllFilesAccess(activityContext)) {
+                        VaultGraph.contentRepository.unlock()
+                        navController.navigate(route)
+                    } else {
+                        pendingRoute = route
+                        showPrimer = true
+                    }
+                }
+
+                // Legacy (< API 30) grant path: a plain runtime dialog, no settings round-trip.
+                val legacyLauncher =
+                    rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+                        val pending = pendingRoute
+                        if (granted && pending != null) {
+                            pendingRoute = null
+                            VaultGraph.contentRepository.unlock()
+                            navController.navigate(pending)
+                        }
+                    }
+
+                // Returning from the system All-Files-Access screen with the grant → continue
+                // straight into the parked destination (docx: "automatically redirected").
+                LifecycleResumeEffect(Unit) {
                     val pending = pendingRoute
-                    if (granted && pending != null) {
+                    if (pending != null && StoragePermissions.hasAllFilesAccess(activityContext)) {
                         pendingRoute = null
+                        showPrimer = false
                         VaultGraph.contentRepository.unlock()
                         navController.navigate(pending)
                     }
+                    onPauseOrDispose { }
                 }
 
-            // Returning from the system All-Files-Access screen with the grant → continue
-            // straight into the parked destination (docx: "automatically redirected").
-            LifecycleResumeEffect(Unit) {
-                val pending = pendingRoute
-                if (pending != null && StoragePermissions.hasAllFilesAccess(activityContext)) {
-                    pendingRoute = null
-                    showPrimer = false
-                    VaultGraph.contentRepository.unlock()
-                    navController.navigate(pending)
-                }
-                onPauseOrDispose { }
-            }
+                VaultHomeScreen(
+                    onCategoryClick = { openContent(VaultDestinations.category(it)) },
+                    onRecentClick = { openContent(VaultDestinations.viewer(it.id, it.category)) },
+                    onRecycleBinClick = { openContent(VaultDestinations.RECYCLE_BIN) },
+                    onSearchClick = { navController.navigate(VaultDestinations.SEARCH) },
+                    onThemeClick = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
+                    onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
+                )
 
-            VaultHomeScreen(
-                onCategoryClick = { openContent(VaultDestinations.category(it)) },
-                onRecentClick = { openContent(VaultDestinations.viewer(it.id, it.category)) },
-                onRecycleBinClick = { openContent(VaultDestinations.RECYCLE_BIN) },
-                onSearchClick = { navController.navigate(VaultDestinations.SEARCH) },
-                onThemeClick = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
-                onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
-            )
+                // PIN Recovery one-time setup intro (W0 01, ruling R1): offered once after the
+                // first real vault operation when recovery is unconfigured; dismissing leaves the
+                // grid banner (07) to keep nagging.
+                RecoverySetupIntroHost(
+                    onSetUp = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
+                )
 
-            // PIN Recovery one-time setup intro (W0 01, ruling R1): offered once after the
-            // first real vault operation when recovery is unconfigured; dismissing leaves the
-            // grid banner (07) to keep nagging.
-            RecoverySetupIntroHost(
-                onSetUp = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
-            )
-
-            if (showPrimer) {
-                AllFilesPrimerSheet(
-                    onAllow = {
-                        showPrimer = false
-                        if (StoragePermissions.usesRuntimeWritePermission()) {
-                            legacyLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
-                        } else {
-                            StoragePermissions.allFilesAccessIntent(activityContext)?.let { intent ->
-                                // The system Settings trip backgrounds the app; keep this
-                                // one unlock session alive so the grant lands back inside
-                                // the vault instead of behind the calculator.
-                                SessionLock.beginGrantRoundTrip()
-                                runCatching { activityContext.startActivity(intent) }
+                if (showPrimer) {
+                    AllFilesPrimerSheet(
+                        onAllow = {
+                            showPrimer = false
+                            if (StoragePermissions.usesRuntimeWritePermission()) {
+                                legacyLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            } else {
+                                StoragePermissions.allFilesAccessIntent(activityContext)?.let { intent ->
+                                    // The system Settings trip backgrounds the app; keep this
+                                    // one unlock session alive so the grant lands back inside
+                                    // the vault instead of behind the calculator.
+                                    SessionLock.beginGrantRoundTrip()
+                                    runCatching { activityContext.startActivity(intent) }
+                                }
                             }
-                        }
-                    },
-                    onDismiss = {
-                        // Cancel / scrim tap: remain on the vault home; the surface stays
-                        // gated until the next attempt (spec §5 denial behavior).
-                        showPrimer = false
-                        pendingRoute = null
-                    },
-                )
-            }
-        }
-
-        composable(VaultDestinations.SEARCH) {
-            VaultSearchScreen(
-                onBack = { navController.popBackStack() },
-                onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id, it.category)) },
-            )
-        }
-
-        composable(
-            route = VaultDestinations.CATEGORY,
-            arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
-        ) { entry ->
-            val category = entry.category()
-            val vm: CategoryViewModel =
-                viewModel(
-                    key = "category-${category.name}",
-                    factory = viewModelFactory { initializer { CategoryViewModel(category) } },
-                )
-            CategoryScreen(
-                viewModel = vm,
-                onBack = { navController.popBackStack() },
-                onOpenItem = {
-                    // The pager's page set must equal the grid the user tapped: the open
-                    // folder's items, or the category root ("Recent") when no folder is open.
-                    navController.navigate(
-                        VaultDestinations.viewer(it.id, category, vm.state.value.openFolderId),
+                        },
+                        onDismiss = {
+                            // Cancel / scrim tap: remain on the vault home; the surface stays
+                            // gated until the next attempt (spec §5 denial behavior).
+                            showPrimer = false
+                            pendingRoute = null
+                        },
                     )
-                },
-                onHide = {
-                    // APP-299 P1-3: opened from inside a real vault album → hide flat into
-                    // it; from vault home / the album grid (or the "Recent" pseudo-folder)
-                    // → null, keeping the S16 source-bucket mapping.
-                    val destinationFolderId =
-                        vm.state.value.openFolderId
-                            ?.takeUnless { it == CategoryState.RECENT_FOLDER_ID }
-                    navController.navigate(VaultDestinations.hide(category, destinationFolderId))
-                },
-                onSetUpRecovery = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
-            )
-        }
-
-        composable(
-            route = VaultDestinations.HIDE,
-            arguments =
-                listOf(
-                    navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
-                    navArgument(VaultDestinations.ARG_FOLDER_ID) {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                ),
-        ) { entry ->
-            val category = entry.category()
-            // APP-299 P1-3 launch context: non-null → hide flat into that vault album.
-            val destinationFolderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
-            val hideContext = LocalContext.current.applicationContext
-            val vm: HideImportViewModel =
-                viewModel(
-                    // Key includes the destination so opening the flow from album A gets a
-                    // distinct VM from the vault-home flow (never reuses the wrong context).
-                    key = "hide-${category.name}-${destinationFolderId ?: "root"}",
-                    factory =
-                        viewModelFactory {
-                            initializer {
-                                HideImportViewModel(
-                                    category,
-                                    mediaSource = MediaSource(hideContext),
-                                    destinationFolderId = destinationFolderId,
-                                )
-                            }
-                        },
-                )
-            val hideScope = rememberCoroutineScope()
-            HideImportScreen(
-                viewModel = vm,
-                onBack = { navController.popBackStack() },
-                onHidden = {
-                    // First successful hide/import is the "first real vault operation" that
-                    // arms the recovery setup prompt (ruling R1) — real vault only, never a
-                    // decoy. Idempotent, so every subsequent hide is a cheap no-op.
-                    if (VaultSession.namespace.isEmpty()) {
-                        hideScope.launch { AuthGraph.credentialStore.markRealVaultOpened() }
-                    }
-                    navController.popBackStack()
-                },
-            )
-        }
-
-        composable(
-            route = VaultDestinations.VIEWER,
-            arguments =
-                listOf(
-                    navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
-                    navArgument(VaultDestinations.ARG_ITEM_ID) { type = NavType.StringType },
-                    navArgument(VaultDestinations.ARG_FOLDER_ID) {
-                        type = NavType.StringType
-                        nullable = true
-                        defaultValue = null
-                    },
-                ),
-        ) { entry ->
-            val itemId = entry.arguments?.getString(VaultDestinations.ARG_ITEM_ID).orEmpty()
-            val category = entry.category()
-            val folderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
-            val viewerContext = LocalContext.current.applicationContext
-            // Gallery-grade pager viewer (APP-235 P0): swipes across the tapped grid's page
-            // set, zooms photos, plays video/audio via ExoPlayer per settled page.
-            val vm: PagerViewerViewModel =
-                viewModel(
-                    key = "pager-$itemId",
-                    factory =
-                        viewModelFactory {
-                            initializer { PagerViewerViewModel(itemId, category, folderId, viewerContext) }
-                        },
-                )
-            // Host = app-255's gallery-grade pager; app-254's §6–§9 photo-action dialogs are
-            // layered on top and keyed to the pager's *active* page (vm.activeItem).
-            val activeItem by vm.activeItem.collectAsStateWithLifecycle()
-            val albums by vm.albums.collectAsStateWithLifecycle()
-            val albumName by vm.albumName.collectAsStateWithLifecycle()
-            val message by vm.message.collectAsStateWithLifecycle()
-            val controller = rememberPhotoActionsController()
-            val snackbarHostState = remember { SnackbarHostState() }
-            // Surface the §7 result copy (Move / Unhide / Delete / Permanent). The pager
-            // itself advances as the list shrinks and pops back once the context empties.
-            LaunchedEffect(message) {
-                val text = message ?: return@LaunchedEffect
-                snackbarHostState.showSnackbar(text)
-                vm.consumeMessage()
+                }
             }
-            Box(modifier = Modifier.fillMaxSize()) {
-                PagerViewerScreen(
+
+            composable(VaultDestinations.SEARCH) {
+                VaultSearchScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenItem = { navController.navigate(VaultDestinations.viewer(it.id, it.category)) },
+                )
+            }
+
+            composable(
+                route = VaultDestinations.CATEGORY,
+                arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
+            ) { entry ->
+                val category = entry.category()
+                val vm: CategoryViewModel =
+                    viewModel(
+                        key = "category-${category.name}",
+                        factory = viewModelFactory { initializer { CategoryViewModel(category) } },
+                    )
+                CategoryScreen(
                     viewModel = vm,
                     onBack = { navController.popBackStack() },
-                    // §6 Move / §7 Unhide / §9 Property open the layered action dialogs
-                    // for the active page (Unhide via the destination dialog — APP-293 P0-2).
-                    onMove = { controller.open(PhotoAction.MOVE) },
-                    onInfo = { controller.open(PhotoAction.PROPERTY) },
-                    onUnhide = { controller.open(PhotoAction.UNHIDE) },
+                    onOpenItem = {
+                        // The pager's page set must equal the grid the user tapped: the open
+                        // folder's items, or the category root ("Recent") when no folder is open.
+                        navController.navigate(
+                            VaultDestinations.viewer(it.id, category, vm.state.value.openFolderId),
+                        )
+                    },
+                    onHide = {
+                        // APP-299 P1-3: opened from inside a real vault album → hide flat into
+                        // it; from vault home / the album grid (or the "Recent" pseudo-folder)
+                        // → null, keeping the S16 source-bucket mapping.
+                        val destinationFolderId =
+                            vm.state.value.openFolderId
+                                ?.takeUnless { it == CategoryState.RECENT_FOLDER_ID }
+                        navController.navigate(VaultDestinations.hide(category, destinationFolderId))
+                    },
+                    onSetUpRecovery = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
                 )
-                activeItem?.let { current ->
-                    PhotoActionsHost(
-                        controller = controller,
-                        item = current,
-                        albumName = albumName,
-                        albums = albums,
-                        callbacks =
-                            PhotoActionCallbacks(
-                                onMove = { folderId -> vm.move(folderId) },
-                                onCreateFolder = { name -> vm.createFolder(name) },
-                                onUnhide = { destination -> vm.unhide(destination) },
-                                onMoveToBin = { vm.delete() },
-                                onPermanentDelete = { vm.permanentlyDelete() },
-                            ),
+            }
+
+            composable(
+                route = VaultDestinations.HIDE,
+                arguments =
+                    listOf(
+                        navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
+                        navArgument(VaultDestinations.ARG_FOLDER_ID) {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+            ) { entry ->
+                val category = entry.category()
+                // APP-299 P1-3 launch context: non-null → hide flat into that vault album.
+                val destinationFolderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
+                val hideContext = LocalContext.current.applicationContext
+                val vm: HideImportViewModel =
+                    viewModel(
+                        // Key includes the destination so opening the flow from album A gets a
+                        // distinct VM from the vault-home flow (never reuses the wrong context).
+                        key = "hide-${category.name}-${destinationFolderId ?: "root"}",
+                        factory =
+                            viewModelFactory {
+                                initializer {
+                                    HideImportViewModel(
+                                        category,
+                                        mediaSource = MediaSource(hideContext),
+                                        destinationFolderId = destinationFolderId,
+                                    )
+                                }
+                            },
                     )
+                val hideScope = rememberCoroutineScope()
+                HideImportScreen(
+                    viewModel = vm,
+                    onBack = { navController.popBackStack() },
+                    onHidden = {
+                        // First successful hide/import is the "first real vault operation" that
+                        // arms the recovery setup prompt (ruling R1) — real vault only, never a
+                        // decoy. Idempotent, so every subsequent hide is a cheap no-op.
+                        if (VaultSession.namespace.isEmpty()) {
+                            hideScope.launch { AuthGraph.credentialStore.markRealVaultOpened() }
+                        }
+                        navController.popBackStack()
+                    },
+                )
+            }
+
+            composable(
+                route = VaultDestinations.VIEWER,
+                arguments =
+                    listOf(
+                        navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType },
+                        navArgument(VaultDestinations.ARG_ITEM_ID) { type = NavType.StringType },
+                        navArgument(VaultDestinations.ARG_FOLDER_ID) {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+            ) { entry ->
+                val itemId = entry.arguments?.getString(VaultDestinations.ARG_ITEM_ID).orEmpty()
+                val category = entry.category()
+                val folderId = entry.arguments?.getString(VaultDestinations.ARG_FOLDER_ID)
+                val viewerContext = LocalContext.current.applicationContext
+                // Gallery-grade pager viewer (APP-235 P0): swipes across the tapped grid's page
+                // set, zooms photos, plays video/audio via ExoPlayer per settled page.
+                val vm: PagerViewerViewModel =
+                    viewModel(
+                        key = "pager-$itemId",
+                        factory =
+                            viewModelFactory {
+                                initializer { PagerViewerViewModel(itemId, category, folderId, viewerContext) }
+                            },
+                    )
+                // Host = app-255's gallery-grade pager; app-254's §6–§9 photo-action dialogs are
+                // layered on top and keyed to the pager's *active* page (vm.activeItem).
+                val activeItem by vm.activeItem.collectAsStateWithLifecycle()
+                val albums by vm.albums.collectAsStateWithLifecycle()
+                val albumName by vm.albumName.collectAsStateWithLifecycle()
+                val message by vm.message.collectAsStateWithLifecycle()
+                val controller = rememberPhotoActionsController()
+                val snackbarHostState = remember { SnackbarHostState() }
+                // Surface the §7 result copy (Move / Unhide / Delete / Permanent). The pager
+                // itself advances as the list shrinks and pops back once the context empties.
+                LaunchedEffect(message) {
+                    val text = message ?: return@LaunchedEffect
+                    snackbarHostState.showSnackbar(text)
+                    vm.consumeMessage()
                 }
-                SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+                Box(modifier = Modifier.fillMaxSize()) {
+                    PagerViewerScreen(
+                        viewModel = vm,
+                        onBack = { navController.popBackStack() },
+                        // §6 Move / §7 Unhide / §9 Property open the layered action dialogs
+                        // for the active page (Unhide via the destination dialog — APP-293 P0-2).
+                        onMove = { controller.open(PhotoAction.MOVE) },
+                        onInfo = { controller.open(PhotoAction.PROPERTY) },
+                        onUnhide = { controller.open(PhotoAction.UNHIDE) },
+                    )
+                    activeItem?.let { current ->
+                        PhotoActionsHost(
+                            controller = controller,
+                            item = current,
+                            albumName = albumName,
+                            albums = albums,
+                            callbacks =
+                                PhotoActionCallbacks(
+                                    onMove = { folderId -> vm.move(folderId) },
+                                    onCreateFolder = { name -> vm.createFolder(name) },
+                                    onUnhide = { destination -> vm.unhide(destination) },
+                                    onMoveToBin = { vm.delete() },
+                                    onPermanentDelete = { vm.permanentlyDelete() },
+                                ),
+                        )
+                    }
+                    SnackbarHost(snackbarHostState, modifier = Modifier.align(Alignment.BottomCenter))
+                }
+            }
+
+            composable(
+                route = VaultDestinations.SLIDESHOW,
+                arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
+            ) { entry ->
+                val category = entry.category()
+                val vm: SlideshowViewModel =
+                    viewModel(
+                        key = "slideshow-${category.name}",
+                        factory = viewModelFactory { initializer { SlideshowViewModel(category) } },
+                    )
+                val items by vm.items.collectAsStateWithLifecycle()
+                FolderSlideshowScreen(items = items, onBack = { navController.popBackStack() })
+            }
+
+            composable(VaultDestinations.RECYCLE_BIN) {
+                RecycleBinScreen(onBack = { navController.popBackStack() })
+            }
+
+            // --- PIN Recovery (APP-321 W2) ---
+
+            // Setup flow (W0 02–06): writes Wrap B + Wrap C for the session DEK on completion.
+            composable(VaultDestinations.RECOVERY_SETUP) {
+                RecoverySetupScreen(
+                    onDone = { navController.popBackStack() },
+                    onCancel = { navController.popBackStack() },
+                )
+            }
+
+            // The doorway landing (W0 08): both `11223344 =` and the 3-fail affordance arrive
+            // here. The method rows hand off to the W3 unlock+reset seam.
+            composable(VaultDestinations.RECOVERY_ENTRY) {
+                RecoveryEntryScreen(
+                    onAnswerMethod = { navController.navigate(VaultDestinations.recoveryUnlock("answer")) },
+                    onCodeMethod = { navController.navigate(VaultDestinations.recoveryUnlock("code")) },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            // W3 (W0 09/10 → 11, APP-325): prove identity via Wrap B/C, then set a new PIN that
+            // re-wraps Wrap A only. On success the vault is unlocked under the new PIN — drop the
+            // recovery + calculator lock backstack and land on the vault home.
+            composable(
+                route = VaultDestinations.RECOVERY_UNLOCK,
+                arguments = listOf(navArgument(VaultDestinations.ARG_RECOVERY_METHOD) { type = NavType.StringType }),
+            ) { entry ->
+                val method =
+                    if (entry.arguments?.getString(VaultDestinations.ARG_RECOVERY_METHOD) == "code") {
+                        RecoveryMethod.RECOVERY_CODE
+                    } else {
+                        RecoveryMethod.SECURITY_ANSWER
+                    }
+                RecoveryUnlockScreen(
+                    method = method,
+                    onDone = {
+                        navController.navigate(VaultDestinations.VAULT_HOME) {
+                            popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
+                            launchSingleTop = true
+                        }
+                    },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            // Minimal Phase-1 Settings (S22): language, change password, switch app icon,
+            // theme, All Files Access status, hide-from-recents, about.
+            composable(VaultDestinations.SETTINGS) {
+                SettingsScreen(
+                    onBack = { navController.popBackStack() },
+                    onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
+                    onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
+                    onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
+                    onLanguage = { navController.navigate(VaultDestinations.SETTINGS_LANGUAGE) },
+                    onPinRecovery = { navController.navigate(VaultDestinations.SETTINGS_PIN_RECOVERY) },
+                )
+            }
+
+            composable(VaultDestinations.SETTINGS_PIN_RECOVERY) {
+                PinRecoveryScreen(onBack = { navController.popBackStack() })
+            }
+
+            composable(VaultDestinations.SETTINGS_CHANGE_PIN) {
+                ChangePinScreen(
+                    onDone = { navController.popBackStack() },
+                    onBack = { navController.popBackStack() },
+                )
+            }
+
+            composable(VaultDestinations.SETTINGS_THEME) {
+                ThemeScreen(onBack = { navController.popBackStack() })
+            }
+
+            composable(VaultDestinations.SETTINGS_PERMISSIONS) {
+                PermissionManagementScreen(onBack = { navController.popBackStack() })
+            }
+
+            composable(VaultDestinations.SETTINGS_LANGUAGE) {
+                SettingsLanguageScreen(onBack = { navController.popBackStack() })
             }
         }
 
-        composable(
-            route = VaultDestinations.SLIDESHOW,
-            arguments = listOf(navArgument(VaultDestinations.ARG_CATEGORY) { type = NavType.StringType }),
-        ) { entry ->
-            val category = entry.category()
-            val vm: SlideshowViewModel =
-                viewModel(
-                    key = "slideshow-${category.name}",
-                    factory = viewModelFactory { initializer { SlideshowViewModel(category) } },
-                )
-            val items by vm.items.collectAsStateWithLifecycle()
-            FolderSlideshowScreen(items = items, onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.RECYCLE_BIN) {
-            RecycleBinScreen(onBack = { navController.popBackStack() })
-        }
-
-        // --- PIN Recovery (APP-321 W2) ---
-
-        // Setup flow (W0 02–06): writes Wrap B + Wrap C for the session DEK on completion.
-        composable(VaultDestinations.RECOVERY_SETUP) {
-            RecoverySetupScreen(
-                onDone = { navController.popBackStack() },
-                onCancel = { navController.popBackStack() },
-            )
-        }
-
-        // The doorway landing (W0 08): both `11223344 =` and the 3-fail affordance arrive
-        // here. The method rows hand off to the W3 unlock+reset seam.
-        composable(VaultDestinations.RECOVERY_ENTRY) {
-            RecoveryEntryScreen(
-                onAnswerMethod = { navController.navigate(VaultDestinations.recoveryUnlock("answer")) },
-                onCodeMethod = { navController.navigate(VaultDestinations.recoveryUnlock("code")) },
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        // W3 (W0 09/10 → 11, APP-325): prove identity via Wrap B/C, then set a new PIN that
-        // re-wraps Wrap A only. On success the vault is unlocked under the new PIN — drop the
-        // recovery + calculator lock backstack and land on the vault home.
-        composable(
-            route = VaultDestinations.RECOVERY_UNLOCK,
-            arguments = listOf(navArgument(VaultDestinations.ARG_RECOVERY_METHOD) { type = NavType.StringType }),
-        ) { entry ->
-            val method =
-                if (entry.arguments?.getString(VaultDestinations.ARG_RECOVERY_METHOD) == "code") {
-                    RecoveryMethod.RECOVERY_CODE
-                } else {
-                    RecoveryMethod.SECURITY_ANSWER
-                }
-            RecoveryUnlockScreen(
-                method = method,
-                onDone = {
-                    navController.navigate(VaultDestinations.VAULT_HOME) {
-                        popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
-                        launchSingleTop = true
-                    }
-                },
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        // Minimal Phase-1 Settings (S22): language, change password, switch app icon,
-        // theme, All Files Access status, hide-from-recents, about.
-        composable(VaultDestinations.SETTINGS) {
-            SettingsScreen(
-                onBack = { navController.popBackStack() },
-                onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
-                onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
-                onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
-                onLanguage = { navController.navigate(VaultDestinations.SETTINGS_LANGUAGE) },
-                onPinRecovery = { navController.navigate(VaultDestinations.SETTINGS_PIN_RECOVERY) },
-            )
-        }
-
-        composable(VaultDestinations.SETTINGS_PIN_RECOVERY) {
-            PinRecoveryScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.SETTINGS_CHANGE_PIN) {
-            ChangePinScreen(
-                onDone = { navController.popBackStack() },
-                onBack = { navController.popBackStack() },
-            )
-        }
-
-        composable(VaultDestinations.SETTINGS_THEME) {
-            ThemeScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.SETTINGS_PERMISSIONS) {
-            PermissionManagementScreen(onBack = { navController.popBackStack() })
-        }
-
-        composable(VaultDestinations.SETTINGS_LANGUAGE) {
-            SettingsLanguageScreen(onBack = { navController.popBackStack() })
-        }
+        // Wave 4 (APP-351): the in-app Mini Player floats above the NavHost, over whichever vault
+        // surface is showing. Pure in-window Compose (no SYSTEM_ALERT_WINDOW) → never over the home
+        // screen or other apps; renders only while the session is in MINI mode.
+        MiniPlayerWindow(session = miniSession)
     }
 }
 
