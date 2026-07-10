@@ -6,6 +6,7 @@ import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.appblish.calculatorvault.vault.VaultSession
 import com.appblish.calculatorvault.vault.crypto.InMemoryRecoveryReKeyer
+import com.appblish.calculatorvault.vault.crypto.RecoveryMetadataFile
 import com.appblish.calculatorvault.vault.crypto.RecoveryReKeyer
 import com.appblish.calculatorvault.vault.crypto.RecoverySecrets
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
@@ -34,8 +35,18 @@ interface RecoveryManager {
      * The security-question prompt the user chose at setup (for the recovery-entry and
      * Settings surfaces, W3/W4), or `null` if recovery is not configured / the prompt is
      * unknown. Non-secret metadata — the answer itself is never stored, only its Wrap B.
+     *
+     * The prompt is read from survive-uninstall storage beside the wraps (APP-338), so a
+     * reinstalled app that still has the wraps also still knows which question to show.
      */
     suspend fun configuredQuestion(): String?
+
+    /**
+     * Replace just the non-secret security-question prompt in survive-uninstall storage
+     * (Settings → change question, after the Wrap B re-wrap has committed). Touches no wrap and
+     * no secret. A blank prompt is rejected.
+     */
+    suspend fun updateQuestion(question: String)
 
     /**
      * Configure recovery for the current session: derive Wrap B from [securityAnswer] and
@@ -67,10 +78,17 @@ class VaultKeyFileRecoveryManager(
 
     private fun keyFile(): VaultKeyFile = VaultKeyFile(VaultStorage.keyFile(appContext))
 
-    // The chosen question prompt is non-secret display metadata; it lives in the same
-    // hardware-keystore-backed encrypted prefs family as the other settings (never as
-    // plaintext prefs). Keyed by namespace so a decoy's prompt can't shadow the real one.
-    private val prefs: SharedPreferences by lazy {
+    // The chosen prompt is non-secret display metadata, persisted beside the wraps in the
+    // hidden public `.CalcVault/<namespace>/` folder so it survives uninstall exactly like the
+    // wraps it labels (APP-338). No secret is written — only the plaintext prompt.
+    private fun metaFile(): RecoveryMetadataFile = RecoveryMetadataFile(VaultStorage.recoveryMetaFile(appContext))
+
+    // Legacy (pre-APP-338) prompt location: app-private EncryptedSharedPreferences, its MasterKey
+    // in the Android Keystore — both wiped on uninstall. Read-only now, kept solely to migrate an
+    // *in-place app update* (where the prefs still exist) so a user who set recovery up on an
+    // older build keeps their prompt. A reinstall wipes these, which is exactly the bug the
+    // survive-uninstall metadata file fixes.
+    private val legacyPrefs: SharedPreferences by lazy {
         val masterKey =
             MasterKey
                 .Builder(appContext)
@@ -78,14 +96,14 @@ class VaultKeyFileRecoveryManager(
                 .build()
         EncryptedSharedPreferences.create(
             appContext,
-            PREFS_NAME,
+            LEGACY_PREFS_NAME,
             masterKey,
             EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
         )
     }
 
-    private fun questionKey(): String = "$KEY_QUESTION_PREFIX${VaultSession.namespace}"
+    private fun legacyQuestionKey(): String = "$LEGACY_KEY_QUESTION_PREFIX${VaultSession.namespace}"
 
     override suspend fun isConfigured(): Boolean =
         withContext(Dispatchers.IO) {
@@ -95,7 +113,11 @@ class VaultKeyFileRecoveryManager(
 
     override suspend fun configuredQuestion(): String? =
         withContext(Dispatchers.IO) {
-            if (isConfigured()) prefs.getString(questionKey(), null) else null
+            if (!isConfigured()) return@withContext null
+            // Survive-uninstall metadata is the source of truth; fall back to the legacy prefs
+            // only to migrate an in-place update (promoting the prompt so the next reinstall
+            // keeps it).
+            metaFile().readQuestion() ?: migrateLegacyQuestion()
         }
 
     override suspend fun setUp(
@@ -113,15 +135,33 @@ class VaultKeyFileRecoveryManager(
         require(RecoverySecrets.normalizeRecoveryCode(recoveryCode).isNotEmpty()) {
             "Recovery code is empty after normalization"
         }
-        // Write the envelope first — the durable, survive-uninstall source of truth — then
-        // record the prompt; if the envelope write throws, no orphan prompt is left behind.
+        // Write the envelope first — the durable, survive-uninstall source of truth for
+        // *whether* recovery exists — then record the prompt in its own survive-uninstall file;
+        // if the envelope write throws, no orphan prompt is left behind.
         keyFile().setUpRecovery(pin, securityAnswer, recoveryCode)
-        prefs.edit().putString(questionKey(), question.trim()).apply()
+        metaFile().writeQuestion(question.trim())
+    }
+
+    override suspend fun updateQuestion(question: String) =
+        withContext(Dispatchers.IO) {
+            require(question.isNotBlank()) { "Security question is blank" }
+            metaFile().writeQuestion(question.trim())
+        }
+
+    /**
+     * Promote a prompt still held only in the legacy app-private prefs (in-place update) to the
+     * survive-uninstall metadata file, returning it. Returns `null` on a clean reinstall where
+     * the prefs are already gone — the reason this bug existed at all.
+     */
+    private fun migrateLegacyQuestion(): String? {
+        val legacy = legacyPrefs.getString(legacyQuestionKey(), null)?.takeIf { it.isNotBlank() } ?: return null
+        runCatching { metaFile().writeQuestion(legacy) }
+        return legacy
     }
 
     private companion object {
-        const val PREFS_NAME = "calcvault_recovery_meta"
-        const val KEY_QUESTION_PREFIX = "recovery_question_"
+        const val LEGACY_PREFS_NAME = "calcvault_recovery_meta"
+        const val LEGACY_KEY_QUESTION_PREFIX = "recovery_question_"
     }
 }
 
@@ -157,6 +197,11 @@ class InMemoryRecoveryManager(
         }
         this.question = question.trim()
         configured = true
+    }
+
+    override suspend fun updateQuestion(question: String) {
+        require(question.isNotBlank()) { "Security question is blank" }
+        this.question = question.trim()
     }
 }
 

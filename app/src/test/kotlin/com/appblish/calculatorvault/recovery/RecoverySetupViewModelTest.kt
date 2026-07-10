@@ -55,6 +55,11 @@ class RecoverySetupViewModelTest {
             keyFile.setUpRecovery(pin, securityAnswer, recoveryCode)
             this.question = question
         }
+
+        override suspend fun updateQuestion(question: String) {
+            require(question.isNotBlank())
+            this.question = question
+        }
     }
 
     private fun freshVault(pin: String = "1234"): Pair<VaultKeyFile, FileRecoveryManager> {

@@ -3,6 +3,8 @@ package com.appblish.calculatorvault.settings
 import com.appblish.calculatorvault.auth.InMemoryCredentialStore
 import com.appblish.calculatorvault.auth.RecoverySetup
 import com.appblish.calculatorvault.auth.SecurityQuestion
+import com.appblish.calculatorvault.recovery.InMemoryRecoveryManager
+import com.appblish.calculatorvault.recovery.RecoveryManager
 import com.appblish.calculatorvault.vault.crypto.RecoveryReWrapper
 import com.appblish.calculatorvault.vault.crypto.RecoverySecrets
 import com.appblish.calculatorvault.vault.crypto.RecoveryUpdateOutcome
@@ -66,7 +68,10 @@ class PinRecoveryViewModelTest {
     private fun vm(
         store: InMemoryCredentialStore,
         reWrapper: RecoveryReWrapper,
-    ) = PinRecoveryViewModel(store, reWrapper, fixedRandom())
+        // Survive-uninstall status source (APP-338). Default: configured, matching a store()
+        // that has recovery set up; the current question resolves via the legacy fallback.
+        recoveryManager: RecoveryManager = InMemoryRecoveryManager(configured = true),
+    ) = PinRecoveryViewModel(store, reWrapper, recoveryManager, fixedRandom())
 
     @Test
     fun `loads recovery status and the current question`() =

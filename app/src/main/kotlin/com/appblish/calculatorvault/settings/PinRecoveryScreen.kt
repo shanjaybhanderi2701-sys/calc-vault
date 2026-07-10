@@ -142,7 +142,7 @@ private fun RecoveryHub(
     if (state.hasRecovery) {
         ListRow(
             title = "Security question",
-            subtitle = state.question?.prompt ?: "Tap to set a question",
+            subtitle = state.questionPrompt ?: state.question?.prompt ?: "Tap to set a question",
             leadingIcon = Icons.Filled.Lock,
             trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
             onClick = viewModel::startChangeQuestion,

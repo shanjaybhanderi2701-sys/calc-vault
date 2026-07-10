@@ -5,6 +5,8 @@ import androidx.lifecycle.viewModelScope
 import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.auth.CredentialStore
 import com.appblish.calculatorvault.auth.RecoverySetup
+import com.appblish.calculatorvault.recovery.RecoveryGraph
+import com.appblish.calculatorvault.recovery.RecoveryManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,8 +35,9 @@ data class SettingsUiState(
 class SettingsViewModel(
     private val settingsStore: SettingsStore,
     private val credentialStore: CredentialStore,
+    private val recoveryManager: RecoveryManager = RecoveryGraph.recoveryManager,
 ) : ViewModel() {
-    constructor() : this(SettingsGraph.settingsStore, AuthGraph.credentialStore)
+    constructor() : this(SettingsGraph.settingsStore, AuthGraph.credentialStore, RecoveryGraph.recoveryManager)
 
     private val _state = MutableStateFlow(SettingsUiState())
     val state: StateFlow<SettingsUiState> = _state.asStateFlow()
@@ -46,7 +49,7 @@ class SettingsViewModel(
                 it.copy(
                     settings = settings,
                     decoyCount = credentialStore.decoySlots().size,
-                    hasRecovery = credentialStore.recoveryInfo() != null,
+                    hasRecovery = recoveryManager.isConfigured(),
                     loaded = true,
                 )
             }
@@ -107,7 +110,7 @@ class SettingsViewModel(
             _state.update {
                 it.copy(
                     decoyCount = credentialStore.decoySlots().size,
-                    hasRecovery = credentialStore.recoveryInfo() != null,
+                    hasRecovery = recoveryManager.isConfigured(),
                 )
             }
         }

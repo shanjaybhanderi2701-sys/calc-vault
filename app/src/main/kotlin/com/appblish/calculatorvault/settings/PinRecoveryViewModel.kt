@@ -6,6 +6,8 @@ import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.auth.CredentialStore
 import com.appblish.calculatorvault.auth.RecoverySetup
 import com.appblish.calculatorvault.auth.SecurityQuestion
+import com.appblish.calculatorvault.recovery.RecoveryGraph
+import com.appblish.calculatorvault.recovery.RecoveryManager
 import com.appblish.calculatorvault.vault.crypto.RecoveryReWrapper
 import com.appblish.calculatorvault.vault.crypto.RecoverySecrets
 import com.appblish.calculatorvault.vault.crypto.RecoveryUpdateOutcome
@@ -45,6 +47,10 @@ data class PinRecoveryUiState(
     val loaded: Boolean = false,
     val hasRecovery: Boolean = false,
     val question: SecurityQuestion? = null,
+    // The exact survive-uninstall prompt string (APP-338). Preferred over [question] for
+    // display so a *custom* prompt (not one of the [SecurityQuestion] presets) still shows
+    // after a reinstall, when the app-private legacy record is gone.
+    val questionPrompt: String? = null,
     val stage: RecoveryStage = RecoveryStage.HUB,
     // Regenerate-code draft (never persisted; the code lives only here until confirmed).
     val newCode: String = "",
@@ -71,26 +77,44 @@ data class PinRecoveryUiState(
 class PinRecoveryViewModel(
     private val store: CredentialStore,
     private val reWrapper: RecoveryReWrapper,
+    private val recoveryManager: RecoveryManager,
     private val random: SecureRandom,
 ) : ViewModel() {
-    constructor() : this(AuthGraph.credentialStore, AuthGraph.recoveryReWrapper, SecureRandom())
+    constructor() : this(
+        AuthGraph.credentialStore,
+        AuthGraph.recoveryReWrapper,
+        RecoveryGraph.recoveryManager,
+        SecureRandom(),
+    )
 
     private val _state = MutableStateFlow(PinRecoveryUiState())
     val state: StateFlow<PinRecoveryUiState> = _state.asStateFlow()
 
     init {
         viewModelScope.launch {
-            val info = store.recoveryInfo()
+            // Status + prompt derive from the survive-uninstall key file / metadata (APP-338),
+            // so a reinstalled app that still holds the wraps correctly shows "Recovery is set
+            // up" and the chosen question. The legacy app-private record is only a fallback to
+            // resolve a preset enum for the change-question draft when the metadata is absent.
+            val configured = recoveryManager.isConfigured()
+            val prompt = recoveryManager.configuredQuestion()
+            val legacyQuestion = store.recoveryInfo()?.question
+            val question = presetFor(prompt) ?: legacyQuestion
             _state.update {
                 it.copy(
                     loaded = true,
-                    hasRecovery = info != null,
-                    question = info?.question,
-                    draftQuestion = info?.question ?: SecurityQuestion.DEFAULT,
+                    hasRecovery = configured,
+                    question = question,
+                    questionPrompt = prompt,
+                    draftQuestion = question ?: SecurityQuestion.DEFAULT,
                 )
             }
         }
     }
+
+    /** Resolve a stored prompt string back to its preset [SecurityQuestion], or `null` if custom. */
+    private fun presetFor(prompt: String?): SecurityQuestion? =
+        prompt?.let { p -> SecurityQuestion.entries.firstOrNull { it.prompt == p } }
 
     // --- Regenerate recovery code (Wrap C) ------------------------------------------------
 
@@ -185,12 +209,16 @@ class PinRecoveryViewModel(
                             hint = existing?.hint.orEmpty(),
                         ),
                     )
+                    // Keep the survive-uninstall prompt in step with the re-wrapped Wrap B, so a
+                    // later reinstall shows the *new* question, not the old one (APP-338).
+                    runCatching { recoveryManager.updateQuestion(s.draftQuestion.prompt) }
                     _state.update {
                         it.copy(
                             stage = RecoveryStage.CHANGE_DONE,
                             busy = false,
                             hasRecovery = true,
                             question = s.draftQuestion,
+                            questionPrompt = s.draftQuestion.prompt,
                             error = null,
                         )
                     }

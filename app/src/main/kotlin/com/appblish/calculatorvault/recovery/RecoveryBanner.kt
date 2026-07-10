@@ -103,7 +103,10 @@ fun RecoveryGridBanner(
     var configured by remember { mutableStateOf(true) }
     var dismissed by remember { mutableStateOf(RecoveryPromptState.bannerDismissedThisSession) }
     LifecycleResumeEffect(Unit) {
-        val job = scope.launch { configured = manager.isConfigured() }
+        // Fail toward showing the at-risk banner: if the survive-uninstall keyfile check throws
+        // (e.g. a transient read error) it must not leave `configured` stuck at its optimistic
+        // `true` and silently hide the "recovery not set up" warning (APP-338).
+        val job = scope.launch { configured = runCatching { manager.isConfigured() }.getOrDefault(false) }
         onPauseOrDispose { job.cancel() }
     }
     if (configured || dismissed) return

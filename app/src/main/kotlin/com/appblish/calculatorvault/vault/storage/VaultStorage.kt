@@ -35,6 +35,13 @@ object VaultStorage {
     const val DIR_NAME = ".CalcVault"
     const val INDEX_NAME = "index.enc"
     const val KEY_NAME = ".vaultkey"
+
+    /**
+     * Survive-uninstall, non-secret PIN-recovery display metadata (the security-question
+     * prompt), beside the key file so it outlives an uninstall like the wraps it labels
+     * (APP-338, see [com.appblish.calculatorvault.vault.crypto.RecoveryMetadataFile]).
+     */
+    const val RECOVERY_META_NAME = ".recoverymeta"
     private const val NOMEDIA = ".nomedia"
 
     /**
@@ -79,6 +86,16 @@ object VaultStorage {
         context: Context,
         namespace: String = VaultSession.namespace,
     ): File = File(vaultDir(context, namespace), KEY_NAME)
+
+    /**
+     * The survive-uninstall recovery-metadata file (non-secret security-question prompt) inside
+     * the active vault dir, beside the key file (APP-338). Namespaced like the key file so a
+     * decoy's prompt can never shadow the real vault's.
+     */
+    fun recoveryMetaFile(
+        context: Context,
+        namespace: String = VaultSession.namespace,
+    ): File = File(vaultDir(context, namespace), RECOVERY_META_NAME)
 
     /** The blob file for [blobName] (a bare UUID, no extension) inside the active vault dir. */
     fun blobFile(
