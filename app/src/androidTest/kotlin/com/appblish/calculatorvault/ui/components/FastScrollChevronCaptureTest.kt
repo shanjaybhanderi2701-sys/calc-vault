@@ -57,7 +57,7 @@ class FastScrollChevronCaptureTest {
     @get:Rule
     val compose = createComposeRule()
 
-    private val suffix: String = "api" + android.os.Build.VERSION.SDK_INT.toString()
+    private val suffix: String = "api${android.os.Build.VERSION.SDK_INT}"
 
     private fun outDir(): File {
         // MANAGE_EXTERNAL_STORAGE lets us write to the shared volume root, which `adb pull`
@@ -67,7 +67,10 @@ class FastScrollChevronCaptureTest {
         return File(Environment.getExternalStorageDirectory(), "chevron-evidence").also { it.mkdirs() }
     }
 
-    private fun save(name: String, bitmap: Bitmap) {
+    private fun save(
+        name: String,
+        bitmap: Bitmap,
+    ) {
         runCatching {
             File(outDir(), name).outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
         }
