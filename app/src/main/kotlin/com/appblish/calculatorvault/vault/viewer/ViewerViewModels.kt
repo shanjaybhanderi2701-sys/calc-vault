@@ -26,8 +26,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.UUID
 
 /**
  * Resolves a single [VaultItem] by id for the viewer, decrypts its blob for display, and
@@ -35,11 +33,10 @@ import java.util.UUID
  * Property (W1-E2). Observes the shared repository so a change elsewhere closes the viewer
  * (item goes null).
  *
- * Decryption routing (spec §7): images/contacts stay purely in memory ([decrypted]);
- * video/audio are decrypted to a **temp file in the app-private cache dir** ([mediaFile])
- * so ExoPlayer can stream them — decrypted bytes never touch public storage in cleartext.
- * The temp file has no extension and a random name, and is deleted when the player screen
- * disposes it, with [onCleared] as a backstop.
+ * Decryption routing (spec §7): images/contacts stay purely in memory ([decrypted]).
+ * Video/audio are **not** decrypted here — playback streams the encrypted blob through the
+ * seekable decrypting DataSource in the pager viewer (APP-347), so no plaintext ever
+ * touches disk (§1.1); this single-item VM has no player and does nothing for those kinds.
  *
  * The mutating actions run on [viewModelScope] (off the main thread inside the repository,
  * spec §1.6). Move/Delete/Unhide surface a one-shot [message] for the design's §7 result
@@ -84,15 +81,6 @@ class ViewerViewModel(
     /** Decrypted blob bytes (images/contacts); null while loading or if the blob is missing. */
     val decrypted: StateFlow<ByteArray?> = _decrypted.asStateFlow()
 
-    private val _mediaFile = MutableStateFlow<File?>(null)
-
-    /** Private-cache temp file holding the decrypted video/audio blob; null for other kinds. */
-    val mediaFile: StateFlow<File?> = _mediaFile.asStateFlow()
-
-    // Recorded before the first byte is written so onCleared() can always clean up,
-    // even if the write is interrupted mid-flight.
-    private var tempFile: File? = null
-
     private val _message = MutableStateFlow<String?>(null)
 
     /** One-shot result copy for a snackbar (unhide summary, move/delete confirmation). */
@@ -108,17 +96,10 @@ class ViewerViewModel(
             val current = item.filterNotNull().first()
             when (current.category) {
                 VaultCategory.VIDEOS, VaultCategory.AUDIOS -> {
-                    val cache = appContext?.cacheDir ?: return@launch
-                    val target = File(File(cache, VIEWER_CACHE_DIR), UUID.randomUUID().toString())
-                    tempFile = target
-                    // Stream blob → cipher → file so a large video is never held in memory
-                    // (spec §11); decryptToFile deletes any partial file on failure.
-                    val ok =
-                        withContext(Dispatchers.IO) {
-                            target.parentFile?.mkdirs()
-                            repository.decryptToFile(itemId, target)
-                        }
-                    if (ok) _mediaFile.value = target
+                    // APP-347: video/audio playback now STREAMS the encrypted blob through the
+                    // seekable decrypting DataSource (see PagerViewerScreen.MediaPlayerPage) —
+                    // no plaintext temp file is ever written (§1.1). This single-item VM is not
+                    // wired to a player, so it deliberately does nothing for media here.
                 }
                 else -> {
                     _decrypted.value = withContext(Dispatchers.IO) { repository.openDecrypted(itemId) }
@@ -208,17 +189,6 @@ class ViewerViewModel(
                 }
             }
         }
-    }
-
-    // Backstop cleanup: the screen deletes the temp file on dispose, but a process-level
-    // VM clear (e.g. viewer never composed the player) must not strand cleartext in cache.
-    override fun onCleared() {
-        tempFile?.delete()
-        super.onCleared()
-    }
-
-    private companion object {
-        const val VIEWER_CACHE_DIR = "viewer"
     }
 }
 

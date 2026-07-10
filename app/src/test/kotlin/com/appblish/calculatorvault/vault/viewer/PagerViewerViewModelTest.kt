@@ -237,7 +237,7 @@ class PagerViewerViewModelTest {
         }
 
     @Test
-    fun `a failed decrypt surfaces an explicit error - unknown item and no-cache video`() =
+    fun `an unknown item is an error while a video resolves to a streaming media page`() =
         runTest(dispatcher) {
             val repo = InMemoryVaultContentRepository(seed = false)
             val video =
@@ -251,13 +251,17 @@ class PagerViewerViewModelTest {
             val missing = viewModel.activePage.first { it != null && it.content != PageContent.Loading }
             assertThat(missing?.content).isEqualTo(PageContent.Error)
 
-            // Video with no cache dir (context null): the temp-file route cannot run.
+            // APP-347: a video resolves to a streamable Media page carrying only the item id —
+            // no decrypt and no temp file here (playback streams via the DataSource on demand).
             viewModel.setActivePage(video.id)
-            val noCache =
+            val media =
                 viewModel.activePage.first {
                     it != null && it.itemId == video.id && it.content != PageContent.Loading
                 }
-            assertThat(noCache?.content).isEqualTo(PageContent.Error)
+            val content = media?.content
+            assertThat(content).isInstanceOf(PageContent.Media::class.java)
+            assertThat((content as PageContent.Media).itemId).isEqualTo(video.id)
+            assertThat(content.hasVideoFrame).isTrue()
         }
 
     @Test

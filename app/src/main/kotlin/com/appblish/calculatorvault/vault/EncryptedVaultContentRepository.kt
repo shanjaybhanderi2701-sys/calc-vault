@@ -5,8 +5,10 @@ import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Environment
 import android.provider.MediaStore
+import com.appblish.calculatorvault.vault.crypto.DecryptingBlobReader
 import com.appblish.calculatorvault.vault.crypto.VaultCrypto
 import com.appblish.calculatorvault.vault.crypto.VaultKeyFile
+import com.appblish.calculatorvault.vault.crypto.openBlobReader
 import com.appblish.calculatorvault.vault.media.BulkOpProgress
 import com.appblish.calculatorvault.vault.media.BulkOpService
 import com.appblish.calculatorvault.vault.media.MediaSink
@@ -756,6 +758,24 @@ class EncryptedVaultContentRepository(
             blob.inputStream().use { source -> cipher.decrypt(source, out) }
             out.toByteArray()
         }
+
+    /**
+     * APP-347: hand the video/audio player a seekable, decrypting reader over the blob. No
+     * decrypt happens here (it's lazy, on ExoPlayer's loader thread) and no plaintext temp
+     * file is written — this is the seam that retired [decryptToFile] for viewer playback.
+     * Synchronous by contract; reads only the thread-safe [itemsState]/[binState] snapshots
+     * and the already-unlocked [crypto], so it's safe off the DataSource's loader thread.
+     */
+    override fun openBlobReader(itemId: String): DecryptingBlobReader? {
+        val cipher = crypto ?: return null
+        val item =
+            itemsState.value.firstOrNull { it.id == itemId }
+                ?: binState.value.firstOrNull { it.item.id == itemId }?.item
+                ?: return null
+        val blob = item.encryptedPath?.let(::resolveBlob) ?: return null
+        if (!blob.exists()) return null
+        return runCatching { cipher.openBlobReader(blob) }.getOrNull()
+    }
 
     override suspend fun decryptToFile(
         itemId: String,

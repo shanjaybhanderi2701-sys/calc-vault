@@ -71,6 +71,8 @@ androidx-biometric = { group = "androidx.biometric", name = "biometric", version
 # Media3/ExoPlayer — decrypted video/audio playback in the vault viewer (spec §7).
 androidx-media3-exoplayer = { group = "androidx.media3", name = "media3-exoplayer", version.ref = "media3" }
 androidx-media3-ui = { group = "androidx.media3", name = "media3-ui", version.ref = "media3" }
+# media3-datasource — BaseDataSource for the seekable decrypting DataSource (APP-347 §8).
+androidx-media3-datasource = { group = "androidx.media3", name = "media3-datasource", version.ref = "media3" }
 
 junit4 = { group = "junit", name = "junit", version.ref = "junit4" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }

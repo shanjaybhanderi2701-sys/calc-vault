@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault.vault
 
+import com.appblish.calculatorvault.vault.crypto.DecryptingBlobReader
 import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.RecycleBinEntry
 import com.appblish.calculatorvault.vault.model.RestoreSummary
@@ -349,6 +350,15 @@ interface VaultContentRepository {
 
     /** Read a decrypted blob for a viewer. Null if the item or blob is missing. */
     suspend fun openDecrypted(itemId: String): ByteArray?
+
+    /**
+     * Open a seekable, decrypting reader over [itemId]'s blob for **streaming** video/audio
+     * playback (APP-347) — the seam that replaced the whole-file `decryptToFile` temp path.
+     * Synchronous by contract: the media DataSource calls it on ExoPlayer's loader thread.
+     * Returns null when the vault is locked or the item/blob is missing (the player then
+     * surfaces a graceful error). Default null so in-memory fakes compile unchanged.
+     */
+    fun openBlobReader(itemId: String): DecryptingBlobReader? = null
 
     /**
      * Decrypt [itemId]'s blob straight into [dest] — the large-media seam for viewers that

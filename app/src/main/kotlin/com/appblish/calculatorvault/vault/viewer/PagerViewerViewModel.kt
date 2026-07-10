@@ -33,8 +33,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
-import java.util.UUID
 import kotlin.coroutines.CoroutineContext
 
 /**
@@ -66,9 +64,15 @@ sealed interface PageContent {
         val bytes: ByteArray,
     ) : PageContent
 
-    /** App-private cache temp file holding a decrypted video/audio blob for ExoPlayer. */
+    /**
+     * A video/audio page. Carries only the item id — playback **streams** the encrypted blob
+     * through the seekable decrypting DataSource (APP-347), so nothing is decrypted here and
+     * no plaintext temp file is ever written (§1.1). [hasVideoFrame] is true for video (a
+     * first-frame preview is shown), false for audio (play button over the canvas only).
+     */
     class Media(
-        val file: File,
+        val itemId: String,
+        val hasVideoFrame: Boolean,
     ) : PageContent
 
     /** Decrypt failed — the page shows an error glyph + "Couldn't open this file". */
@@ -214,10 +218,6 @@ class PagerViewerViewModel(
     // only pages that fall out of the window are (see [setActivePage]).
     private val decryptJobs = mutableMapOf<String, Job>()
 
-    // Every temp file this session created, so onCleared can also sweep up a file whose
-    // decrypt job was cancelled mid-write (IO may finish the write after the cancel).
-    private val createdTempFiles = mutableListOf<File>()
-
     // --- APP-293 P0-4 · in-session decrypted-page cache ---------------------------------
     // Swiping back to an already-viewed page must be instant and must not decrypt again
     // (the fullDecrypts discipline: reuse in-session plaintext, no unnecessary decrypts).
@@ -226,17 +226,11 @@ class PagerViewerViewModel(
     // spot). Main-thread only (all callers are viewModelScope on Main).
     private val byteCache = LinkedHashMap<String, PageContent.Bytes>(16, 0.75f, true)
     private var byteCacheSize = 0L
-    private val mediaCache = LinkedHashMap<String, File>(8, 0.75f, true)
 
-    private fun cachedContent(itemId: String): PageContent? {
-        byteCache[itemId]?.let { return it }
-        val file = mediaCache[itemId] ?: return null
-        if (!file.exists()) {
-            mediaCache.remove(itemId)
-            return null
-        }
-        return PageContent.Media(file)
-    }
+    // Video/audio pages carry only an item id ([PageContent.Media]) and stream on demand, so
+    // there is nothing heavy to cache — a re-settled media page is rebuilt for free (APP-347,
+    // which retired the decrypted temp-file cache the old mediaCache held).
+    private fun cachedContent(itemId: String): PageContent? = byteCache[itemId]
 
     private fun cacheBytes(
         itemId: String,
@@ -253,24 +247,9 @@ class PagerViewerViewModel(
         }
     }
 
-    private fun cacheMedia(
-        itemId: String,
-        file: File,
-    ) {
-        mediaCache[itemId] = file
-        val eldest = mediaCache.entries.iterator()
-        while (mediaCache.size > MEDIA_CACHE_CAP_FILES && eldest.hasNext()) {
-            val entry = eldest.next()
-            if (entry.key == itemId) continue
-            entry.value.delete()
-            eldest.remove()
-        }
-    }
-
     /** Drop [itemId]'s cached plaintext the moment it leaves the vault context. */
     private fun evictFromCache(itemId: String) {
         byteCache.remove(itemId)?.let { byteCacheSize -= it.bytes.size }
-        mediaCache.remove(itemId)?.delete()
     }
 
     /**
@@ -355,23 +334,25 @@ class PagerViewerViewModel(
         val job =
             viewModelScope.launch {
                 val content = decryptContent(itemId)
-                when (content) {
-                    is PageContent.Bytes -> cacheBytes(itemId, content)
-                    is PageContent.Media -> cacheMedia(itemId, content.file)
-                    else -> Unit
-                }
+                if (content is PageContent.Bytes) cacheBytes(itemId, content)
                 decryptJobs.remove(itemId)
                 publish(itemId, content)
             }
         decryptJobs[itemId] = job
     }
 
-    /** Decrypt one item to its [PageContent] — in-memory bytes, or a media temp file. */
+    /**
+     * Resolve one item to its [PageContent]. Images/contacts/files decrypt fully in memory;
+     * video/audio resolve to a **streamable** [PageContent.Media] (just the id) — the actual
+     * decrypt happens lazily on ExoPlayer's loader thread via the seekable DataSource
+     * (APP-347), so no whole-file decrypt and no plaintext temp file here.
+     */
     private suspend fun decryptContent(itemId: String): PageContent {
         val item = repository.allItems().first().firstOrNull { it.id == itemId }
         return when (item?.category) {
             null -> PageContent.Error
-            VaultCategory.VIDEOS, VaultCategory.AUDIOS -> decryptToCache(itemId)
+            VaultCategory.VIDEOS, VaultCategory.AUDIOS ->
+                PageContent.Media(itemId, hasVideoFrame = item.category == VaultCategory.VIDEOS)
             else -> {
                 val bytes = withContext(ioDispatcher) { repository.openDecrypted(itemId) }
                 if (bytes != null) PageContent.Bytes(bytes) else PageContent.Error
@@ -619,22 +600,9 @@ class PagerViewerViewModel(
             else -> item.folderId == folderId
         }
 
-    private suspend fun decryptToCache(itemId: String): PageContent {
-        val cache = appContext?.cacheDir ?: return PageContent.Error
-        val target = File(File(cache, VIEWER_CACHE_DIR), UUID.randomUUID().toString())
-        createdTempFiles += target
-        // Stream blob → cipher → file so a large video is never held in memory (spec §11);
-        // decryptToFile deletes any partial file on failure.
-        val ok =
-            withContext(ioDispatcher) {
-                target.parentFile?.mkdirs()
-                repository.decryptToFile(itemId, target)
-            }
-        return if (ok) PageContent.Media(target) else PageContent.Error
-    }
-
-    // Backstop cleanup: page changes delete files eagerly, but a VM clear (back press,
-    // process re-lock) must not strand cleartext in the cache — sweep everything created.
+    // Backstop cleanup: a VM clear (back press, process re-lock) must drop every in-session
+    // plaintext. Video/audio no longer decrypt to disk (APP-347 streams them), so there are
+    // no temp files to sweep — only the in-memory photo byte cache.
     // Viewer exit is also the last rotate-commit boundary (W3-D §8): the flush runs on
     // [commitScope] because viewModelScope is already cancelled here.
     override fun onCleared() {
@@ -644,8 +612,6 @@ class PagerViewerViewModel(
         _pageWindow.value = emptyMap()
         byteCache.clear()
         byteCacheSize = 0L
-        mediaCache.clear()
-        createdTempFiles.forEach { it.delete() }
         // Share backstop: a VM clear mid-share (ON_STOP re-lock popping the viewer while
         // the receiver is foreground) would lose the activity-result purge — purge here.
         // An already-open receiver stream survives the unlink; a later open fails closed.
@@ -654,14 +620,11 @@ class PagerViewerViewModel(
     }
 
     private companion object {
-        const val VIEWER_CACHE_DIR = "viewer"
-
         /** rotate.commitDebounce (W3-D §3): 500ms idle, or page-change/exit first. */
         const val ROTATE_COMMIT_DEBOUNCE_MS = 500L
 
-        /** P0-4 in-session cache caps: ~48 MB of encoded photo bytes, 3 media temp files. */
+        /** P0-4 in-session cache cap: ~48 MB of encoded photo bytes (video/audio stream, no cache). */
         const val BYTE_CACHE_CAP_BYTES = 48L * 1024 * 1024
-        const val MEDIA_CACHE_CAP_FILES = 3
 
         // Process-scoped home for rotate commits so an exit-path flush survives the VM
         // clear — mirrors BulkOps' app-scoped pattern for must-complete index writes.

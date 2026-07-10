@@ -152,6 +152,34 @@ class VaultCrypto(
             nonce[11] = if (isFinal) 1 else 0
         }
 
+    // --- Random-access seek support (APP-347) ------------------------------------------
+    // These expose exactly the same per-chunk GCM path used by [decryptChunked]/[decrypt]
+    // so the seekable video DataSource ([DecryptingBlobReader]) shares one crypto code path
+    // — no duplicated crypto (W1-DESIGN §8.1). The reader lives in a sibling file in this
+    // package, so these are `internal`, not public.
+
+    /** True if [head] starts with the v2 chunked-format magic; false ⇒ a legacy v1 blob. */
+    internal fun isChunkedMagic(head: ByteArray): Boolean = head.size == MAGIC.size && head.contentEquals(MAGIC)
+
+    /**
+     * Decrypt exactly one sealed v2 chunk at [index] (must match its on-disk position) with
+     * [noncePrefix] and the correct [isFinal] flag. Throws [GeneralSecurityException] on any
+     * tag failure — the same authenticity guarantee the sequential path gives, preserved on
+     * the seek path. This is the single-chunk decrypt the seekable DataSource calls per read.
+     */
+    internal fun decryptChunk(
+        noncePrefix: ByteArray,
+        index: Int,
+        isFinal: Boolean,
+        sealed: ByteArray,
+    ): ByteArray = openChunk(noncePrefix, index, isFinal, sealed)
+
+    /** A GCM decrypt cipher for a legacy v1 blob's single message (nonce = its 12-byte IV). */
+    internal fun newLegacyDecryptCipher(iv: ByteArray): Cipher =
+        Cipher.getInstance(TRANSFORMATION).apply {
+            init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG_BITS, iv))
+        }
+
     /** Read up to [limit] bytes, looping until the buffer is full or EOF; may be short. */
     private fun readUpTo(
         source: InputStream,
@@ -201,9 +229,10 @@ class VaultCrypto(
 
     companion object {
         private const val TRANSFORMATION = "AES/GCM/NoPadding"
-        private const val IV_LENGTH = 12
-        private const val NONCE_PREFIX_LENGTH = 7
+        internal const val IV_LENGTH = 12
+        internal const val NONCE_PREFIX_LENGTH = 7
         private const val TAG_BITS = 128
+        internal const val TAG_LENGTH = TAG_BITS / 8
         private const val BUFFER = 64 * 1024
         private val EMPTY = ByteArray(0)
         const val KEY_BITS = 256
@@ -211,8 +240,14 @@ class VaultCrypto(
         /** v2 chunked-format marker ("CVCHUNK1"). A v1 blob starts with a random IV. */
         internal val MAGIC = byteArrayOf(0x43, 0x56, 0x43, 0x48, 0x55, 0x4E, 0x4B, 0x31)
 
+        /** Bytes before the first sealed chunk: `MAGIC(8) ‖ noncePrefix(7)` (the O(1)-seek base). */
+        internal const val HEADER_LENGTH = 8 + NONCE_PREFIX_LENGTH
+
         /** Plaintext bytes per sealed chunk — the peak per-file memory of a crypto pass. */
         internal const val CHUNK_BYTES = 512 * 1024
+
+        /** On-disk size of a non-final sealed chunk: `CHUNK_BYTES + 16B tag` (fixed ⇒ O(1) map). */
+        internal const val SEALED_CHUNK_LENGTH = CHUNK_BYTES + TAG_LENGTH
 
         /** Generate a fresh 256-bit AES key for a first-run install. */
         fun newKey(): SecretKey = KeyGenerator.getInstance("AES").apply { init(KEY_BITS) }.generateKey()

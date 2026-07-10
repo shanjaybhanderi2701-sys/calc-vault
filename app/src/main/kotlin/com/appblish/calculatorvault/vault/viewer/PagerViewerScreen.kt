@@ -2,7 +2,6 @@ package com.appblish.calculatorvault.vault.viewer
 
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
-import android.net.Uri
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
@@ -74,11 +73,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.ui.PlayerView
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
+import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
@@ -87,7 +91,6 @@ import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.io.File
 import android.graphics.Color as AndroidColor
 
 /**
@@ -325,7 +328,11 @@ private fun ViewerPage(
             is PageContent.Media ->
                 // Only the settled page previews/plays; a page peeked mid-swipe spins.
                 if (isCurrent) {
-                    VideoPage(mediaFile = content.file, onToggleChrome = onToggleChrome)
+                    VideoPage(
+                        itemId = content.itemId,
+                        hasVideoFrame = content.hasVideoFrame,
+                        onToggleChrome = onToggleChrome,
+                    )
                 } else {
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
                 }
@@ -543,45 +550,61 @@ private fun ZoomableImage(
 /**
  * Video/audio page (APP-293 P0-3): playback is **tap-to-start, never automatic**. Until
  * the user taps the play button the page shows the full-screen preview frame (decoded
- * off-main from the already-decrypted cache temp — no extra decrypt) under a
- * semi-transparent centred play button; the surrounding chrome (Unhide/Delete/Move/More +
- * Info) stays available exactly as on a photo page, and a tap outside the button toggles
- * it. Tapping play swaps in the ExoPlayer surface.
+ * off-main by **streaming** the encrypted blob through a [VaultMediaDataSource] — no
+ * plaintext temp file, APP-347) under a semi-transparent centred play button; the
+ * surrounding chrome (Unhide/Delete/Move/More + Info) stays available exactly as on a photo
+ * page, and a tap outside the button toggles it. Tapping play swaps in the ExoPlayer surface.
  */
 @Composable
 private fun VideoPage(
-    mediaFile: File,
+    itemId: String,
+    hasVideoFrame: Boolean,
     onToggleChrome: () -> Unit,
 ) {
-    var playing by remember(mediaFile) { mutableStateOf(false) }
+    var playing by remember(itemId) { mutableStateOf(false) }
     if (playing) {
-        MediaPlayerPage(mediaFile)
+        MediaPlayerPage(itemId)
     } else {
-        VideoPreviewPage(mediaFile = mediaFile, onPlay = { playing = true }, onToggleChrome = onToggleChrome)
+        VideoPreviewPage(
+            itemId = itemId,
+            hasVideoFrame = hasVideoFrame,
+            onPlay = { playing = true },
+            onToggleChrome = onToggleChrome,
+        )
     }
 }
 
 /** The pre-playback preview: decoded frame + `viewer.playButton` over the black canvas. */
 @Composable
 private fun VideoPreviewPage(
-    mediaFile: File,
+    itemId: String,
+    hasVideoFrame: Boolean,
     onPlay: () -> Unit,
     onToggleChrome: () -> Unit,
 ) {
-    // First frame from the decrypted temp file, off the main thread. Audio blobs have no
-    // frame — the play button over the canvas is the whole preview.
-    val frame by produceState<ImageBitmap?>(initialValue = null, mediaFile) {
+    // First frame streamed straight off the encrypted blob (APP-347) — decrypt-on-demand via
+    // a MediaDataSource, off the main thread, NEVER a plaintext temp file. Audio blobs (and
+    // any read failure) simply have no frame — the play button over the canvas is the preview.
+    val frame by produceState<ImageBitmap?>(initialValue = null, itemId, hasVideoFrame) {
         value =
-            withContext(Dispatchers.IO) {
-                runCatching {
-                    val retriever = MediaMetadataRetriever()
-                    try {
-                        retriever.setDataSource(mediaFile.absolutePath)
-                        retriever.frameAtTime?.asImageBitmap()
-                    } finally {
-                        retriever.release()
-                    }
-                }.getOrNull()
+            if (!hasVideoFrame) {
+                null
+            } else {
+                withContext(Dispatchers.IO) {
+                    runCatching {
+                        val reader = VaultGraph.contentRepository.openBlobReader(itemId)
+                            ?: return@runCatching null
+                        val source = VaultMediaDataSource(reader)
+                        val retriever = MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(source)
+                            retriever.frameAtTime?.asImageBitmap()
+                        } finally {
+                            retriever.release()
+                            source.close()
+                        }
+                    }.getOrNull()
+                }
             }
     }
     Box(
@@ -620,37 +643,101 @@ private fun VideoPreviewPage(
 }
 
 /**
- * Plays a decrypted video/audio blob from [mediaFile] (app-private cache) via
- * Media3/ExoPlayer + [PlayerView] (spec §7 hard requirement). The player is released when
- * the page leaves composition; the temp file itself is owned by [PagerViewerViewModel]'s
- * in-session cache, which evicts old entries and sweeps everything in onCleared().
+ * Plays [itemId]'s video/audio by **streaming the encrypted blob** through the seekable
+ * decrypting [EncryptedVaultDataSource] (APP-347 / spec §7–§8): decrypt happens on
+ * ExoPlayer's loader thread, one 512 KiB chunk at a time, so a large video scrubs/seeks
+ * smoothly and **no plaintext ever touches disk** (§1.1/§1.2/§1.3). [PlayerView]'s built-in
+ * controller supplies the seekbar (scrub + seek) and play/pause. An undecodable
+ * container/codec surfaces as a graceful message (§6) — never a crash. The player is
+ * released when the page leaves composition.
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun MediaPlayerPage(mediaFile: File) {
+private fun MediaPlayerPage(itemId: String) {
     val context = LocalContext.current
+    val repository = VaultGraph.contentRepository
+    var playbackError by remember(itemId) { mutableStateOf<PlaybackException?>(null) }
     val player =
-        remember(mediaFile) {
+        remember(itemId) {
+            val dataSourceFactory = EncryptedVaultDataSource.Factory { id -> repository.openBlobReader(id) }
+            val mediaSource =
+                ProgressiveMediaSource
+                    .Factory(dataSourceFactory)
+                    .createMediaSource(MediaItem.fromUri(EncryptedVaultDataSource.vaultMediaUri(itemId)))
             ExoPlayer.Builder(context).build().apply {
-                setMediaItem(MediaItem.fromUri(Uri.fromFile(mediaFile)))
+                setMediaSource(mediaSource)
                 prepare()
                 playWhenReady = true
+                addListener(
+                    object : Player.Listener {
+                        override fun onPlayerError(error: PlaybackException) {
+                            playbackError = error
+                        }
+                    },
+                )
             }
         }
-    DisposableEffect(mediaFile) {
+    DisposableEffect(itemId) {
         onDispose { player.release() }
     }
-    AndroidView(
-        modifier = Modifier.fillMaxSize(),
-        factory = { ctx ->
-            // Stable PlayerView surface only (customization setters are @UnstableApi
-            // and would trip the UnsafeOptInUsageError lint gate).
-            PlayerView(ctx).apply {
-                this.player = player
-                setBackgroundColor(AndroidColor.BLACK)
-            }
-        },
-        update = { view -> view.player = player },
-    )
+    val error = playbackError
+    if (error != null) {
+        UnsupportedMediaPage(error)
+    } else {
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                // Stable PlayerView surface only (customization setters are @UnstableApi
+                // and would trip the UnsafeOptInUsageError lint gate); the default controller
+                // already provides the seekbar + play/pause.
+                PlayerView(ctx).apply {
+                    this.player = player
+                    setBackgroundColor(AndroidColor.BLACK)
+                }
+            },
+            update = { view -> view.player = player },
+        )
+    }
+}
+
+/**
+ * Graceful playback-failure page (§6): a decode/format error reads as "format isn't
+ * supported"; anything else (vault I/O, missing key) as a generic couldn't-play message —
+ * never a crash, never a silent black screen.
+ */
+@Composable
+private fun UnsupportedMediaPage(error: PlaybackException) {
+    val isFormatIssue =
+        when (error.errorCode) {
+            PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+            PlaybackException.ERROR_CODE_DECODER_QUERY_FAILED,
+            PlaybackException.ERROR_CODE_PARSING_CONTAINER_UNSUPPORTED,
+            PlaybackException.ERROR_CODE_PARSING_MANIFEST_UNSUPPORTED,
+            -> true
+            else -> false
+        }
+    val message =
+        if (isFormatIssue) "This format isn't supported" else "Couldn't play this file"
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(VaultTheme.spacing.md),
+        modifier = Modifier.fillMaxSize().padding(VaultTheme.spacing.lg),
+    ) {
+        Box(modifier = Modifier.weight(1f))
+        Icon(
+            imageVector = Icons.Filled.Warning,
+            contentDescription = null,
+            tint = ViewerOnCanvas,
+            modifier = Modifier.size(48.dp),
+        )
+        Text(
+            text = message,
+            color = ViewerOnCanvas,
+            textAlign = TextAlign.Center,
+        )
+        Box(modifier = Modifier.weight(1f))
+    }
 }
 
 /** Decrypt failure page — an explicit glyph + message, never a blank screen (P0-2). */
