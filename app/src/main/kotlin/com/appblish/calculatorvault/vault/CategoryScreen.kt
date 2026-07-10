@@ -15,11 +15,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -28,6 +32,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
@@ -36,6 +41,7 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.KeyboardArrowLeft
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.DropdownMenu
@@ -64,6 +70,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,6 +82,8 @@ import com.appblish.calculatorvault.ui.components.FastScrollbar
 import com.appblish.calculatorvault.ui.components.GridDragSelectCallbacks
 import com.appblish.calculatorvault.ui.components.MediaItem
 import com.appblish.calculatorvault.ui.components.MultiSelectActionBar
+import com.appblish.calculatorvault.ui.components.PillButton
+import com.appblish.calculatorvault.ui.components.PillButtonStyle
 import com.appblish.calculatorvault.ui.components.SelectionAction
 import com.appblish.calculatorvault.ui.components.SelectionActionTray
 import com.appblish.calculatorvault.ui.components.SelectionOverflowItem
@@ -102,6 +111,7 @@ import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.SortSheet
+import com.appblish.calculatorvault.vault.ui.VaultFolderGlyph
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
 
@@ -326,7 +336,7 @@ fun CategoryScreen(
                             loadCover = { itemId -> viewModel.thumbnail(context, itemId) },
                         )
                     // S17 empty folder: per-category "No Hidden … Yet" with the hide hint.
-                    state.folderItems.isEmpty() -> EmptyFolderState(state.category)
+                    state.folderItems.isEmpty() -> EmptyFolderState(onGoToHide = onHide)
                     usesGrid -> {
                         val mediaGridState = rememberLazyGridState()
                         // APP-293 item 10: two-finger pinch rescales the photo grid
@@ -1173,34 +1183,75 @@ private fun CategoryList(
 }
 
 /**
- * S17 empty-folder state: "No Hidden Photos Yet" (per-category noun) over the existing
- * helper line and the category glyph. The FAB below keeps the media-add affordance.
+ * S17 empty-folder state (APP-217/APP-336): a locked-folder illustration over the
+ * reassurance couplet and one primary "Go to hide" CTA. The CTA fires the existing
+ * [onGoToHide] — the same hide flow the FAB's per-category hide row opens — so this is a
+ * second, more discoverable entry to hide for the empty case (no new nav/VM state).
+ *
+ * The illustration is a composed material-icon lockup (RoundIconBadge idiom): an
+ * accent-tinted [Icons.Filled.Folder] tile with an [Icons.Filled.Lock] badge overlapping
+ * its lower-right corner. Material-icons-core only — no bespoke asset. Uses the green
+ * `accent` (#22C55E) rather than xlock-H's blue, an intentional, ratified deviation for
+ * design-system consistency.
  */
 @Composable
-private fun EmptyFolderState(category: VaultCategory) {
+internal fun EmptyFolderState(onGoToHide: () -> Unit) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
-    val cat = category.label.lowercase()
     Column(
-        modifier = Modifier.fillMaxSize().padding(spacing.xxl),
-        verticalArrangement = Arrangement.spacedBy(spacing.sm, Alignment.CenterVertically),
+        modifier = Modifier.fillMaxSize().padding(horizontal = spacing.xxl),
+        verticalArrangement = Arrangement.Center,
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
-        Icon(
-            imageVector = category.icon(),
-            contentDescription = null,
-            tint = category.color(),
-            modifier = Modifier.size(40.dp).padding(bottom = spacing.sm),
-        )
+        Box(contentAlignment = Alignment.Center) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier =
+                    Modifier
+                        .size(96.dp)
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(colors.accent.copy(alpha = 0.14f)),
+            ) {
+                Icon(
+                    imageVector = VaultFolderGlyph,
+                    contentDescription = null,
+                    tint = colors.accent,
+                    modifier = Modifier.size(48.dp),
+                )
+            }
+            // Lock badge overlapping the folder's lower-right corner (mirrors under RTL).
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier =
+                    Modifier
+                        .align(Alignment.BottomEnd)
+                        .offset(x = 6.dp, y = 6.dp)
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(colors.accent),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Lock,
+                    contentDescription = null,
+                    tint = colors.onAccent,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+        Spacer(modifier = Modifier.height(spacing.xl))
         Text(
-            text = "No Hidden ${category.label} Yet",
-            style = VaultTheme.typography.titleMedium,
-            color = colors.textPrimary,
-        )
-        Text(
-            text = "Tap + to hide $cat from your device — they'll be encrypted here and removed from public storage.",
-            style = VaultTheme.typography.bodyMedium,
+            text = "Hide private files here\nNo one else can see",
+            style = VaultTheme.typography.bodyLarge,
             color = colors.textSecondary,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 260.dp),
+        )
+        Spacer(modifier = Modifier.height(spacing.xxl))
+        PillButton(
+            text = "Go to hide",
+            onClick = onGoToHide,
+            style = PillButtonStyle.Primary,
+            modifier = Modifier.widthIn(max = 240.dp).testTag("empty_go_to_hide"),
         )
     }
 }

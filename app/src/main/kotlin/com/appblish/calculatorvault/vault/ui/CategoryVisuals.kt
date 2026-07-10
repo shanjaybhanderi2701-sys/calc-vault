@@ -29,6 +29,30 @@ fun VaultCategory.icon(): ImageVector =
 /** The category's icon-chip color as a Compose [Color]. */
 fun VaultCategory.color(): Color = Color(chipColor)
 
+/**
+ * Material `Filled.Folder` — the tabbed folder glyph — rebuilt from the standard Material
+ * path data via the core builders, since `material-icons-core` lacks it (same idiom as
+ * [PhotoGlyph]/[MusicNoteGlyph]). Used by the category empty-state lockup (APP-217).
+ */
+val VaultFolderGlyph: ImageVector by lazy {
+    materialIcon(name = "Vault.Folder") {
+        materialPath {
+            moveTo(10.0f, 4.0f)
+            horizontalLineTo(4.0f)
+            curveTo(2.9f, 4.0f, 2.01f, 4.9f, 2.01f, 6.0f)
+            lineTo(2.0f, 18.0f)
+            curveTo(2.0f, 19.1f, 2.9f, 20.0f, 4.0f, 20.0f)
+            horizontalLineToRelative(16.0f)
+            curveTo(21.1f, 20.0f, 22.0f, 19.1f, 22.0f, 18.0f)
+            verticalLineTo(8.0f)
+            curveTo(22.0f, 6.9f, 21.1f, 6.0f, 20.0f, 6.0f)
+            horizontalLineToRelative(-8.0f)
+            lineToRelative(-2.0f, -2.0f)
+            close()
+        }
+    }
+}
+
 /** Material `Filled.Image` — a framed photo with mountains — for the Photos category. */
 private val PhotoGlyph: ImageVector by lazy {
     materialIcon(name = "Vault.Photo") {
