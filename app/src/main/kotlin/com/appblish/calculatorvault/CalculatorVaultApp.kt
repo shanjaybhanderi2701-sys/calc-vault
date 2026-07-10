@@ -3,6 +3,7 @@ package com.appblish.calculatorvault
 import android.app.Application
 import com.appblish.calculatorvault.applock.AppLockGraph
 import com.appblish.calculatorvault.auth.AuthGraph
+import com.appblish.calculatorvault.recovery.RecoveryGraph
 import com.appblish.calculatorvault.settings.SettingsGraph
 import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.share.VaultShare
@@ -29,6 +30,8 @@ class CalculatorVaultApp : Application() {
         VaultGraph.init(this)
         AppLockGraph.init(this)
         SettingsGraph.init(this)
+        // PIN Recovery (APP-321): the W1 envelope manager the setup flow + grid banner read.
+        RecoveryGraph.init(this)
         // Warm the synchronous re-lock cache from persisted settings so VaultNavHost's
         // ON_STOP re-lock reflects the user's "Re-lock on background" choice (APP-205).
         // First, the share temp-copy contract's process-restart purge (APP-294): a

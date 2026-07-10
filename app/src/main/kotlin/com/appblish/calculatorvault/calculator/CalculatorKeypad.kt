@@ -12,6 +12,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -71,6 +72,10 @@ fun CalculatorKeypad(
     onDisplayLongPress: (() -> Unit)? = null,
     highlightEquals: Boolean = false,
     shakeTrigger: Int = 0,
+    // Optional low-emphasis slot under the display (PIN Recovery W0 screen 12): the subtle
+    // "try another way" line the unlock surface shows only after 3 failed attempts. Null (the
+    // default) renders nothing, so the pure disguise and every other keypad mode are unchanged.
+    belowDisplay: (@Composable () -> Unit)? = null,
 ) {
     val colors = VaultTheme.colors
     val spacing = VaultTheme.spacing
@@ -167,6 +172,12 @@ fun CalculatorKeypad(
                     .then(displayModifier)
                     .padding(vertical = spacing.md),
         )
+
+        if (belowDisplay != null) {
+            Box(modifier = Modifier.align(Alignment.CenterHorizontally)) {
+                belowDisplay()
+            }
+        }
 
         Spacer(Modifier.weight(1f))
 

@@ -17,6 +17,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -36,9 +37,14 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.appblish.calculatorvault.auth.AuthGraph
 import com.appblish.calculatorvault.auth.VaultKind
 import com.appblish.calculatorvault.calculator.CalculatorScreen
 import com.appblish.calculatorvault.onboarding.OnboardingRoute
+import com.appblish.calculatorvault.recovery.RecoveryEntryScreen
+import com.appblish.calculatorvault.recovery.RecoverySetupIntroHost
+import com.appblish.calculatorvault.recovery.RecoverySetupScreen
+import com.appblish.calculatorvault.recovery.RecoveryUnlockScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.PinRecoveryScreen
@@ -59,6 +65,7 @@ import com.appblish.calculatorvault.vault.actions.PhotoAction
 import com.appblish.calculatorvault.vault.actions.PhotoActionCallbacks
 import com.appblish.calculatorvault.vault.actions.PhotoActionsHost
 import com.appblish.calculatorvault.vault.actions.rememberPhotoActionsController
+import com.appblish.calculatorvault.vault.crypto.RecoveryMethod
 import com.appblish.calculatorvault.vault.media.MediaSource
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.storage.StoragePermissions
@@ -67,6 +74,7 @@ import com.appblish.calculatorvault.vault.viewer.FolderSlideshowScreen
 import com.appblish.calculatorvault.vault.viewer.PagerViewerScreen
 import com.appblish.calculatorvault.vault.viewer.PagerViewerViewModel
 import com.appblish.calculatorvault.vault.viewer.SlideshowViewModel
+import kotlinx.coroutines.launch
 
 /**
  * The app spine, re-scoped to the Phase-1 build spec (APP-225). Starts on the
@@ -191,6 +199,9 @@ fun VaultNavHost() {
                     VaultSession.begin(code, VaultDestinations.storageId(kind))
                     enterVault()
                 },
+                // PIN Recovery doorways (spec §1.4): `11223344 =` and the 3-failed-attempt
+                // affordance open the recovery landing. A doorway only — it resets nothing.
+                onOpenRecovery = { navController.navigate(VaultDestinations.RECOVERY_ENTRY) },
             )
         }
 
@@ -260,6 +271,13 @@ fun VaultNavHost() {
                 onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
             )
 
+            // PIN Recovery one-time setup intro (W0 01, ruling R1): offered once after the
+            // first real vault operation when recovery is unconfigured; dismissing leaves the
+            // grid banner (07) to keep nagging.
+            RecoverySetupIntroHost(
+                onSetUp = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
+            )
+
             if (showPrimer) {
                 AllFilesPrimerSheet(
                     onAllow = {
@@ -322,6 +340,7 @@ fun VaultNavHost() {
                             ?.takeUnless { it == CategoryState.RECENT_FOLDER_ID }
                     navController.navigate(VaultDestinations.hide(category, destinationFolderId))
                 },
+                onSetUpRecovery = { navController.navigate(VaultDestinations.RECOVERY_SETUP) },
             )
         }
 
@@ -357,10 +376,19 @@ fun VaultNavHost() {
                             }
                         },
                 )
+            val hideScope = rememberCoroutineScope()
             HideImportScreen(
                 viewModel = vm,
                 onBack = { navController.popBackStack() },
-                onHidden = { navController.popBackStack() },
+                onHidden = {
+                    // First successful hide/import is the "first real vault operation" that
+                    // arms the recovery setup prompt (ruling R1) — real vault only, never a
+                    // decoy. Idempotent, so every subsequent hide is a cheap no-op.
+                    if (VaultSession.namespace.isEmpty()) {
+                        hideScope.launch { AuthGraph.credentialStore.markRealVaultOpened() }
+                    }
+                    navController.popBackStack()
+                },
             )
         }
 
@@ -452,6 +480,51 @@ fun VaultNavHost() {
 
         composable(VaultDestinations.RECYCLE_BIN) {
             RecycleBinScreen(onBack = { navController.popBackStack() })
+        }
+
+        // --- PIN Recovery (APP-321 W2) ---
+
+        // Setup flow (W0 02–06): writes Wrap B + Wrap C for the session DEK on completion.
+        composable(VaultDestinations.RECOVERY_SETUP) {
+            RecoverySetupScreen(
+                onDone = { navController.popBackStack() },
+                onCancel = { navController.popBackStack() },
+            )
+        }
+
+        // The doorway landing (W0 08): both `11223344 =` and the 3-fail affordance arrive
+        // here. The method rows hand off to the W3 unlock+reset seam.
+        composable(VaultDestinations.RECOVERY_ENTRY) {
+            RecoveryEntryScreen(
+                onAnswerMethod = { navController.navigate(VaultDestinations.recoveryUnlock("answer")) },
+                onCodeMethod = { navController.navigate(VaultDestinations.recoveryUnlock("code")) },
+                onBack = { navController.popBackStack() },
+            )
+        }
+
+        // W3 (W0 09/10 → 11, APP-325): prove identity via Wrap B/C, then set a new PIN that
+        // re-wraps Wrap A only. On success the vault is unlocked under the new PIN — drop the
+        // recovery + calculator lock backstack and land on the vault home.
+        composable(
+            route = VaultDestinations.RECOVERY_UNLOCK,
+            arguments = listOf(navArgument(VaultDestinations.ARG_RECOVERY_METHOD) { type = NavType.StringType }),
+        ) { entry ->
+            val method =
+                if (entry.arguments?.getString(VaultDestinations.ARG_RECOVERY_METHOD) == "code") {
+                    RecoveryMethod.RECOVERY_CODE
+                } else {
+                    RecoveryMethod.SECURITY_ANSWER
+                }
+            RecoveryUnlockScreen(
+                method = method,
+                onDone = {
+                    navController.navigate(VaultDestinations.VAULT_HOME) {
+                        popUpTo(VaultDestinations.CALCULATOR) { inclusive = true }
+                        launchSingleTop = true
+                    }
+                },
+                onBack = { navController.popBackStack() },
+            )
         }
 
         // Minimal Phase-1 Settings (S22): language, change password, switch app icon,

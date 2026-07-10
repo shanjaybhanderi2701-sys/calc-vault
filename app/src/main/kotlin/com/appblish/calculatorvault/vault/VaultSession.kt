@@ -42,5 +42,9 @@ object VaultSession {
     fun clear() {
         passphrase = null
         namespace = ""
+        // A re-lock ends the session, so the recovery nag flags reset to their "next
+        // launch" state (banner returns, intro sheet eligible again) — PIN Recovery §4.
+        com.appblish.calculatorvault.recovery.RecoveryPromptState
+            .reset()
     }
 }
