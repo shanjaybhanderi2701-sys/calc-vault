@@ -95,7 +95,7 @@ class EncryptedSeek1GBDoDTest {
                         ),
                     ).single()
             val encMs = System.currentTimeMillis() - encStart
-            log("hid 1GB+ source + encrypted to vault blob in ${encMs} ms (plaintext=$totalBytes bytes)")
+            log("hid 1GB+ source + encrypted to vault blob in $encMs ms (plaintext=$totalBytes bytes)")
 
             val viewerCacheDir = File(context.cacheDir, "viewer")
             val cacheBaseline = countFiles(context.cacheDir)
@@ -111,7 +111,11 @@ class EncryptedSeek1GBDoDTest {
                 assertThat(reader.isSeekable).isTrue()
                 assertThat(contentLength).isAtLeast(1024L * 1024L * 1024L)
                 assertThat(contentLength).isEqualTo(totalBytes)
-                log("open+contentLength: ${"%.1f".format(openMs)} ms, length=$contentLength (>=1GiB, seekable=true, ZERO decrypt)")
+                log(
+                    "open+contentLength: ${"%.1f".format(
+                        openMs
+                    )} ms, length=$contentLength (>=1GiB, seekable=true, ZERO decrypt)"
+                )
                 // Opening + deriving a 1 GB length must be near-instant (no whole-file decrypt).
                 assertThat(openMs).isLessThan(500.0)
 
@@ -151,7 +155,7 @@ class EncryptedSeek1GBDoDTest {
                             )
                         }
                     }
-                    log("seek ${labels[i]} (offset=$off): ${ms} ms, read=$got bytes, byte-correct")
+                    log("seek ${labels[i]} (offset=$off): $ms ms, read=$got bytes, byte-correct")
                 }
 
                 val maxMs = latencies.max()

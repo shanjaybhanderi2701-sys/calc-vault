@@ -232,14 +232,20 @@ private class FakeSeekPlayer(
         private set
 
     private val item =
-        MediaItemData.Builder("gesture-fixture")
+        MediaItemData
+            .Builder("gesture-fixture")
             .setDurationUs(durationMs * 1000L)
             .build()
 
     override fun getState(): State =
-        State.Builder()
-            .setAvailableCommands(Player.Commands.Builder().addAllCommands().build())
-            .setPlaybackState(Player.STATE_READY)
+        State
+            .Builder()
+            .setAvailableCommands(
+                Player.Commands
+                    .Builder()
+                    .addAllCommands()
+                    .build()
+            ).setPlaybackState(Player.STATE_READY)
             .setPlayWhenReady(false, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
             .setPlaylist(listOf(item))
             .setCurrentMediaItemIndex(0)
