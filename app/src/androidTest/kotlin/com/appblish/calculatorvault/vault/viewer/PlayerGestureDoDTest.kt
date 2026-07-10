@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
 import com.google.common.truth.Truth.assertThat
@@ -50,7 +51,22 @@ class PlayerGestureDoDTest {
             CalculatorVaultTheme {
                 // Fixed-size surface so LEFT/RIGHT halves and drag distances are exact.
                 androidx.compose.foundation.layout.Box(Modifier.size(400.dp, 800.dp).testTag("surface")) {
-                    VideoPlayerSurface(player = player)
+                    // The Wave-3 surface takes the hoisted display state (APP-350); this test
+                    // exercises only the Wave-2 gesture wiring, so pass inert defaults (unlocked,
+                    // 1× scale, Fit) — the double-tap-seek / brightness / volume paths are
+                    // independent of controls-visibility, zoom, aspect, and rotation.
+                    VideoPlayerSurface(
+                        player = player,
+                        controlsVisible = true,
+                        onToggleControls = {},
+                        locked = false,
+                        scale = 1f,
+                        panX = 0f,
+                        panY = 0f,
+                        onPinch = { _, _, _ -> },
+                        resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                        rotationDegrees = 0,
+                    )
                 }
             }
         }

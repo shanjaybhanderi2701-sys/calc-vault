@@ -12,9 +12,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -25,6 +28,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
@@ -49,6 +53,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -95,6 +100,13 @@ internal fun VideoPlayerControlsOverlay(
     onRotationChanged: (Int) -> Unit,
     muted: Boolean,
     onMutedChanged: (Boolean) -> Unit,
+    // APP-371 F1–F3: the §5d playlist (current-folder videos, order modes, Next/Prev/tap-switch).
+    playlist: VideoPlaylistController,
+    // APP-371 F4: side-loaded external subtitle state + loaders (device SAF / vault-hidden).
+    currentSubtitleLabel: String?,
+    onLoadDeviceSubtitle: () -> Unit,
+    onLoadVaultSubtitle: () -> Unit,
+    onClearSubtitle: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -141,7 +153,6 @@ internal fun VideoPlayerControlsOverlay(
     var aspectMenuExpanded by remember { mutableStateOf(false) }
     var speedDialogVisible by remember { mutableStateOf(false) }
     var playlistSheetVisible by remember { mutableStateOf(false) }
-    var orderMode by remember { mutableStateOf(OrderMode.ORDER) }
 
     Box(modifier = modifier.fillMaxSize()) {
         // Bottom scrim gradient (sits behind quick-row).
@@ -189,7 +200,8 @@ internal fun VideoPlayerControlsOverlay(
                     .padding(bottom = 72.dp, start = 4.dp, end = 4.dp),
             ) {
                 IconButton(onClick = {
-                    if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem()
+                    // §5d Previous: PlaylistEngine.manualPrev (always wraps) → pager switch.
+                    playlist.onPrevious()
                     resetAutoHide()
                 }) {
                     Icon(
@@ -251,7 +263,8 @@ internal fun VideoPlayerControlsOverlay(
                     )
                 }
                 IconButton(onClick = {
-                    if (player.hasNextMediaItem()) player.seekToNextMediaItem()
+                    // §5d Next: PlaylistEngine.manualNext (always wraps) → pager switch.
+                    playlist.onNext()
                     resetAutoHide()
                 }) {
                     Icon(
@@ -343,6 +356,19 @@ internal fun VideoPlayerControlsOverlay(
                         expanded = subtitlesMenuExpanded,
                         tracks = tracks,
                         player = player,
+                        currentSubtitleLabel = currentSubtitleLabel,
+                        onLoadDeviceSubtitle = {
+                            subtitlesMenuExpanded = false
+                            onLoadDeviceSubtitle()
+                        },
+                        onLoadVaultSubtitle = {
+                            subtitlesMenuExpanded = false
+                            onLoadVaultSubtitle()
+                        },
+                        onClearSubtitle = {
+                            subtitlesMenuExpanded = false
+                            onClearSubtitle()
+                        },
                         onDismiss = { subtitlesMenuExpanded = false },
                     )
                     AudioTrackMenu(
@@ -431,6 +457,42 @@ internal fun VideoPlayerControlsOverlay(
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
                 )
+
+                // F1 — the current-folder videos. Tap any row to switch playback to it (the
+                // pager settles on it and its player takes over); the playing row is marked.
+                Text(
+                    text = "Videos (${playlist.items.size})",
+                    style = MaterialTheme.typography.labelMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                )
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(max = 300.dp)) {
+                    itemsIndexed(playlist.items) { index, item ->
+                        val isPlaying = index == playlist.currentIndex
+                        ListItem(
+                            headlineContent = {
+                                Text(
+                                    text = item.originalName,
+                                    fontWeight = if (isPlaying) FontWeight.Bold else FontWeight.Normal,
+                                    maxLines = 1,
+                                )
+                            },
+                            leadingContent = {
+                                if (isPlaying) {
+                                    Icon(VaultActionIcons.Pause, contentDescription = "Now playing")
+                                } else {
+                                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                                }
+                            },
+                            modifier = Modifier.clickable {
+                                playlist.onSelect(index)
+                                playlistSheetVisible = false
+                                resetAutoHide()
+                            },
+                        )
+                    }
+                }
+
+                HorizontalDivider()
                 Text(
                     text = "Order mode",
                     style = MaterialTheme.typography.labelMedium,
@@ -441,11 +503,11 @@ internal fun VideoPlayerControlsOverlay(
                         headlineContent = { Text(mode.label) },
                         leadingContent = {
                             RadioButton(
-                                selected = orderMode == mode,
-                                onClick = { orderMode = mode },
+                                selected = playlist.orderMode == mode,
+                                onClick = { playlist.onOrderModeChanged(mode) },
                             )
                         },
-                        modifier = Modifier.clickable { orderMode = mode },
+                        modifier = Modifier.clickable { playlist.onOrderModeChanged(mode) },
                     )
                 }
                 Spacer(Modifier.height(16.dp))
@@ -521,10 +583,34 @@ private fun SubtitleTrackMenu(
     expanded: Boolean,
     tracks: Tracks,
     player: Player,
+    currentSubtitleLabel: String?,
+    onLoadDeviceSubtitle: () -> Unit,
+    onLoadVaultSubtitle: () -> Unit,
+    onClearSubtitle: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val textGroups = tracks.groups.filter { it.type == C.TRACK_TYPE_TEXT }
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
+        // F4 — side-load an external subtitle. Both paths build the APP-370-mandated
+        // MergingMediaSource + SingleSampleMediaSource (see MediaPlayerPage.buildMediaSource);
+        // a vault-hidden sub streams through EncryptedVaultDataSource — no plaintext temp.
+        DropdownMenuItem(
+            text = { Text("Load from device…") },
+            leadingIcon = { Icon(VaultActionIcons.MoveTo, contentDescription = null) },
+            onClick = onLoadDeviceSubtitle,
+        )
+        DropdownMenuItem(
+            text = { Text("Load from vault…") },
+            leadingIcon = { Icon(VaultActionIcons.Unhide, contentDescription = null) },
+            onClick = onLoadVaultSubtitle,
+        )
+        if (currentSubtitleLabel != null) {
+            DropdownMenuItem(
+                text = { Text("Remove: $currentSubtitleLabel") },
+                onClick = onClearSubtitle,
+            )
+        }
+        HorizontalDivider()
         DropdownMenuItem(
             text = { Text("Off") },
             onClick = {
@@ -540,7 +626,7 @@ private fun SubtitleTrackMenu(
         )
         if (textGroups.isEmpty()) {
             DropdownMenuItem(
-                text = { Text("No subtitles available") },
+                text = { Text("No embedded subtitles") },
                 onClick = onDismiss,
                 enabled = false,
             )

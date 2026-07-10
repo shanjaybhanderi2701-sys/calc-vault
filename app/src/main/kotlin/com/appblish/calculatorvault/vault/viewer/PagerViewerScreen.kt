@@ -1,7 +1,14 @@
 package com.appblish.calculatorvault.vault.viewer
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.media.MediaMetadataRetriever
+import android.net.Uri
+import android.os.Looper
+import android.provider.OpenableColumns
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.animateFloatAsState
@@ -21,8 +28,11 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
@@ -35,12 +45,15 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -51,6 +64,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -71,12 +85,23 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.RenderersFactory
+import androidx.media3.exoplayer.source.MediaSource
+import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.exoplayer.source.SingleSampleMediaSource
+import androidx.media3.exoplayer.text.TextOutput
+import androidx.media3.exoplayer.text.TextRenderer
 import androidx.media3.ui.AspectRatioFrameLayout
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
@@ -90,6 +115,39 @@ import com.appblish.calculatorvault.vault.ui.icon
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/**
+ * CalcVault Phase B · Wave 3 · APP-371 (F4) — a side-loaded external subtitle bound to the
+ * currently playing video. [uri] is a `content://` (device/SAF pick) or a `vault://item/<id>`
+ * ([fromVault] = true) opaque uri; the player builds a [SingleSampleMediaSource] over it and
+ * merges it with the video (see `MediaPlayerPage.buildMediaSource`).
+ */
+internal data class LoadedSubtitle(
+    val uri: String,
+    val mimeType: String,
+    val label: String,
+    val fromVault: Boolean,
+)
+
+/**
+ * CalcVault Phase B · Wave 3 · APP-371 (F1–F3) — the §5d playlist context handed down to the
+ * video player so the playlist sheet, Next/Prev, tap-switch, and the five order modes work.
+ *
+ * The playlist **is** the pager's current-folder video pages; navigation is expressed as a
+ * pager page switch ([onSelect]/[onNext]/[onPrevious]) and [onCompleted] auto-advance, all
+ * routed through [PlaylistEngine] so the order-mode semantics live in one JVM-tested place.
+ * Recreated each recomposition, so [currentIndex] always mirrors the settled page.
+ */
+internal class VideoPlaylistController(
+    val items: List<VaultItem>,
+    val currentIndex: Int,
+    val orderMode: OrderMode,
+    val onOrderModeChanged: (OrderMode) -> Unit,
+    val onSelect: (Int) -> Unit,
+    val onNext: () -> Unit,
+    val onPrevious: () -> Unit,
+    val onCompleted: () -> Unit,
+)
 
 /**
  * CalcVault Phase B · Wave 1 · W1-E1 — full-screen photo-vault viewer (spec §2.1, design
@@ -196,6 +254,54 @@ private fun ViewerPager(
     // decoded full-res bitmaps are heavy; a handful covers "swipe forward then back".
     val bitmapCache = remember { ViewerBitmapCache<ImageBitmap>(BITMAP_CACHE_MAX) }
 
+    // --- APP-371 (F1–F3) · §5d playlist over the pager's current-folder video pages ---------
+    // Navigation is a pager page switch; PlaylistEngine owns the order-mode arithmetic. The
+    // controller is rebuilt each recomposition so currentIndex mirrors the settled page.
+    val playlistScope = rememberCoroutineScope()
+    var orderMode by remember { mutableStateOf(OrderMode.ORDER) }
+    // A deterministic shuffle permutation, rebuilt on mode/size change (seed = size so it is
+    // reproducible and stable across a config change without re-shuffling mid-playback).
+    val shuffleOrder = remember(orderMode, state.pages.size) {
+        if (orderMode == OrderMode.SHUFFLE) {
+            PlaylistEngine.shuffledOrder(state.pages.size, state.pages.size.toLong())
+        } else {
+            emptyList()
+        }
+    }
+
+    fun jumpToPage(index: Int) {
+        if (index in state.pages.indices) playlistScope.launch { pagerState.animateScrollToPage(index) }
+    }
+    val playlistController =
+        VideoPlaylistController(
+            items = state.pages,
+            currentIndex = pagerState.currentPage,
+            orderMode = orderMode,
+            onOrderModeChanged = { orderMode = it },
+            onSelect = { jumpToPage(it) },
+            onNext = { PlaylistEngine.manualNext(state.pages.size, pagerState.currentPage)?.let { jumpToPage(it) } },
+            onPrevious = {
+                PlaylistEngine
+                    .manualPrev(
+                        state.pages.size,
+                        pagerState.currentPage
+                    )?.let { jumpToPage(it) }
+            },
+            onCompleted = {
+                val size = state.pages.size
+                val cur = pagerState.currentPage
+                if (orderMode == OrderMode.SHUFFLE && shuffleOrder.isNotEmpty()) {
+                    // Advance within the shuffled order; single pass (stop after the last).
+                    val pos = shuffleOrder.indexOf(cur)
+                    if (pos in 0 until shuffleOrder.lastIndex) jumpToPage(shuffleOrder[pos + 1])
+                } else {
+                    // ORDER/NO_LOOP → next or stop; LOOP_ALL → wrap. (REPEAT_CURRENT never ends.)
+                    val next = PlaylistEngine.onCompletion(size, cur, orderMode)
+                    if (next != null && next != cur) jumpToPage(next)
+                }
+            },
+        )
+
     // Decrypt only the settled page (spec §1/§7): re-keying the VM's active page deletes the
     // previous page's temp file / drops its bytes. Also re-runs when a delete shrinks the
     // list and a new item slides into the settled slot.
@@ -242,6 +348,7 @@ private fun ViewerPager(
                 // Single tap toggles the chrome (never while zoomed — the photo owns the tap).
                 onToggleChrome = { if (!zoomed) chromeVisible = !chromeVisible },
                 bitmapCache = bitmapCache,
+                playlist = playlistController,
             )
         }
 
@@ -313,6 +420,7 @@ private fun ViewerPage(
     onZoomedChanged: (Boolean) -> Unit,
     onToggleChrome: () -> Unit,
     bitmapCache: ViewerBitmapCache<ImageBitmap>,
+    playlist: VideoPlaylistController,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -330,6 +438,7 @@ private fun ViewerPage(
                         itemId = content.itemId,
                         hasVideoFrame = content.hasVideoFrame,
                         onToggleChrome = onToggleChrome,
+                        playlist = playlist,
                     )
                 } else {
                     CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
@@ -558,10 +667,11 @@ private fun VideoPage(
     itemId: String,
     hasVideoFrame: Boolean,
     onToggleChrome: () -> Unit,
+    playlist: VideoPlaylistController,
 ) {
     var playing by remember(itemId) { mutableStateOf(false) }
     if (playing) {
-        MediaPlayerPage(itemId)
+        MediaPlayerPage(itemId, playlist)
     } else {
         VideoPreviewPage(
             itemId = itemId,
@@ -644,26 +754,66 @@ private fun VideoPreviewPage(
  * Plays [itemId]'s video/audio by **streaming the encrypted blob** through the seekable
  * decrypting [EncryptedVaultDataSource] (APP-347 / spec §7–§8): decrypt happens on
  * ExoPlayer's loader thread, one 512 KiB chunk at a time, so a large video scrubs/seeks
- * smoothly and **no plaintext ever touches disk** (§1.1/§1.2/§1.3). [PlayerView]'s built-in
- * controller supplies the seekbar (scrub + seek) and play/pause. An undecodable
+ * smoothly and **no plaintext ever touches disk** (§1.1/§1.2/§1.3). An undecodable
  * container/codec surfaces as a graceful message (§6) — never a crash. The player is
  * released when the page leaves composition.
+ *
+ * **APP-371 (F2/F3) — [playlist]:** Next/Prev and auto-advance are pager switches routed
+ * through [PlaylistEngine]; REPEAT_CURRENT loops in place via `repeatMode` (so it never
+ * reaches `STATE_ENDED`), every other mode advances on `STATE_ENDED` via
+ * [VideoPlaylistController.onCompleted].
+ *
+ * **APP-371 (F4) — external subtitles:** a device (SAF) or vault-hidden `.srt/.ass` sub is
+ * merged in via [buildMediaSource]'s [MergingMediaSource] + [SingleSampleMediaSource] (the
+ * APP-370-mandated path). A vault-hidden sub streams through [EncryptedVaultDataSource] — no
+ * plaintext temp; a device sub is read in place from its `content://` uri — no copy.
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-private fun MediaPlayerPage(itemId: String) {
+private fun MediaPlayerPage(
+    itemId: String,
+    playlist: VideoPlaylistController,
+) {
     val context = LocalContext.current
     val repository = VaultGraph.contentRepository
     var playbackError by remember(itemId) { mutableStateOf<PlaybackException?>(null) }
+
+    // The side-loaded external subtitle bound to THIS video (F4). Null = none/embedded.
+    var subtitle by remember(itemId) { mutableStateOf<LoadedSubtitle?>(null) }
+    // The player listener is created once (remember); read the latest controller through this
+    // so a mid-session order-mode change is honoured by the auto-advance (F3).
+    val currentPlaylist by rememberUpdatedState(playlist)
+
+    // Build the (optionally subtitle-merged) media source for this video. APP-370 contract:
+    // NEVER MediaItem.setSubtitleConfigurations on the progressive source (that would stage a
+    // plaintext temp for a vault-hidden sub) — always an explicit merged SingleSampleMediaSource.
+    fun buildMediaSource(sub: LoadedSubtitle?): MediaSource {
+        val vaultFactory = EncryptedVaultDataSource.Factory { id -> repository.openBlobReader(id) }
+        val videoSource =
+            ProgressiveMediaSource
+                .Factory(vaultFactory)
+                .createMediaSource(MediaItem.fromUri(EncryptedVaultDataSource.vaultMediaUri(itemId)))
+        if (sub == null) return videoSource
+        val subConfig =
+            MediaItem.SubtitleConfiguration
+                .Builder(Uri.parse(sub.uri))
+                .setMimeType(sub.mimeType)
+                .setSelectionFlags(C.SELECTION_FLAG_DEFAULT)
+                .build()
+        // Vault-hidden sub → streamed decrypt (no plaintext temp); device sub → in-place read.
+        val subFactory: DataSource.Factory =
+            if (sub.fromVault) vaultFactory else DefaultDataSource.Factory(context)
+        val subSource =
+            SingleSampleMediaSource
+                .Factory(subFactory)
+                .createMediaSource(subConfig, C.TIME_UNSET)
+        return MergingMediaSource(videoSource, subSource)
+    }
+
     val player =
         remember(itemId) {
-            val dataSourceFactory = EncryptedVaultDataSource.Factory { id -> repository.openBlobReader(id) }
-            val mediaSource =
-                ProgressiveMediaSource
-                    .Factory(dataSourceFactory)
-                    .createMediaSource(MediaItem.fromUri(EncryptedVaultDataSource.vaultMediaUri(itemId)))
-            ExoPlayer.Builder(context).build().apply {
-                setMediaSource(mediaSource)
+            ExoPlayer.Builder(context, legacySubtitleRenderersFactory(context)).build().apply {
+                setMediaSource(buildMediaSource(null))
                 prepare()
                 playWhenReady = true
                 addListener(
@@ -671,12 +821,71 @@ private fun MediaPlayerPage(itemId: String) {
                         override fun onPlayerError(error: PlaybackException) {
                             playbackError = error
                         }
+
+                        override fun onPlaybackStateChanged(playbackState: Int) {
+                            // §5d auto-advance: the current video finished on its own → the
+                            // order mode decides where playback goes (or to stop).
+                            if (playbackState == Player.STATE_ENDED) currentPlaylist.onCompleted()
+                        }
                     },
                 )
             }
         }
     DisposableEffect(itemId) {
         onDispose { player.release() }
+    }
+
+    // F3 · REPEAT_CURRENT loops the single item in place (never reaches STATE_ENDED); every
+    // other mode advances across pages, so the player itself must not auto-repeat.
+    LaunchedEffect(playlist.orderMode) {
+        player.repeatMode =
+            if (playlist.orderMode == OrderMode.REPEAT_CURRENT) {
+                Player.REPEAT_MODE_ONE
+            } else {
+                Player.REPEAT_MODE_OFF
+            }
+    }
+
+    // F4 · rebuild the source when a subtitle is loaded/removed, keeping playhead + play state.
+    // The initial (null) source is already on the player from construction — skip that pass.
+    var subtitleInitialised by remember(itemId) { mutableStateOf(false) }
+    LaunchedEffect(subtitle) {
+        if (!subtitleInitialised) {
+            subtitleInitialised = true
+            return@LaunchedEffect
+        }
+        val resumePosition = player.currentPosition
+        val wasPlaying = player.playWhenReady
+        player.setMediaSource(buildMediaSource(subtitle))
+        player.prepare()
+        player.seekTo(resumePosition)
+        player.playWhenReady = wasPlaying
+    }
+
+    // F4 · device (SAF) subtitle pick — a plain content:// read, no copy. The extension drives
+    // the sample MIME (SubtitleFormats); a persistable grant is best-effort (single-sample
+    // loads eagerly, so the transient session grant already suffices).
+    val subtitlePicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) {
+                val name = subtitleDisplayName(context, uri)
+                val mime = SubtitleFormats.mimeTypeForName(name) ?: SubtitleFormats.MIME_SUBRIP
+                runCatching {
+                    context.contentResolver.takePersistableUriPermission(
+                        uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION,
+                    )
+                }
+                subtitle = LoadedSubtitle(uri.toString(), mime, name, fromVault = false)
+            }
+        }
+
+    // F4 · vault-hidden subtitle pick — the vault's own .srt/.ass items, streamed decrypt.
+    var showVaultSubPicker by remember(itemId) { mutableStateOf(false) }
+    val vaultSubtitles by produceState(initialValue = emptyList<VaultItem>(), itemId) {
+        repository.allItems().collect { all ->
+            value = all.filter { SubtitleFormats.isSubtitle(it.originalName) }
+        }
     }
 
     // ---- Wave 3 (APP-350) state hoisted here so all three layers share it ----
@@ -741,12 +950,93 @@ private fun MediaPlayerPage(itemId: String) {
                 onRotationChanged = { rotationDegrees = it },
                 muted = muted,
                 onMutedChanged = { muted = it },
+                playlist = playlist,
+                currentSubtitleLabel = subtitle?.label,
+                onLoadDeviceSubtitle = { subtitlePicker.launch(arrayOf("*/*")) },
+                onLoadVaultSubtitle = { showVaultSubPicker = true },
+                onClearSubtitle = { subtitle = null },
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })
             }
         }
     }
+
+    // F4 · the vault subtitle picker dialog (its own .srt/.ass items).
+    if (showVaultSubPicker) {
+        AlertDialog(
+            onDismissRequest = { showVaultSubPicker = false },
+            title = { Text("Vault subtitles") },
+            text = {
+                if (vaultSubtitles.isEmpty()) {
+                    Text("No .srt/.ass subtitles hidden in the vault")
+                } else {
+                    LazyColumn(modifier = Modifier.heightIn(max = 320.dp)) {
+                        items(vaultSubtitles) { sub ->
+                            ListItem(
+                                headlineContent = { Text(sub.originalName, maxLines = 1) },
+                                modifier =
+                                    Modifier.clickable {
+                                        val mime = SubtitleFormats.mimeTypeForName(sub.originalName)
+                                            ?: SubtitleFormats.MIME_SUBRIP
+                                        subtitle =
+                                            LoadedSubtitle(
+                                                uri = EncryptedVaultDataSource.vaultMediaUri(sub.id).toString(),
+                                                mimeType = mime,
+                                                label = sub.originalName,
+                                                fromVault = true,
+                                            )
+                                        showVaultSubPicker = false
+                                    },
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showVaultSubPicker = false }) { Text("Close") }
+            },
+        )
+    }
+}
+
+/**
+ * A renderers factory that keeps **legacy (render-time) subtitle decoding** enabled (APP-371
+ * F4). Media3 1.4 parses subtitles during extraction by default and the TextRenderer then only
+ * accepts pre-parsed `application/x-media3-cues`; a **sideloaded** [SingleSampleMediaSource]
+ * subtitle emits raw `application/x-subrip`/SSA samples (it has no during-extraction parser), so
+ * without this the merged subtitle throws `Legacy decoding is disabled`. Enabling legacy
+ * decoding restores render-time parsing — the only lever, since the APP-370 contract forces a
+ * hand-built subtitle source (its DataSource must be [EncryptedVaultDataSource] for a vault sub).
+ */
+@androidx.annotation.OptIn(UnstableApi::class)
+internal fun legacySubtitleRenderersFactory(context: Context): RenderersFactory =
+    object : DefaultRenderersFactory(context) {
+        override fun buildTextRenderers(
+            context: Context,
+            output: TextOutput,
+            outputLooper: Looper,
+            extensionRendererMode: Int,
+            out: ArrayList<Renderer>,
+        ) {
+            out.add(TextRenderer(output, outputLooper).apply { experimentalSetLegacyDecodingEnabled(true) })
+        }
+    }
+
+/** Query a picked subtitle's display name (for the MIME map + the menu label). */
+private fun subtitleDisplayName(
+    context: Context,
+    uri: Uri,
+): String {
+    context.contentResolver
+        .query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+        ?.use { cursor ->
+            if (cursor.moveToFirst()) {
+                val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (index >= 0) cursor.getString(index)?.let { return it }
+            }
+        }
+    return uri.lastPathSegment ?: "subtitle"
 }
 
 /**
