@@ -132,19 +132,22 @@ class FastScrollChevronCaptureTest {
                 compose.onAllNodesWithTag("fast-scroll-bubble").fetchSemanticsNodes().isNotEmpty()
             }
             snap("app344_date_bubble_$suffix.png")
-            // Release the gesture; activity stops.
-            compose.onNodeWithTag("grid").performTouchInput { up() }
         }
+        // Always release the gesture (even if the bubble capture threw) so the auto-hide
+        // timer can start; a stuck-down pointer would keep `dragging` true forever.
+        runCatching { compose.onNodeWithTag("grid").performTouchInput { up() } }
 
-        // (3) Idle fade: drive the clock past the 1s hide delay so the handle auto-hides.
-        // On CI animations are disabled (MotionDurationScale=0) so the alpha snaps to 0 and
-        // the shot depicts the settled auto-hidden state (scrollbar gone after inactivity).
+        // (3) Idle fade / auto-hide: after HIDE_DELAY_MS (1s) of no activity the handle
+        // fades to alpha 0 and is removed from the tree. Wait it out in REAL time (leaving
+        // the clock auto-advancing — freezing it and then capturing deadlocks waitForIdle
+        // and gets the instrumentation process ANR-killed), then photograph the settled
+        // idle frame: the accent pill is gone from the trailing edge (contrast with
+        // app344_pill_chevron — present there). That is the auto-hide, proven.
         runCatching {
-            compose.mainClock.autoAdvance = false
-            compose.mainClock.advanceTimeBy(1_100L)
-            compose.mainClock.advanceTimeBy(120L)
-            snap("app344_idle_fade_$suffix.png")
-            compose.mainClock.autoAdvance = true
+            compose.waitUntil(5_000) {
+                compose.onAllNodesWithTag("fast-scroll-handle").fetchSemanticsNodes().isEmpty()
+            }
         }
+        snap("app344_idle_fade_$suffix.png")
     }
 }
