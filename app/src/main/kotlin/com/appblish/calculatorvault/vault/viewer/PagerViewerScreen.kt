@@ -77,6 +77,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.ui.AspectRatioFrameLayout
 import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
@@ -677,15 +678,74 @@ private fun MediaPlayerPage(itemId: String) {
     DisposableEffect(itemId) {
         onDispose { player.release() }
     }
+
+    // ---- Wave 3 (APP-350) state hoisted here so all three layers share it ----
+    var controlsVisible by remember(itemId) { mutableStateOf(true) }
+    var locked by remember(itemId) { mutableStateOf(false) }
+    var speed by remember(itemId) { mutableFloatStateOf(PlaybackSpeeds.DEFAULT) }
+    var muted by remember(itemId) { mutableStateOf(false) }
+    var aspectMode by remember(itemId) { mutableStateOf(VideoScaleMath.AspectMode.FIT) }
+    var rotationDegrees by remember(itemId) { mutableIntStateOf(0) }
+    var scale by remember(itemId) { mutableFloatStateOf(VideoZoomMath.MIN_SCALE) }
+    var panX by remember(itemId) { mutableFloatStateOf(0f) }
+    var panY by remember(itemId) { mutableFloatStateOf(0f) }
+
+    // Propagate speed + mute to ExoPlayer whenever they change.
+    LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
+    LaunchedEffect(muted) { player.volume = if (muted) 0f else 1f }
+
+    val resizeMode = when (aspectMode) {
+        VideoScaleMath.AspectMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+        VideoScaleMath.AspectMode.FILL -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        VideoScaleMath.AspectMode.ZOOM -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+        VideoScaleMath.AspectMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+    }
+
     val error = playbackError
     if (error != null) {
         UnsupportedMediaPage(error)
     } else {
-        // Wave 2 (APP-349): the PlayerView is wrapped in the gesture surface — single tap
-        // toggles the controller, double-tap seeks ±10s, and single-pointer swipes drive
-        // brightness / volume / scrub (spec §3). The seekbar + play/pause still come from the
-        // built-in controller; this overlay only takes ownership of raw touches.
-        VideoPlayerSurface(player = player)
+        // Three-layer stack (spec §5c / §6):
+        //  1. VideoPlayerSurface — the video render + Wave-2 gestures + Wave-3 pinch-zoom
+        //  2. VideoPlayerControlsOverlay — scrim / quick-row / menus / dialogs / sheets
+        //  3. VideoPlayerLockOverlay (top-most, only when locked) — intercepts ALL pointers
+        //     before layers 1 and 2 see them so controls AND gestures are fully disabled
+        Box(modifier = Modifier.fillMaxSize()) {
+            VideoPlayerSurface(
+                player = player,
+                controlsVisible = controlsVisible,
+                onToggleControls = { controlsVisible = !controlsVisible },
+                locked = locked,
+                scale = scale,
+                panX = panX,
+                panY = panY,
+                onPinch = { ns, nx, ny ->
+                    scale = ns
+                    panX = nx
+                    panY = ny
+                },
+                resizeMode = resizeMode,
+                rotationDegrees = rotationDegrees,
+            )
+            VideoPlayerControlsOverlay(
+                player = player,
+                controlsVisible = controlsVisible,
+                onToggleControls = { controlsVisible = !controlsVisible },
+                locked = locked,
+                onLockChanged = { locked = it },
+                speed = speed,
+                onSpeedChanged = { speed = it },
+                aspectMode = aspectMode,
+                onAspectModeChanged = { aspectMode = it },
+                rotationDegrees = rotationDegrees,
+                onRotationChanged = { rotationDegrees = it },
+                muted = muted,
+                onMutedChanged = { muted = it },
+            )
+            if (locked) {
+                VideoPlayerLockOverlay(onUnlock = { locked = false })
+            }
+        }
     }
 }
 

@@ -9,6 +9,8 @@ import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.drag
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -35,6 +37,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
@@ -74,14 +77,24 @@ import android.graphics.Color as AndroidColor
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
-internal fun VideoPlayerSurface(player: Player) {
+internal fun VideoPlayerSurface(
+    player: Player,
+    controlsVisible: Boolean,
+    onToggleControls: () -> Unit,
+    locked: Boolean,
+    scale: Float,
+    panX: Float,
+    panY: Float,
+    onPinch: (newScale: Float, newPanX: Float, newPanY: Float) -> Unit,
+    resizeMode: Int,
+    rotationDegrees: Int,
+) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val audioManager = remember(context) { context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager }
     val maxVolume = remember(audioManager) { audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0 }
 
     var surfaceSize by remember { mutableStateOf(IntSize.Zero) }
-    var controlsVisible by remember { mutableStateOf(true) }
 
     // Transient indicators (spec §3: every gesture shows on-screen feedback).
     var seekLabel by remember { mutableStateOf<String?>(null) }
@@ -126,6 +139,23 @@ internal fun VideoPlayerSurface(player: Player) {
         onDispose { activity?.let { restoreSystemBrightness(it) } }
     }
 
+    // Pinch-zoom transform state (Wave 3, spec §5): only multi-touch (≥2 pointer) gestures
+    // trigger a zoom change in rememberTransformableState, so this never fights the Wave-2
+    // single-pointer handler below. When locked the transformable is disabled (canTransform).
+    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+        val (ns, nx, ny) = VideoZoomMath.applyPinch(
+            scale,
+            panX,
+            panY,
+            zoomChange,
+            panChange.x,
+            panChange.y,
+            surfaceSize.width.toFloat(),
+            surfaceSize.height.toFloat(),
+        )
+        onPinch(ns, nx, ny)
+    }
+
     Box(
         modifier =
             Modifier
@@ -133,10 +163,19 @@ internal fun VideoPlayerSurface(player: Player) {
                 .onSizeChanged { surfaceSize = it },
     ) {
         AndroidView(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    scaleX = scale
+                    scaleY = scale
+                    translationX = panX
+                    translationY = panY
+                    rotationZ = rotationDegrees.toFloat()
+                }.transformable(state = transformableState, enabled = !locked),
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     this.player = player
+                    this.resizeMode = resizeMode
                     setBackgroundColor(AndroidColor.BLACK)
                     // This overlay owns every touch; the controller only shows on our tap.
                     controllerAutoShow = false
@@ -145,6 +184,7 @@ internal fun VideoPlayerSurface(player: Player) {
             },
             update = { view ->
                 view.player = player
+                view.resizeMode = resizeMode
                 if (controlsVisible) view.showController() else view.hideController()
             },
         )
@@ -152,12 +192,13 @@ internal fun VideoPlayerSurface(player: Player) {
         // One gesture owner — tap / double-tap AND drag share a single pointerInput so the
         // detectors never contend (a stacked drag layer used to starve the double-tap detector
         // on-device; spec §3 item 2 — APP-359). Touch-slop routes the gesture: lift-before-slop
-        // is a tap, crossing slop is a drag.
+        // is a tap, crossing slop is a drag. Entire block is skipped while locked.
         Box(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .pointerInput(surfaceSize) {
+                    .pointerInput(surfaceSize, locked) {
+                        if (locked) return@pointerInput
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
 
@@ -238,7 +279,7 @@ internal fun VideoPlayerSurface(player: Player) {
                                         awaitFirstDown(requireUnconsumed = false)
                                     }
                                 if (secondDown == null) {
-                                    controlsVisible = !controlsVisible
+                                    onToggleControls()
                                 } else {
                                     val tapZone =
                                         VideoGestureMath.zoneFor(secondDown.position.x, surfaceSize.width.toFloat())
