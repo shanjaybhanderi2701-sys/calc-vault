@@ -36,11 +36,15 @@ import org.junit.runner.RunWith
 import java.io.File
 
 /**
- * APP-344 — on-device VISUAL capture of the redesigned fast-scroll handle. Renders the
- * **real production [FastScrollbar]** on the CI emulator (API 30/35) and writes PNGs of the
+ * APP-344 / APP-345 — on-device VISUAL capture of the redesigned fast-scroll handle. Renders
+ * the **real production [FastScrollbar]** on the CI emulator (API 30/35) and writes PNGs of the
  * gate states to `/sdcard/chevron-evidence/` so the CI job can `adb pull` + upload them as
- * artifacts. This is the visual proof the APP-344 DoD gate demands — existence of the glyph
- * is separately *asserted* by [FastScrollChevronDoDTest]; this class only *photographs* it.
+ * artifacts. This is the visual proof the DoD gate demands — existence of the glyph is
+ * separately *asserted* by [FastScrollChevronDoDTest]; this class only *photographs* it.
+ *
+ * APP-345 recolored the handle from the brand green accent to a NEUTRAL treatment
+ * (surfaceVariant fill + divider hairline + textPrimary chevron/label), so these shots are
+ * the "no green" re-capture the APP-345 gate demands.
  *
  * Capture is deliberately **best-effort**: every stage is wrapped so a capture hiccup on a
  * given emulator never turns the instrumented job red (that would strand the landing). The
@@ -48,9 +52,9 @@ import java.io.File
  * robust; the mid-drag bubble and the auto-hidden idle state are captured opportunistically.
  *
  * Shots (suffixed with the emulator API level):
- *   1. `app344_pill_chevron_api<lvl>.png` — grabbable accent pill bearing the up/down chevron.
- *   2. `app344_date_bubble_api<lvl>.png`  — date/section bubble beside the handle mid-drag.
- *   3. `app344_idle_fade_api<lvl>.png`    — handle auto-hidden after ~1s of inactivity.
+ *   1. `app345_pill_chevron_api<lvl>.png` — grabbable NEUTRAL pill bearing the up/down chevron.
+ *   2. `app345_date_bubble_api<lvl>.png`  — NEUTRAL date/section bubble beside the handle mid-drag.
+ *   3. `app345_idle_fade_api<lvl>.png`    — handle auto-hidden after ~1s of inactivity.
  */
 @RunWith(AndroidJUnit4::class)
 class FastScrollChevronCaptureTest {
@@ -117,8 +121,8 @@ class FastScrollChevronCaptureTest {
         }
 
         // (1) Pill bearing the up/down chevron — not dragging, so nothing covers it. This is
-        // the money shot proving the regression is fixed (pill+chevron, not the old thin line).
-        snap("app344_pill_chevron_$suffix.png")
+        // the money shot proving the regression is fixed (NEUTRAL pill+chevron, no green).
+        snap("app345_pill_chevron_$suffix.png")
 
         // (2) Date bubble mid-drag: hold a vertical drag on the touch column WITHOUT releasing
         // so `dragging` stays true and the bubble renders beside the handle.
@@ -134,7 +138,7 @@ class FastScrollChevronCaptureTest {
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithTag("fast-scroll-bubble").fetchSemanticsNodes().isNotEmpty()
             }
-            snap("app344_date_bubble_$suffix.png")
+            snap("app345_date_bubble_$suffix.png")
         }
         // Always release the gesture (even if the bubble capture threw) so the auto-hide
         // timer can start; a stuck-down pointer would keep `dragging` true forever.
@@ -144,13 +148,13 @@ class FastScrollChevronCaptureTest {
         // fades to alpha 0 and is removed from the tree. Wait it out in REAL time (leaving
         // the clock auto-advancing — freezing it and then capturing deadlocks waitForIdle
         // and gets the instrumentation process ANR-killed), then photograph the settled
-        // idle frame: the accent pill is gone from the trailing edge (contrast with
-        // app344_pill_chevron — present there). That is the auto-hide, proven.
+        // idle frame: the neutral pill is gone from the trailing edge (contrast with
+        // app345_pill_chevron — present there). That is the auto-hide, proven.
         runCatching {
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithTag("fast-scroll-handle").fetchSemanticsNodes().isEmpty()
             }
         }
-        snap("app344_idle_fade_$suffix.png")
+        snap("app345_idle_fade_$suffix.png")
     }
 }
