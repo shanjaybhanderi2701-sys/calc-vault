@@ -111,7 +111,24 @@ jobs:
           target: google_apis
           disable-animations: true
           emulator-options: -no-snapshot -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
+          script: |
+            set +e
+            ./gradlew --no-daemon --stacktrace connectedDebugAndroidTest
+            gradle_code=$?
+            # APP-344 hard gate: pull the on-device chevron screenshots written by
+            # FastScrollChevronCaptureTest while the emulator is still alive. Best-effort —
+            # never let the pull mask the real gradle result.
+            adb pull /sdcard/chevron-evidence ./chevron-evidence || true
+            exit $gradle_code
+
+      - name: Upload chevron on-device screenshots (APP-344)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chevron-evidence-api-${{ matrix.api-level }}
+          path: ./chevron-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
 
       - name: Upload connected test reports
         if: failure()
