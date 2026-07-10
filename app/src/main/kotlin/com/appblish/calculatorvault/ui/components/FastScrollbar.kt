@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.ui.components
 
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,8 +52,10 @@ private const val FAST_SCROLL_MIN_ITEMS = 30
 // APP-293 item 14 / APP-320 — gallery-grade thumb geometry: a clearly grabbable pill (not
 // a thin line) **bearing an up/down double-arrow (chevron)** the way Samsung / Google
 // Photos / MIUI draw their fast-scroll handle, a wider invisible touch column, and the
-// date bubble that rides beside it while dragging. All colors come from the Filora tokens
-// (accent / onAccent / surface) — no ad-hoc hues in this file.
+// date bubble that rides beside it while dragging. APP-345 — the handle is NEUTRAL, not the
+// brand accent: the reference apps use a grey/white utility handle, and the owner spec is
+// "no green". All colors come from the Filora NEUTRAL tokens (surfaceVariant / divider /
+// textPrimary) — no accent / accentPressed / onAccent anywhere in this file.
 private val HANDLE_WIDTH = 28.dp
 private val HANDLE_HEIGHT = 56.dp
 private val CHEVRON_SIZE = 18.dp
@@ -64,7 +67,7 @@ private val BUBBLE_HEIGHT = 36.dp
 
 /**
  * Samsung/Oppo/MIUI-style draggable fast-scroll for a lazy grid (P2-2 + APP-293 item 14):
- * a grabbable accent **pill handle** at the trailing edge that mirrors the scroll
+ * a grabbable neutral **pill handle** at the trailing edge that mirrors the scroll
  * position, jumps on drag (proportional [LazyGridState.scrollToItem]), fades out ~1s
  * after activity, and — while dragging — shows a **date/section bubble** beside the
  * handle naming where the drag is (supplied by [labelForIndex], which receives the
@@ -194,7 +197,8 @@ private fun FastScrollbarImpl(
                 .onSizeChanged { trackHeightPx = it.height },
     ) {
         // The date/section bubble rides beside the handle while dragging (item 14):
-        // accent container, on-accent label — where the drag will land.
+        // APP-345 neutral container (surfaceVariant + divider hairline), textPrimary label —
+        // where the drag will land. No green.
         if (bubbleLabel != null) {
             Box(
                 contentAlignment = Alignment.Center,
@@ -207,14 +211,15 @@ private fun FastScrollbarImpl(
                             IntOffset(x = 0, y = (handleCenter - BUBBLE_HEIGHT.roundToPx() / 2).coerceAtLeast(0))
                         }.padding(end = TOUCH_WIDTH + spacing.xs)
                         .height(BUBBLE_HEIGHT)
-                        .background(colors.accent, VaultTheme.shapes.pill)
+                        .background(colors.surfaceVariant, VaultTheme.shapes.pill)
+                        .border(1.dp, colors.divider, VaultTheme.shapes.pill)
                         .padding(horizontal = spacing.md)
                         .testTag("fast-scroll-bubble"),
             ) {
                 Text(
                     text = bubbleLabel,
                     style = VaultTheme.typography.labelLarge,
-                    color = colors.onAccent,
+                    color = colors.textPrimary,
                     maxLines = 1,
                 )
             }
@@ -252,10 +257,11 @@ private fun FastScrollbarImpl(
                         }
                     },
         ) {
-            // The pill handle (item 14 / APP-320): a clearly grabbable rounded accent-token
-            // pill — replaces the old thin line — **bearing an up/down double-arrow chevron**
-            // (two stacked keyboard arrows, tinted onAccent) so it reads as a drag handle the
-            // way Samsung/Photos/MIUI do. No track behind it, gallery-style.
+            // The pill handle (item 14 / APP-320 / APP-345): a clearly grabbable rounded
+            // **neutral** pill — replaces the old thin line — **bearing an up/down double-arrow
+            // chevron** (two stacked keyboard arrows, tinted textPrimary) so it reads as a drag
+            // handle the way Samsung/Photos/MIUI do. Neutral surfaceVariant fill + 1dp divider
+            // hairline so it reads on the near-black canvas — no green. No track behind it.
             Box(
                 contentAlignment = Alignment.Center,
                 modifier =
@@ -266,7 +272,8 @@ private fun FastScrollbarImpl(
                             IntOffset(x = 0, y = (fraction * travel).roundToInt())
                         }.width(HANDLE_WIDTH)
                         .height(HANDLE_HEIGHT)
-                        .background(colors.accent, VaultTheme.shapes.pill)
+                        .background(colors.surfaceVariant, VaultTheme.shapes.pill)
+                        .border(1.dp, colors.divider, VaultTheme.shapes.pill)
                         .testTag("fast-scroll-handle"),
             ) {
                 Column(
@@ -277,13 +284,13 @@ private fun FastScrollbarImpl(
                     Icon(
                         imageVector = Icons.Filled.KeyboardArrowUp,
                         contentDescription = null,
-                        tint = colors.onAccent,
+                        tint = colors.textPrimary,
                         modifier = Modifier.size(CHEVRON_SIZE),
                     )
                     Icon(
                         imageVector = Icons.Filled.KeyboardArrowDown,
                         contentDescription = null,
-                        tint = colors.onAccent,
+                        tint = colors.textPrimary,
                         modifier = Modifier.size(CHEVRON_SIZE),
                     )
                 }
