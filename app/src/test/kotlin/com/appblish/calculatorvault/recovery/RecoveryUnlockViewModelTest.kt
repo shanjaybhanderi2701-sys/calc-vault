@@ -261,6 +261,71 @@ class RecoveryUnlockViewModelTest {
             assertThat(viewModel.state.value.error).isNotNull()
         }
 
+    @Test
+    fun `a transient credential write failure after RESET is retried so the reset still completes (APP-333)`() =
+        runTest(dispatcher) {
+            // resetPin already RESET the envelope to the new PIN; setRealPin throws once (a keystore
+            // hiccup) then succeeds. The idempotent retry must land the credential so the vault ends
+            // fully reset — a transient write can never strand it (envelope + credential both at new PIN).
+            val delegate = InMemoryCredentialStore()
+            val flakyStore =
+                object : CredentialStore by delegate {
+                    var attempts = 0
+
+                    override suspend fun setRealPin(pin: String) {
+                        attempts++
+                        if (attempts == 1) throw java.io.IOException("transient keystore hiccup")
+                        delegate.setRealPin(pin)
+                    }
+                }
+            val viewModel = vm(FakeReKeyer(correctSecret = CODE), flakyStore)
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.onSubmitSecret(CODE)
+            dispatcher.scheduler.advanceUntilIdle()
+            viewModel.onNewPin("5678")
+            viewModel.onConfirmPin("5678")
+            dispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            assertThat(state.stage).isEqualTo(RecoveryUnlockStage.DONE)
+            assertThat(state.busy).isFalse()
+            // Credential caught up to the moved envelope: the new PIN authenticates and the session holds it.
+            assertThat(delegate.resolve("5678")).isEqualTo(VaultKind.Real)
+            assertThat(VaultSession.passphrase).isEqualTo("5678")
+        }
+
+    @Test
+    fun `a persistent credential write failure after RESET reports the honest diverged state (APP-333)`() =
+        runTest(dispatcher) {
+            // resetPin already RESET the envelope to the new PIN; setRealPin then fails on every retry.
+            // The flow must (a) not hang the spinner, (b) NOT claim the vault is unchanged — the
+            // envelope really moved — and (c) route back to a covered path (re-verify → re-run the
+            // reset against the already-moved envelope) rather than dead-end.
+            val throwingStore =
+                object : CredentialStore by InMemoryCredentialStore() {
+                    override suspend fun setRealPin(pin: String): Unit = throw java.io.IOException("write failed")
+                }
+            val viewModel = vm(FakeReKeyer(correctSecret = CODE), throwingStore)
+            dispatcher.scheduler.advanceUntilIdle()
+
+            viewModel.onSubmitSecret(CODE)
+            dispatcher.scheduler.advanceUntilIdle()
+            viewModel.onNewPin("5678")
+            viewModel.onConfirmPin("5678")
+            dispatcher.scheduler.advanceUntilIdle()
+
+            val state = viewModel.state.value
+            // (a) no stuck spinner
+            assertThat(state.busy).isFalse()
+            // (b) honest error — the envelope DID move, so never claim it is unchanged
+            assertThat(state.error).isNotNull()
+            assertThat(state.error!!.lowercase()).doesNotContain("unchanged")
+            assertThat(state.error).contains("changed")
+            // (c) a covered path back to a consistent state: re-verify to re-run the reset
+            assertThat(state.stage).isEqualTo(RecoveryUnlockStage.ENTER_SECRET)
+        }
+
     private companion object {
         const val CODE = "7K9F2XQP4MRT8WVN"
     }

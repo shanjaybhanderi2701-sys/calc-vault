@@ -54,7 +54,9 @@ data class RecoveryUnlockUiState(
  * **Commit-ordering invariant (inherited from APP-245).** [RecoveryReKeyer.resetPin] moves the
  * `.vaultkey` envelope first; the auth credential ([CredentialStore.setRealPin]) is committed
  * **only** after that succeeds, so a failed reset can never diverge the token from the envelope
- * and strand the vault.
+ * and strand the vault. Once the envelope has moved the credential commit is idempotently retried
+ * so a transient write can't strand it, and a persistent failure reports the honest diverged state
+ * (never a false "unchanged") with a covered path back to a consistent state (APP-333, [finishReset]).
  *
  * **Backoff (spec §1.6).** Each wrong secret records a failure in the survive-uninstall
  * [RecoveryAttemptStore]; [RecoveryBackoff] turns a guessing spree into an escalating lockout.
@@ -172,16 +174,11 @@ class RecoveryUnlockViewModel(
         viewModelScope.launch {
             try {
                 when (reKeyer.resetPin(method, secret, pin)) {
-                    RecoveryResetOutcome.RESET -> {
-                        // Envelope moved first (above); only now rotate the auth credential and the
-                        // live session so the new PIN both authenticates and unwraps the vault.
-                        credentialStore.setRealPin(pin)
-                        VaultSession.begin(pin)
-                        attemptStore.clear(method)
-                        verifiedSecret = null
-                        newPinDraft = null
-                        _state.update { it.copy(stage = RecoveryUnlockStage.DONE, error = null, busy = false) }
-                    }
+                    // The envelope has already moved to the new PIN, so we are past the point where a
+                    // truthful "vault unchanged" is possible. Landing the credential is its own
+                    // fail-closed unit (see [finishReset]) — never the outer catch below, which would
+                    // falsely report the vault as unchanged (APP-333).
+                    RecoveryResetOutcome.RESET -> finishReset(pin)
 
                     RecoveryResetOutcome.WRONG_SECRET -> {
                         attemptStore.recordFailure(method, now())
@@ -214,10 +211,10 @@ class RecoveryUnlockViewModel(
                         }
                 }
             } catch (e: Exception) {
-                // Fail closed like onSubmitSecret: an unexpected throw (backoff write, credential
-                // rotation) must land on a recoverable error with the spinner released, never a
-                // stuck busy=true (APP-331 O1). The commit-ordering invariant already guarantees the
-                // envelope moved before setRealPin, so the vault is never left half-reset.
+                // Reached only for a throw *before* the envelope moves (resetPin itself, a backoff
+                // write). The re-wrap hasn't committed, so "vault unchanged" is the honest report;
+                // fail closed with the spinner released, never a stuck busy=true (APP-331 O1). A
+                // failure *after* RESET is handled inside finishReset — it never reaches here.
                 _state.update {
                     it.copy(
                         stage = RecoveryUnlockStage.NEW_PIN,
@@ -229,6 +226,55 @@ class RecoveryUnlockViewModel(
         }
     }
 
+    /**
+     * Land the credential + live session on the new PIN after the envelope re-wrap has already
+     * committed (resetPin returned RESET). Because the envelope moved, this is past the point of a
+     * truthful "vault unchanged": the auth credential **must** catch up or the token and envelope
+     * diverge and strand the vault (recoverable via Wrap B/C, but a broken normal unlock).
+     *
+     * [CredentialStore.setRealPin] is an idempotent overwrite, so a transient keystore/storage
+     * hiccup is retried before we give up (APP-333) — the same fail-closed spirit as the APP-245
+     * change-PIN ordering. If it still can't land we report the **honest** diverged state (the PIN
+     * really did change) and route back to a fresh identity check, which re-runs the reset and
+     * re-attempts the credential rotation against the already-moved envelope — a covered path back
+     * to a consistent state. Clearing the backoff streak and stepping the session are best-effort:
+     * once the credential matches the envelope the reset is complete regardless.
+     */
+    private suspend fun finishReset(pin: String) {
+        try {
+            commitRealPinWithRetry(pin)
+        } catch (e: Exception) {
+            _state.update {
+                it.copy(
+                    stage = RecoveryUnlockStage.ENTER_SECRET,
+                    error =
+                        "Your PIN was changed to the new one, but we couldn't finish signing you in. " +
+                            "Verify it's you once more to finish — then unlock with your new PIN.",
+                    busy = false,
+                )
+            }
+            return
+        }
+        VaultSession.begin(pin)
+        runCatching { attemptStore.clear(method) }
+        verifiedSecret = null
+        newPinDraft = null
+        _state.update { it.copy(stage = RecoveryUnlockStage.DONE, error = null, busy = false) }
+    }
+
+    private suspend fun commitRealPinWithRetry(pin: String) {
+        var lastError: Exception? = null
+        repeat(CREDENTIAL_COMMIT_ATTEMPTS) {
+            try {
+                credentialStore.setRealPin(pin)
+                return
+            } catch (e: Exception) {
+                lastError = e
+            }
+        }
+        throw lastError ?: IllegalStateException("credential rotation failed")
+    }
+
     private fun wrongSecretMessage(): String =
         when (method) {
             RecoveryMethod.SECURITY_ANSWER -> "That answer doesn't match. Try again."
@@ -238,5 +284,8 @@ class RecoveryUnlockViewModel(
     private companion object {
         const val STORAGE_MESSAGE =
             "Allow “All files access” first — your vault key can't be reached without it."
+
+        /** Idempotent setRealPin retries after a RESET, so a transient write can't strand the vault (APP-333). */
+        const val CREDENTIAL_COMMIT_ATTEMPTS = 3
     }
 }
