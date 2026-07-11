@@ -40,7 +40,7 @@ import com.appblish.calculatorvault.ui.theme.VaultTheme
  * [onCodeMethod] hand off to that flow.
  *
  * If recovery was never configured (a doorway reached before setup), it shows the honest
- * dead-end: no backdoor, files still here just locked (a compact form of W0 screen 13).
+ * dead-end: no backdoor, any files still in the vault stay encrypted and locked (a compact form of W0 screen 13).
  */
 @Composable
 fun RecoveryEntryScreen(
@@ -169,8 +169,8 @@ private fun UnconfiguredDeadEnd() {
         Text(
             text =
                 "Without a security answer or recovery code, a forgotten PIN can't be reset by " +
-                    "anyone — including us. There's no backdoor by design. Your files are still " +
-                    "here, just locked.",
+                    "anyone — including us. There's no backdoor by design. Any files still in the " +
+                    "vault stay encrypted and locked.",
             style = VaultTheme.typography.bodyMedium,
             color = colors.textSecondary,
         )

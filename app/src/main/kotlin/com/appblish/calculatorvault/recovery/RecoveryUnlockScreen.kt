@@ -238,8 +238,8 @@ private fun UnrecoverableStep(onBack: () -> Unit) {
         Text(
             text =
                 "Without a security answer or recovery code, a forgotten PIN can't be reset by " +
-                    "anyone — including us. There's no backdoor by design. Your files are still " +
-                    "here, just locked.",
+                    "anyone — including us. There's no backdoor by design. Any files still in the " +
+                    "vault stay encrypted and locked.",
             style = VaultTheme.typography.bodyMedium,
             color = colors.textSecondary,
         )
