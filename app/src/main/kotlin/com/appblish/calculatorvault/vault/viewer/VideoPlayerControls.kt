@@ -101,7 +101,14 @@ private val SEEK_TRACK_HEIGHT = 2.dp
 private val SEEK_THUMB_DIAMETER = 12.dp
 
 // The invisible grab/touch area around the thin visuals — thumb + track are centred within it.
-private val SEEK_TOUCH_HEIGHT = 24.dp
+// APP-418 (P0) · this was 24dp. On a real device the owner's finger, aiming at the thin 2dp line,
+// routinely landed a few px above/below the 24dp band, so the press fell through to the fullscreen
+// [VideoPlayerSurface] body swipe-to-seek layer instead of grabbing the seekbar — the "press-and-drag
+// doesn't scrub" half of the twice-failed re-test (a touch that never lands on the seekbar can't be
+// consumed by it, no matter how correct the Initial-pass consume is). Bumped to the 48dp Material
+// minimum touch target so a natural press reliably lands *inside the seekbar bounds* (DoD #2) and the
+// seekbar owns the whole gesture. The visible track (2dp) + thumb (12dp) are unchanged and stay centred.
+private val SEEK_TOUCH_HEIGHT = 48.dp
 private val SeekActiveColor = Color.White
 private val SeekInactiveColor = Color(0x66FFFFFF)
 
