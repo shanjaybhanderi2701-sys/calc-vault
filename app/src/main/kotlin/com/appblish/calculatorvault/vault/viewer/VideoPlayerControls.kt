@@ -110,6 +110,17 @@ private val SEEK_THUMB_DIAMETER = 12.dp
 // minimum touch target so a natural press reliably lands *inside the seekbar bounds* (DoD #2) and the
 // seekbar owns the whole gesture. The visible track (2dp) + thumb (12dp) are unchanged and stay centred.
 private val SEEK_TOUCH_HEIGHT = 48.dp
+
+// APP-434 (APP-417 R7) · horizontal grab tolerance. The 2dp track sits inset from the seekbar's own
+// weighted bounds by this much (it used to be a `.padding(horizontal = 10.dp)` applied by the caller,
+// *outside* the ThinSeekbar node — so those two end gutters were dead: a press that landed a fat
+// finger's width past the thumb near either edge fell through to the fullscreen body swipe layer and
+// never grabbed). The padding is now applied *inside* ThinSeekbar to the drawn track + thumb only, so
+// the visuals are pixel-identical, while the invisible gesture layer spans the FULL node width and
+// swallows both gutters. Net effect: the interactive region is decoupled from the visual size and is
+// ~10dp more generous at each track edge, with zero layout shift (drawn thumb 12dp / track 2dp
+// unchanged, APP-418/APP-429 ±1px no-shift invariant preserved).
+private val SEEK_EDGE_PADDING = 10.dp
 private val SeekActiveColor = Color.White
 private val SeekInactiveColor = Color(0x66FFFFFF)
 
@@ -148,18 +159,26 @@ internal fun ThinSeekbar(
         val density = LocalDensity.current
         val widthPx = constraints.maxWidth.toFloat()
         val thumbPx = with(density) { SEEK_THUMB_DIAMETER.toPx() }
-        // The thumb centre travels between thumbPx/2 (fraction 0) and widthPx - thumbPx/2 (fraction 1);
-        // the same inset is applied to the track so the active-fill edge always meets the thumb centre.
-        val travelPx = (widthPx - thumbPx).coerceAtLeast(0f)
+        // APP-434 (R7): the drawn track/thumb are inset from the node's full width by SEEK_EDGE_PADDING
+        // on each side (see the constant), so the gesture layer below can extend into those gutters.
+        val edgePx = with(density) { SEEK_EDGE_PADDING.toPx() }
         val thumbInset = SEEK_THUMB_DIAMETER / 2
+        // The thumb centre travels between (edge + thumbPx/2) at fraction 0 and (width - edge - thumbPx/2)
+        // at fraction 1; the same inset is applied to the track so the active-fill edge always meets the
+        // thumb centre.
+        val travelPx = (widthPx - 2f * edgePx - thumbPx).coerceAtLeast(0f)
 
-        fun xToFraction(x: Float): Float = if (travelPx <= 0f) 0f else ((x - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
+        // A press anywhere on the band maps to the nearest track fraction (jump-to-finger). A touch in
+        // either end gutter (x below/above the track range) clamps to 0f/1f, so a fat-fingered press
+        // offset from the thumb near an edge still latches the drag instead of falling through.
+        fun xToFraction(x: Float): Float =
+            if (travelPx <= 0f) 0f else ((x - edgePx - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
 
         // ---- Track (inactive + active), vertically centred within the touch area ----
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = thumbInset)
+                .padding(horizontal = SEEK_EDGE_PADDING + thumbInset)
                 .height(SEEK_TRACK_HEIGHT)
                 .align(Alignment.CenterStart)
                 .testTag(SEEK_TRACK_TAG),
@@ -184,7 +203,7 @@ internal fun ThinSeekbar(
         Box(
             modifier = Modifier
                 .align(Alignment.CenterStart)
-                .offset { IntOffset(x = (travelPx * clamped).roundToInt(), y = 0) }
+                .offset { IntOffset(x = (edgePx + travelPx * clamped).roundToInt(), y = 0) }
                 .size(SEEK_THUMB_DIAMETER)
                 .clip(CircleShape)
                 .background(SeekActiveColor)
@@ -527,9 +546,10 @@ internal fun VideoPlayerControlsOverlay(
                             scrub.onScrubFinished(durationMs)
                             resetAutoHide()
                         },
-                        modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = 10.dp),
+                        // APP-434 (R7): the 10dp horizontal inset is now applied *inside* ThinSeekbar
+                        // (SEEK_EDGE_PADDING) to the drawn track/thumb only, so the invisible gesture
+                        // band spans the full weighted width and the end gutters become grabbable.
+                        modifier = Modifier.weight(1f),
                     )
                     Text(
                         text = VideoGestureMath.formatTime(durationMs),
