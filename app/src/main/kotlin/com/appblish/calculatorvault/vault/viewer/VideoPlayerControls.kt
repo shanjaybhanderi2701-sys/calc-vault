@@ -8,8 +8,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -66,6 +64,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
@@ -183,27 +182,35 @@ internal fun ThinSeekbar(
                 .testTag(SEEK_THUMB_TAG),
         )
 
-        // ---- Gesture layer covering the whole touch area (tap-to-seek + drag-to-scrub) ----
+        // ---- Gesture layer covering the whole touch area (tap-to-seek + press-drag-to-scrub) ----
+        // APP-398 (round 5a): one deterministic gesture loop handles BOTH tap and drag. The previous
+        // two-detector setup (detectTapGestures + detectHorizontalDragGestures) required crossing the
+        // horizontal touch-slop before the drag detector engaged, so on-device the thumb refused to
+        // grab under the finger (owner: "the seek bar is not draggable"). Here the thumb latches to
+        // the finger on the DOWN event (no slop gate — YouTube/MX behaviour: press = grab) and follows
+        // it continuously; a down+up with no movement is just a tap-to-jump. Every event for our
+        // pointer is consumed so the video-body swipe-to-seek gesture can never fight the scrub.
         Box(
             modifier = Modifier
                 .matchParentSize()
                 .pointerInput(travelPx, thumbPx) {
-                    detectTapGestures(
-                        onTap = { pos ->
-                            onScrub(xToFraction(pos.x))
-                            onScrubFinished()
-                        },
-                    )
-                }.pointerInput(travelPx, thumbPx) {
-                    detectHorizontalDragGestures(
-                        onDragStart = { pos -> onScrub(xToFraction(pos.x)) },
-                        onHorizontalDrag = { change, _ ->
-                            onScrub(xToFraction(change.position.x))
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        // Grab immediately: thumb + live time jump to the touch point.
+                        onScrub(xToFraction(down.position.x))
+                        while (true) {
+                            val event = awaitPointerEvent()
+                            val change = event.changes.firstOrNull { it.id == down.id }
+                            if (change == null || !change.pressed) break
+                            if (change.positionChanged()) {
+                                onScrub(xToFraction(change.position.x))
+                            }
                             change.consume()
-                        },
-                        onDragEnd = { onScrubFinished() },
-                        onDragCancel = { onScrubFinished() },
-                    )
+                        }
+                        // Release (or cancel): parent commits the latched scrub position via seekTo.
+                        onScrubFinished()
+                    }
                 },
         )
     }
