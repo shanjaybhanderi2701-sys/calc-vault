@@ -14,6 +14,8 @@ import com.appblish.calculatorvault.vault.media.BulkOpService
 import com.appblish.calculatorvault.vault.media.MediaSink
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.media.VaultThumbnails
+import com.appblish.calculatorvault.vault.media.VideoStoryboard
+import com.appblish.calculatorvault.vault.media.VideoStoryboardCache
 import com.appblish.calculatorvault.vault.model.DefaultVaultFolders
 import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.RecycleBin
@@ -181,6 +183,8 @@ class EncryptedVaultContentRepository(
         // Locking must also drop every decoded thumbnail pixel from memory (APP-244):
         // the LRU is exactly as sensitive as the decrypted content it was decoded from.
         VaultThumbnailPipeline.clear()
+        // APP-419: the decoded scrub-preview sheets are just as sensitive — drop them too.
+        VideoStoryboardCache.clear()
     }
 
     override fun items(category: VaultCategory): Flow<List<VaultItem>> =
@@ -264,6 +268,19 @@ class EncryptedVaultContentRepository(
                     runCatching {
                         VaultThumbnails.sourceThumbJpeg(appContext, staged)?.let { jpeg ->
                             writeThumb(blobName, jpeg)
+                        }
+                    }
+                    // APP-419: the SAME hide-time pass also generates the scrub-preview
+                    // storyboard strip (P1) for a video from the still-readable source, stored
+                    // *encrypted* beside the blob — so scrubbing never re-decodes the full video.
+                    // Strictly best-effort and video-only; a failure never fails the hide.
+                    if (staged.category == VaultCategory.VIDEOS) {
+                        runCatching {
+                            staged.sourceUri?.takeIf { it.isNotBlank() }?.let { raw ->
+                                VideoStoryboard
+                                    .generate(appContext, Uri.parse(raw), staged.durationMs)
+                                    ?.let { strip -> writePreview(blobName, strip) }
+                            }
                         }
                     }
                     mutex.withLock {
@@ -847,12 +864,63 @@ class EncryptedVaultContentRepository(
         }
     }
 
-    /** Delete [item]'s stored thumb and evict its decoded tile (delete/restore, APP-244). */
+    // --- Encrypted scrub-preview storyboards (APP-419) --------------------------------------
+
+    override suspend fun openPreviewStrip(itemId: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val cipher = crypto ?: return@withContext null
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext null
+            val file = VaultStorage.previewFile(appContext, blobName)
+            if (!file.exists()) return@withContext null
+            try {
+                val out = ByteArrayOutputStream()
+                file.inputStream().use { source -> cipher.decrypt(source, out) }
+                out.toByteArray()
+            } catch (e: Exception) {
+                // A strip that fails its GCM tag is worthless and would fail forever — drop it
+                // (unlike the thumb it is NOT lazily regenerated; the scrub bubble just shows the
+                // time code until the item is re-hidden).
+                file.delete()
+                null
+            }
+        }
+
+    override suspend fun savePreviewStrip(
+        itemId: String,
+        stripBytes: ByteArray,
+    ) {
+        withContext(Dispatchers.IO) {
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext
+            runCatching { writePreview(blobName, stripBytes) }
+        }
+    }
+
+    /** Encrypt [strip] into the `previews/` file for [blobName] — never plaintext on disk. */
+    private fun writePreview(
+        blobName: String,
+        strip: ByteArray,
+    ) {
+        val cipher = crypto ?: return
+        val file = VaultStorage.previewFile(appContext, blobName)
+        try {
+            file.outputStream().use { out -> strip.inputStream().use { cipher.encrypt(it, out) } }
+        } catch (e: Exception) {
+            file.delete()
+        }
+    }
+
+    /**
+     * Delete [item]'s stored thumb + scrub-preview strip and evict both decoded caches
+     * (delete/restore, APP-244 / APP-419).
+     */
     private fun dropThumb(item: VaultItem) {
         item.encryptedPath?.let { path ->
-            runCatching { VaultStorage.thumbFile(appContext, thumbNameOf(path)).delete() }
+            val name = thumbNameOf(path)
+            runCatching { VaultStorage.thumbFile(appContext, name).delete() }
+            runCatching { VaultStorage.previewFile(appContext, name).delete() }
         }
         VaultThumbnailPipeline.evict(item.id)
+        VideoStoryboardCache.evict(item.id)
     }
 
     private fun findItem(itemId: String): VaultItem? =

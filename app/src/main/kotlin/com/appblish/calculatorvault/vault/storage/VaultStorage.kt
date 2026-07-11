@@ -123,6 +123,25 @@ object VaultStorage {
 
     const val THUMBS_DIR = "thumbs"
 
+    /**
+     * The **encrypted** scrub-preview storyboard file for [blobName] (APP-419), under a
+     * `previews/` sub-directory of the active vault dir. Shares the blob's namespace isolation,
+     * survive-uninstall location, and `.nomedia` cover; same bare-UUID name as its blob so
+     * nothing about the original leaks; content is a VaultCrypto ciphertext of the
+     * [com.appblish.calculatorvault.vault.media.VideoStoryboard] container — never plaintext frames.
+     */
+    fun previewFile(
+        context: Context,
+        blobName: String,
+        namespace: String = VaultSession.namespace,
+    ): File {
+        val dir = File(vaultDir(context, namespace), PREVIEWS_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, blobName)
+    }
+
+    const val PREVIEWS_DIR = "previews"
+
     private fun ensureNoMedia(dir: File) {
         val marker = File(dir, NOMEDIA)
         if (!marker.exists()) runCatching { marker.createNewFile() }

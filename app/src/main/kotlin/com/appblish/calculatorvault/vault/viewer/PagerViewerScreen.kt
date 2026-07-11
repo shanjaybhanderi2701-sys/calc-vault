@@ -4,7 +4,6 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.graphics.BitmapFactory
-import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.Looper
 import android.provider.OpenableColumns
@@ -115,6 +114,8 @@ import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
+import com.appblish.calculatorvault.vault.media.VideoStoryboard
+import com.appblish.calculatorvault.vault.media.VideoStoryboardCache
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
@@ -333,6 +334,22 @@ private fun ViewerPager(
     LaunchedEffect(pagerState.settledPage, state.pages) {
         state.pages.getOrNull(pagerState.settledPage)?.let { viewModel.setActivePage(it.id) }
     }
+    // APP-419 (P0-A): pre-warm the adjacent video posters into the pipeline LRU so swiping to the
+    // next/previous video shows its pre-generated thumbnail instantly (photos are already
+    // pre-decrypted by the VM's {n-1, n, n+1} window; a video page carries only an id and so is
+    // not, hence this explicit n±1 warm). Cheap — a cache hit no-ops, a miss decrypts one ~200px
+    // thumb off-main; never the full video.
+    val previewContext = LocalContext.current
+    val previewRepository = VaultGraph.contentRepository
+    LaunchedEffect(pagerState.settledPage, state.pages) {
+        val neighbours = listOf(pagerState.settledPage - 1, pagerState.settledPage + 1)
+        for (i in neighbours) {
+            val neighbour = state.pages.getOrNull(i) ?: continue
+            if (neighbour.category == VaultCategory.VIDEOS) {
+                runCatching { VaultThumbnailPipeline.load(previewContext, neighbour, previewRepository) }
+            }
+        }
+    }
     // A newly settled page starts un-zoomed, showing its own persisted orientation.
     LaunchedEffect(pagerState.settledPage) {
         zoomed = false
@@ -489,7 +506,7 @@ private fun ViewerPage(
                 // Only the settled page previews/plays; a page peeked mid-swipe spins.
                 if (isCurrent) {
                     VideoPage(
-                        itemId = content.itemId,
+                        item = item,
                         hasVideoFrame = content.hasVideoFrame,
                         fileActions = fileActions,
                         playlist = playlist,
@@ -722,7 +739,7 @@ private fun ZoomableImage(
  */
 @Composable
 private fun VideoPage(
-    itemId: String,
+    item: VaultItem,
     hasVideoFrame: Boolean,
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
@@ -730,12 +747,12 @@ private fun VideoPage(
     // Wave 4 (APP-351): Expand from the mini player must resume the full player immediately —
     // start in the playing state (adopting the session's live player) instead of the preview.
     val session = rememberMiniPlayerSession()
-    var playing by remember(itemId) { mutableStateOf(session.isExpandingInto(itemId)) }
+    var playing by remember(item.id) { mutableStateOf(session.isExpandingInto(item.id)) }
     if (playing) {
-        MediaPlayerPage(itemId, fileActions, playlist)
+        MediaPlayerPage(item.id, fileActions, playlist)
     } else {
         VideoPreviewPage(
-            itemId = itemId,
+            item = item,
             hasVideoFrame = hasVideoFrame,
             onPlay = { playing = true },
             fileActions = fileActions,
@@ -744,42 +761,34 @@ private fun VideoPage(
 }
 
 /**
- * The pre-playback preview: decoded frame + `viewer.playButton` over the black canvas.
- * APP-379: immersive — a tap toggles a **temporary** top bar (back + ⋯ file overflow), never
- * the photo-viewer's permanent Unhide/Delete/Share bar.
+ * The pre-playback preview: pre-generated poster frame + `viewer.playButton` over the black
+ * canvas. APP-379: immersive — a tap toggles a **temporary** top bar (back + ⋯ file overflow),
+ * never the photo-viewer's permanent Unhide/Delete/Share bar.
+ *
+ * APP-419 (P0-A/P0-B): the poster is now the **cached, pre-generated encrypted thumbnail** served
+ * by [VaultThumbnailPipeline] — the exact same LRU-backed pipeline every grid/pager tile uses.
+ * Two bugs this closes, both the "3rd occurrence" of the on-demand-decode mistake:
+ *  - P0-A caching: revisiting a video (A→B→A) is an LRU **cache hit — zero re-decrypt**, where the
+ *    old path re-ran a full `MediaMetadataRetriever` frame extraction on every recomposition.
+ *  - P0-B pre-generation: the frame is the ~200px thumb written **once at hide-time**, so a large
+ *    video no longer has to be stream-decrypted-and-frame-extracted at browse time (the source of
+ *    the large-video "no thumbnail" failures). If a pre-APP-244 video has no stored thumb the
+ *    pipeline backfills one exactly once, then serves from the cache forever after.
  */
 @Composable
 private fun VideoPreviewPage(
-    itemId: String,
+    item: VaultItem,
     hasVideoFrame: Boolean,
     onPlay: () -> Unit,
     fileActions: ViewerFileActions,
 ) {
-    var barsVisible by remember(itemId) { mutableStateOf(true) }
-    // First frame streamed straight off the encrypted blob (APP-347) — decrypt-on-demand via
-    // a MediaDataSource, off the main thread, NEVER a plaintext temp file. Audio blobs (and
-    // any read failure) simply have no frame — the play button over the canvas is the preview.
-    val frame by produceState<ImageBitmap?>(initialValue = null, itemId, hasVideoFrame) {
-        value =
-            if (!hasVideoFrame) {
-                null
-            } else {
-                withContext(Dispatchers.IO) {
-                    runCatching {
-                        val reader = VaultGraph.contentRepository.openBlobReader(itemId)
-                            ?: return@runCatching null
-                        val source = VaultMediaDataSource(reader)
-                        val retriever = MediaMetadataRetriever()
-                        try {
-                            retriever.setDataSource(source)
-                            retriever.frameAtTime?.asImageBitmap()
-                        } finally {
-                            retriever.release()
-                            source.close()
-                        }
-                    }.getOrNull()
-                }
-            }
+    val context = LocalContext.current
+    val repository = VaultGraph.contentRepository
+    var barsVisible by remember(item.id) { mutableStateOf(true) }
+    // Poster frame from the cached pipeline (APP-419) — never an on-demand full-video decode.
+    // Audio blobs (hasVideoFrame == false) simply have no frame; the play button is the preview.
+    val frame by produceState<ImageBitmap?>(initialValue = null, item.id, hasVideoFrame) {
+        value = if (!hasVideoFrame) null else VaultThumbnailPipeline.load(context, item, repository)
     }
     Box(
         contentAlignment = Alignment.Center,
@@ -1088,6 +1097,13 @@ private fun MediaPlayerPage(
         }
     }
 
+    // APP-419 (P1): the decoded scrub-preview storyboard for THIS video, loaded once (LRU-backed)
+    // so a seekbar drag can crop frames from it in-memory. Null when the item has no strip (audio,
+    // pre-APP-419 item, extract failure) — the seekbar then shows only its time-code bubble.
+    val scrubPreview by produceState<VideoStoryboard.Strip?>(initialValue = null, itemId) {
+        value = runCatching { VideoStoryboardCache.load(itemId, repository) }.getOrNull()
+    }
+
     // ---- Wave 3 (APP-350) state hoisted here so all three layers share it ----
     var controlsVisible by remember(itemId) { mutableStateOf(true) }
     var locked by remember(itemId) { mutableStateOf(false) }
@@ -1210,6 +1226,8 @@ private fun MediaPlayerPage(
                 },
                 // APP-388 #2: playlist rows reuse the folder-grid encrypted-thumbnail pipeline.
                 loadThumbnail = { item -> VaultThumbnailPipeline.load(context, item, repository) },
+                // APP-419 (P1): the current video's scrub-preview storyboard for live seek preview.
+                scrubPreview = scrubPreview,
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })

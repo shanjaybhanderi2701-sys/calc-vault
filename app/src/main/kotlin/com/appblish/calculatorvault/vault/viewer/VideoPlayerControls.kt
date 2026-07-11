@@ -5,6 +5,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -77,6 +78,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
+import com.appblish.calculatorvault.vault.media.VideoStoryboard
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -239,6 +241,45 @@ internal fun ThinSeekbar(
 }
 
 /**
+ * APP-419 (P1) · the live scrub-preview thumbnail. While the seekbar is dragged, the frame nearest
+ * [fraction] of the timeline floats above the bar (YouTube/MX "hover" style). The frame is a pure
+ * in-memory sub-rect crop of the already-decoded [VideoStoryboard.Strip] — no decryption or decode
+ * per drag tick — and is only re-cropped when the drag crosses into a new storyboard frame (the
+ * [remember] key is the frame index, not the raw fraction). The preview tracks the finger by
+ * offsetting within the bar's width, clamped so it never spills past either edge.
+ */
+@Composable
+private fun ScrubPreview(
+    strip: VideoStoryboard.Strip,
+    fraction: Float,
+) {
+    val frameIndex = VideoStoryboard.frameIndexFor(fraction, strip.frameCount)
+    val frame = remember(strip, frameIndex) { strip.frameAt(fraction) }
+    val aspect = strip.frameWidth.toFloat() / strip.frameHeight.coerceAtLeast(1)
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = 8.dp),
+    ) {
+        val previewWidth = 104.dp
+        val offsetX = ((maxWidth - previewWidth) * fraction.coerceIn(0f, 1f))
+            .coerceIn(0.dp, (maxWidth - previewWidth).coerceAtLeast(0.dp))
+        Image(
+            bitmap = frame,
+            contentDescription = null,
+            contentScale = ContentScale.Fit,
+            modifier = Modifier
+                .offset(x = offsetX)
+                .width(previewWidth)
+                .aspectRatio(aspect.coerceIn(0.2f, 5f))
+                .clip(RoundedCornerShape(6.dp))
+                .background(Color.Black)
+                .border(1.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
+        )
+    }
+}
+
+/**
  * CalcVault Phase B · Wave 3 · APP-350, MX-Player redesign · APP-384 — the controls overlay that
  * sits above [VideoPlayerSurface] (spec §5c / §6). MX-Player layout:
  *  - a single large **center play/pause** (the only center affordance — no prev/rewind cluster;
@@ -292,6 +333,10 @@ internal fun VideoPlayerControlsOverlay(
     // APP-388 #2: per-row playlist thumbnails via the folder-grid encrypted-thumbnail pipeline
     // (VaultThumbnailPipeline). Null → rows fall back to a plain glyph (e.g. previews/tests).
     loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)? = null,
+    // APP-419 (P1): the current video's decoded scrub-preview storyboard (a sprite-sheet of small
+    // frames generated once at hide-time, LRU-cached). Non-null → dragging the seekbar shows a live
+    // frame preview at the drag position; null (audio, pre-APP-419 item, no strip) → time-code only.
+    scrubPreview: VideoStoryboard.Strip? = null,
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -429,6 +474,14 @@ internal fun VideoPlayerControlsOverlay(
                 val sliderMax = durationMs.coerceAtLeast(1L).toFloat()
                 val sliderValue = (if (scrubbing) scrubValueMs else positionMs.toFloat())
                     .coerceIn(0f, sliderMax)
+                // APP-419 (P1): live scrub-preview thumbnail. While dragging, the nearest
+                // pre-generated storyboard frame floats above the bar at the drag position — a
+                // pure in-memory sub-rect crop of the already-decoded sheet, never a per-tick
+                // decrypt. Only rendered when this item actually has a strip.
+                val strip = scrubPreview
+                if (scrubbing && strip != null) {
+                    ScrubPreview(strip = strip, fraction = (sliderValue / sliderMax).coerceIn(0f, 1f))
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     // APP-398 (round 5b) · no-layout-shift: the elapsed label grows as the scrub value
                     // climbs (0:05 → 1:23:45), which would reflow this Row and slide the seekbar under
