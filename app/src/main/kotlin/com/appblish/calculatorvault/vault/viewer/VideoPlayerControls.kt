@@ -5,6 +5,8 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -57,7 +59,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -670,11 +671,16 @@ internal fun VideoPlayerControlsOverlay(
 }
 
 /**
- * Lock overlay — a separate full-screen layer that must be placed **above**
- * [VideoPlayerControlsOverlay] and [VideoPlayerSurface] in the caller's Box, so it
- * intercepts all pointer events before the gesture layers see them (spec §5c / §6).
+ * Lock overlay (APP-384 #5) — a separate full-screen layer placed **above**
+ * [VideoPlayerControlsOverlay] and [VideoPlayerSurface] in the caller's Box. While locked the
+ * player chrome is already hidden (`chromeVisible == false`) and [VideoPlayerSurface]'s gesture
+ * handler self-disables (`if (locked) return@pointerInput`), so there is nothing active beneath
+ * to trigger accidentally — this overlay therefore does NOT need to consume every event (the old
+ * Initial-pass "consume all" also swallowed the unlock pill's own taps, so the affordance never
+ * unlocked).
  *
- * On any touch while locked, the unlock pill re-appears for [UNLOCK_PILL_HIDE_MS] ms.
+ * A **background tap layer** re-reveals the unlock pill for [UNLOCK_PILL_HIDE_MS] ms on any touch
+ * on the bare video; it sits *below* the pill and does not consume, so the pill stays tappable.
  * Tapping the pill calls [onUnlock].
  */
 @Composable
@@ -690,21 +696,20 @@ internal fun VideoPlayerLockOverlay(
         pillVisible = false
     }
 
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            // Consume ALL events at the Initial pass before any child or sibling sees them.
-            .pointerInput(Unit) {
-                awaitPointerEventScope {
-                    while (true) {
-                        awaitPointerEvent(pass = PointerEventPass.Initial)
-                        currentEvent.changes.forEach { it.consume() }
+    Box(modifier = modifier.fillMaxSize()) {
+        // Background: any tap on the bare video re-reveals the unlock pill. Placed BELOW the pill
+        // and non-consuming so the pill remains directly tappable; nothing active lies beneath.
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
                         pillVisible = true
                         touchNonce++
                     }
-                }
-            },
-    ) {
+                },
+        )
         AnimatedVisibility(
             visible = pillVisible,
             enter = fadeIn(),
