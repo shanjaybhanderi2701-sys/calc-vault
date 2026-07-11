@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
+import com.appblish.calculatorvault.vault.media.VaultThumbnails
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.storage.VaultStorage
@@ -65,6 +66,13 @@ class ThumbnailCacheDoDTest {
             thumbReads.incrementAndGet()
             return delegate.openThumbnail(itemId)
         }
+
+        val posterReads = AtomicInteger(0)
+
+        override suspend fun openPoster(itemId: String): ByteArray? {
+            posterReads.incrementAndGet()
+            return delegate.openPoster(itemId)
+        }
     }
 
     @Before
@@ -111,11 +119,20 @@ class ThumbnailCacheDoDTest {
         )
     }
 
-    private fun stagedVideo(index: Int = 0): VaultItem {
+    private fun stagedVideo(
+        index: Int = 0,
+        width: Int = 320,
+        height: Int = 240,
+    ): VaultItem {
         val name = "calcvault_thumb_dod_${System.nanoTime()}_v$index.mp4"
         displayNames += name
         val uri =
-            DoDTestSupport.insertPublicVideo(context, name, relativePath, DoDTestSupport.synthesizeMp4Bytes(context))
+            DoDTestSupport.insertPublicVideo(
+                context,
+                name,
+                relativePath,
+                DoDTestSupport.synthesizeMp4Bytes(context, width, height),
+            )
         return VaultItem(
             id = "stagedv$index",
             category = VaultCategory.VIDEOS,
@@ -127,6 +144,9 @@ class ThumbnailCacheDoDTest {
             relativePath = relativePath,
         )
     }
+
+    /** A 1280×720 source — big enough that the pager poster reaches the APP-435 target edge. */
+    private fun stagedLargeVideo(index: Int = 0): VaultItem = stagedVideo(index, width = 1280, height = 720)
 
     /** One "grid visit": a fresh ViewModel (as re-entering the screen creates) loads every tile. */
     private suspend fun visitGrid(
@@ -207,6 +227,110 @@ class ThumbnailCacheDoDTest {
             assertThat(VaultThumbnailPipeline.load(context, a, repo)).isNotNull()
             assertThat(repo.fullDecrypts.get()).isEqualTo(0)
             assertThat(repo.thumbReads.get()).isEqualTo(2)
+        }
+
+    /**
+     * APP-435 (APP-417 R7) — the video pager renders the poster near full-screen, so the old
+     * ~200px grid thumb looked blurry blown up. This asserts the owner's fix mechanically:
+     *
+     * - Hiding a video generates a SEPARATE large poster (`posters/`) at hide-time, distinct from
+     *   the small grid thumb (`thumbs/`), stored **encrypted** (no plaintext JPEG on disk).
+     * - The pager's [VaultThumbnailPipeline.loadPoster] serves a bitmap whose longest edge meets
+     *   the new [VaultThumbnails.POSTER_PX] target — sharp, not the old icon size — while the grid
+     *   thumb stays small: the pipeline produces two distinct sizes, never one upscaled bitmap.
+     */
+    @Test
+    fun hideGeneratesLargeDistinctPagerPoster_encryptedAndSharp() =
+        runBlocking<Unit> {
+            val repo = newRepo()
+            val stored = repo.hide(listOf(stagedLargeVideo(1)))
+            assertThat(stored).hasSize(1)
+            val video = stored[0]
+
+            // Hide-time produced BOTH artifacts, each in its own encrypted store.
+            val vaultDir = VaultStorage.vaultDir(context)
+            val posterFile = File(File(vaultDir, VaultStorage.POSTERS_DIR), video.encryptedPath!!)
+            val thumbFile = File(File(vaultDir, VaultStorage.THUMBS_DIR), video.encryptedPath!!)
+            assertThat(posterFile.exists()).isTrue()
+            assertThat(thumbFile.exists()).isTrue()
+            // Poster is ciphertext on disk — never a plaintext JPEG.
+            assertThat(posterFile.readBytes().copyOfRange(0, 3)).isNotEqualTo(DoDTestSupport.JPEG_MAGIC)
+
+            // The pager poster meets the new large target (owner: "sharp big pager previews").
+            val poster = VaultThumbnailPipeline.loadPoster(context, video, repo)
+            assertThat(poster).isNotNull()
+            val posterLongest = maxOf(poster!!.width, poster.height)
+            assertThat(posterLongest).isAtLeast(VaultThumbnails.POSTER_PX)
+
+            // The grid thumb is a DISTINCT, small bitmap — not the same upscaled poster.
+            val grid = VaultThumbnailPipeline.load(context, video, repo)
+            assertThat(grid).isNotNull()
+            val gridLongest = maxOf(grid!!.width, grid.height)
+            assertThat(gridLongest).isLessThan(VaultThumbnails.POSTER_MIN_ACCEPT_PX)
+            assertThat(posterLongest).isGreaterThan(gridLongest)
+        }
+
+    /**
+     * APP-435 — preserve the APP-419/APP-430 caching guarantee for the NEW poster path: browsing
+     * A → B → back to A serves A's large poster from the poster LRU with **zero re-decode** (no
+     * stored-poster read, no full-blob decrypt). Posters are generated at hide-time, so the whole
+     * browse never decrypts a full video at all.
+     */
+    @Test
+    fun pagerPoster_AtoBtoA_servesFromCacheWithoutReDecoding() =
+        runBlocking<Unit> {
+            val repo = newRepo()
+            val stored = repo.hide(listOf(stagedLargeVideo(1), stagedLargeVideo(2)))
+            assertThat(stored).hasSize(2)
+            val a = stored[0]
+            val b = stored[1]
+
+            // Visit A (cold): its hide-time poster is read once — never the full video.
+            assertThat(VaultThumbnailPipeline.loadPoster(context, a, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.posterReads.get()).isEqualTo(1)
+
+            // Swipe to B (cold): its own poster reads once — A stays warm in the poster LRU.
+            assertThat(VaultThumbnailPipeline.loadPoster(context, b, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.posterReads.get()).isEqualTo(2)
+
+            // Swipe BACK to A: poster LRU hit — no stored-poster read, no full decrypt.
+            assertThat(VaultThumbnailPipeline.loadPoster(context, a, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.posterReads.get()).isEqualTo(2)
+        }
+
+    /**
+     * APP-435 migration — a video hidden before posters existed (no `posters/` file, as a
+     * pre-APP-435 build left it) lazily regenerates the large poster from the encrypted blob
+     * exactly once, persists it, then serves it from the caches with no further full decrypt.
+     */
+    @Test
+    fun preApp435VideoBackfillsPosterOnceThenServesFromCaches() =
+        runBlocking<Unit> {
+            val repo = newRepo()
+            val stored = repo.hide(listOf(stagedLargeVideo(1)))
+            assertThat(stored).hasSize(1)
+            val video = stored[0]
+
+            // Simulate a vault hidden by a pre-APP-435 build: delete the poster, keep the blob.
+            val posterFile = File(File(VaultStorage.vaultDir(context), VaultStorage.POSTERS_DIR), video.encryptedPath!!)
+            assertThat(posterFile.delete()).isTrue()
+            VaultThumbnailPipeline.clear()
+
+            // First pager visit: backfill decrypts the blob ONCE, regenerates the poster.
+            val poster = VaultThumbnailPipeline.loadPoster(context, video, repo)
+            assertThat(poster).isNotNull()
+            assertThat(maxOf(poster!!.width, poster.height)).isAtLeast(VaultThumbnails.POSTER_PX)
+            assertThat(repo.fullDecrypts.get()).isEqualTo(1)
+            assertThat(posterFile.exists()).isTrue()
+
+            // Drop only the memory layer (a fresh process would): the regenerated disk poster
+            // serves the next visit with no further full decrypt.
+            VaultThumbnailPipeline.clear()
+            assertThat(VaultThumbnailPipeline.loadPoster(context, video, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(1)
         }
 
     @Test

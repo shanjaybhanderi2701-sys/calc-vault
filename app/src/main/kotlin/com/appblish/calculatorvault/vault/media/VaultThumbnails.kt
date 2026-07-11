@@ -46,6 +46,26 @@ object VaultThumbnails {
     /** JPEG quality of the persisted thumbnail — a few tens of KB per item. */
     private const val STORED_THUMB_QUALITY = 85
 
+    /**
+     * Longest edge of the LARGE pager poster (APP-435). The video pager renders the poster
+     * near full-screen, so the ~200px grid thumb looked blurry blown up; this is sized for a
+     * display-width surface (~1080px) and stored as a *distinct* artifact beside the small
+     * thumb. Never upscaled past the source — [scaleDown] only shrinks.
+     */
+    const val POSTER_PX = 1080
+
+    /** JPEG quality of the persisted pager poster — a touch higher than the tiny grid thumb. */
+    private const val POSTER_QUALITY = 90
+
+    /**
+     * A stored poster whose longest edge is at least this is served as-is; anything smaller is
+     * treated as a pre-APP-435 icon-sized poster and lazily regenerated at [POSTER_PX] (the
+     * migration path). Well above [STORED_THUMB_PX] so an old 200px poster upgrades, but low
+     * enough that a genuinely small-source video's best-possible poster is still accepted
+     * rather than re-decrypted on every cold visit.
+     */
+    const val POSTER_MIN_ACCEPT_PX = 512
+
     /** Decode a preview for a hidden [item] from its decrypted blob bytes. */
     suspend fun forItem(
         context: Context,
@@ -108,12 +128,56 @@ object VaultThumbnails {
         return withContext(Dispatchers.IO) {
             val bitmap =
                 loadThumbnailViaResolver(context, uri)
-                    ?: if (isImage) decodeSampledImage(context, uri) else videoFrame(context, uri)
+                    ?: if (isImage) decodeSampledImage(context, uri, STORED_THUMB_PX) else videoFrame(context, uri)
             bitmap?.let(::toStoredJpeg)
         }
     }
 
-    /** Decode a decrypted stored-thumb JPEG back into a grid bitmap. */
+    /**
+     * Render the LARGE pager-poster JPEG (APP-435) from a *staged* item whose public original
+     * is still readable (hide-time, same pass as [sourceThumbJpeg]). Unlike the grid thumb this
+     * decodes at full resolution and scales to [POSTER_PX] on the longest edge — never via
+     * MediaStore's tiny thumbnail cache — so the near-full-screen video pager renders it sharp
+     * instead of upscaling a ~200px icon. Images/videos only; null (and any decode failure) so
+     * hiding never fails because a poster couldn't be made.
+     */
+    suspend fun sourcePosterJpeg(
+        context: Context,
+        staged: VaultItem,
+    ): ByteArray? {
+        val uri = staged.sourceUri?.takeIf { it.isNotBlank() }?.let(Uri::parse) ?: return null
+        val isImage =
+            staged.category == VaultCategory.PHOTOS || staged.mimeType?.startsWith("image/") == true
+        val isVideo =
+            staged.category == VaultCategory.VIDEOS || staged.mimeType?.startsWith("video/") == true
+        if (!isImage && !isVideo) return null
+        return withContext(Dispatchers.IO) {
+            val bitmap = if (isImage) decodeSampledImage(context, uri, POSTER_PX) else videoFrame(context, uri)
+            bitmap?.let(::toStoredPosterJpeg)
+        }
+    }
+
+    /**
+     * Compress an already-decoded frame into the large pager-poster JPEG (scaled *down* to
+     * [POSTER_PX] on the longest edge — never upscaled). The backfill/migration counterpart of
+     * [sourcePosterJpeg] when only the encrypted blob is available.
+     */
+    fun toStoredPosterJpeg(bitmap: Bitmap): ByteArray {
+        val scaled = scaleDown(bitmap, POSTER_PX)
+        val out = ByteArrayOutputStream()
+        scaled.compress(Bitmap.CompressFormat.JPEG, POSTER_QUALITY, out)
+        if (scaled !== bitmap) scaled.recycle()
+        return out.toByteArray()
+    }
+
+    /** Longest edge of a stored poster JPEG without a full decode (migration resolution check). */
+    fun posterLongestEdge(jpeg: ByteArray): Int {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size, bounds)
+        return maxOf(bounds.outWidth, bounds.outHeight)
+    }
+
+    /** Decode a decrypted stored-thumb (or poster) JPEG back into a bitmap for display. */
     fun decodeStoredThumb(jpeg: ByteArray): ImageBitmap? =
         BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size)?.asImageBitmap()
 
@@ -187,17 +251,22 @@ object VaultThumbnails {
         }.getOrNull()
     }
 
-    /** Two-pass sampled decode straight off the source stream (content or file scheme). */
+    /**
+     * Two-pass sampled decode straight off the source stream (content or file scheme), sized to
+     * ~[targetPx] on the longest edge — [STORED_THUMB_PX] for a grid thumb, [POSTER_PX] for the
+     * large pager poster (APP-435).
+     */
     private fun decodeSampledImage(
         context: Context,
         uri: Uri,
+        targetPx: Int,
     ): Bitmap? =
         runCatching {
             val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, bounds) } ?: return null
             val opts =
                 BitmapFactory.Options().apply {
-                    inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, STORED_THUMB_PX)
+                    inSampleSize = sampleSize(bounds.outWidth, bounds.outHeight, targetPx)
                 }
             openStream(context, uri)?.use { BitmapFactory.decodeStream(it, null, opts) }
         }.getOrNull()

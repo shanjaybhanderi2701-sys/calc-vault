@@ -142,6 +142,26 @@ object VaultStorage {
 
     const val PREVIEWS_DIR = "previews"
 
+    /**
+     * The **encrypted** large pager-poster file for [blobName] (APP-435), under a `posters/`
+     * sub-directory of the active vault dir. Same namespace isolation, survive-uninstall
+     * location, `.nomedia` cover, and bare-UUID name as the blob; content is a VaultCrypto
+     * ciphertext of a ~[com.appblish.calculatorvault.vault.media.VaultThumbnails.POSTER_PX]px
+     * JPEG — the sharp near-full-screen video-pager poster, distinct from the ~200px grid
+     * thumb in `thumbs/`. Never plaintext on disk.
+     */
+    fun posterFile(
+        context: Context,
+        blobName: String,
+        namespace: String = VaultSession.namespace,
+    ): File {
+        val dir = File(vaultDir(context, namespace), POSTERS_DIR)
+        if (!dir.exists()) dir.mkdirs()
+        return File(dir, blobName)
+    }
+
+    const val POSTERS_DIR = "posters"
+
     private fun ensureNoMedia(dir: File) {
         val marker = File(dir, NOMEDIA)
         if (!marker.exists()) runCatching { marker.createNewFile() }

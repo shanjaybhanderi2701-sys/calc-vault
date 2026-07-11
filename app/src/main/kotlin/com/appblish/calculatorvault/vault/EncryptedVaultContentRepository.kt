@@ -270,6 +270,18 @@ class EncryptedVaultContentRepository(
                             writeThumb(blobName, jpeg)
                         }
                     }
+                    // APP-435: the SAME hide-time pass generates the LARGE pager poster for a
+                    // video (a ~1080px sharp frame, distinct from the ~200px grid thumb above),
+                    // stored *encrypted* beside the blob — so the near-full-screen pager renders
+                    // it crisp without ever decrypting the full video at browse time. Video-only
+                    // (photos render full-res bytes directly) and strictly best-effort.
+                    if (staged.category == VaultCategory.VIDEOS) {
+                        runCatching {
+                            VaultThumbnails.sourcePosterJpeg(appContext, staged)?.let { poster ->
+                                writePoster(blobName, poster)
+                            }
+                        }
+                    }
                     // APP-419: the SAME hide-time pass also generates the scrub-preview
                     // storyboard strip (P1) for a video from the still-readable source, stored
                     // *encrypted* beside the blob — so scrubbing never re-decodes the full video.
@@ -864,6 +876,50 @@ class EncryptedVaultContentRepository(
         }
     }
 
+    // --- Encrypted large pager posters (APP-435) --------------------------------------
+
+    override suspend fun openPoster(itemId: String): ByteArray? =
+        withContext(Dispatchers.IO) {
+            val cipher = crypto ?: return@withContext null
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext null
+            val file = VaultStorage.posterFile(appContext, blobName)
+            if (!file.exists()) return@withContext null
+            try {
+                val out = ByteArrayOutputStream()
+                file.inputStream().use { source -> cipher.decrypt(source, out) }
+                out.toByteArray()
+            } catch (e: Exception) {
+                // A poster that fails its GCM tag is worthless and would fail forever — drop it
+                // so the pipeline regenerates a good one from the (independently authenticated) blob.
+                file.delete()
+                null
+            }
+        }
+
+    override suspend fun savePoster(
+        itemId: String,
+        jpegBytes: ByteArray,
+    ) {
+        withContext(Dispatchers.IO) {
+            val blobName = findItem(itemId)?.let(::thumbName) ?: return@withContext
+            runCatching { writePoster(blobName, jpegBytes) }
+        }
+    }
+
+    /** Encrypt [jpeg] into the `posters/` file for [blobName] — never plaintext on disk. */
+    private fun writePoster(
+        blobName: String,
+        jpeg: ByteArray,
+    ) {
+        val cipher = crypto ?: return
+        val file = VaultStorage.posterFile(appContext, blobName)
+        try {
+            file.outputStream().use { out -> jpeg.inputStream().use { cipher.encrypt(it, out) } }
+        } catch (e: Exception) {
+            file.delete()
+        }
+    }
+
     // --- Encrypted scrub-preview storyboards (APP-419) --------------------------------------
 
     override suspend fun openPreviewStrip(itemId: String): ByteArray? =
@@ -917,6 +973,7 @@ class EncryptedVaultContentRepository(
         item.encryptedPath?.let { path ->
             val name = thumbNameOf(path)
             runCatching { VaultStorage.thumbFile(appContext, name).delete() }
+            runCatching { VaultStorage.posterFile(appContext, name).delete() }
             runCatching { VaultStorage.previewFile(appContext, name).delete() }
         }
         VaultThumbnailPipeline.evict(item.id)

@@ -115,7 +115,11 @@ class SeekbarGrabToleranceDoDTest {
     fun pressInLeftGutter_grabsAndScrubs() {
         setSeekbar(0f) // thumb parked hard left
 
-        val bandY = compose.onNodeWithTag(tag).fetchSemanticsNode().boundsInRoot.height / 2f
+        val bandY =
+            compose
+                .onNodeWithTag(tag)
+                .fetchSemanticsNode()
+                .boundsInRoot.height / 2f
         compose.onNodeWithTag(tag).performTouchInput { down(Offset(2f, bandY)) }
         compose.waitForIdle()
         // The gutter press grabbed (jump-to-finger clamps to 0f at the extreme).

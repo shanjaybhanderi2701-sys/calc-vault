@@ -52,6 +52,18 @@ object VaultThumbnailPipeline {
     private val memory =
         ThumbLruCache<ImageBitmap>(memoryBudgetBytes) { bitmap -> bitmap.width * bitmap.height * 4 }
 
+    /**
+     * Separate memory bound for the LARGE pager posters (APP-435). A poster is ~1080px so each
+     * decoded bitmap is a few MB — a handful is plenty for the settled page + its n±1 neighbours,
+     * and keeping them out of the small-thumb LRU means one big poster can't evict a grid-full of
+     * tiles. A sixth of the heap, capped at 64 MB, floored at 32 MB so A→B→A + n±1 all stay warm.
+     */
+    private val posterBudgetBytes: Long =
+        minOf(Runtime.getRuntime().maxMemory() / 6, 64L * 1024 * 1024).coerceAtLeast(32L * 1024 * 1024)
+
+    private val posterMemory =
+        ThumbLruCache<ImageBitmap>(posterBudgetBytes) { bitmap -> bitmap.width * bitmap.height * 4 }
+
     private val inFlight = ConcurrentHashMap<String, Mutex>()
 
     /** Load the grid thumbnail for [item], cheapest source first. Null → placeholder glyph. */
@@ -82,21 +94,108 @@ object VaultThumbnailPipeline {
         }
     }
 
-    /** Drop [itemId]'s decoded tile (delete / restore invalidation). */
-    fun evict(itemId: String) {
-        memory.remove(cacheKey(itemId))
+    /**
+     * Load the LARGE pager poster for a video [item] (APP-435) — the sharp near-full-screen
+     * frame the video pager renders, distinct from the small grid thumb served by [load].
+     * Cheapest source first, mirroring [load]'s guarantees:
+     *
+     * 1. **Poster LRU** — a settled-page/n±1 revisit (A→B→A) is a cache hit with **zero decrypt**.
+     * 2. **Encrypted on-disk poster** ([VaultContentRepository.openPoster]) — the ~1080px JPEG
+     *    written at hide-time. Served as-is when it meets [VaultThumbnails.POSTER_MIN_ACCEPT_PX];
+     *    an old icon-sized poster below that is treated as stale and regenerated (migration).
+     * 3. **Backfill** — a video hidden before APP-435 (no stored poster) or with a stale one:
+     *    stream-decrypt the blob to a temp file exactly once, extract a full-res frame, scale to
+     *    [VaultThumbnails.POSTER_PX], persist it encrypted, then serve from the cache forever after.
+     *
+     * Null → the caller falls back to the small grid thumb (still sharper than a blank canvas).
+     */
+    suspend fun loadPoster(
+        context: Context,
+        item: VaultItem,
+        repository: VaultContentRepository,
+    ): ImageBitmap? {
+        if (item.category != VaultCategory.VIDEOS) return null
+        val key = posterKey(item.id)
+        posterMemory.get(key)?.let { return it }
+        val gate = inFlight.getOrPut(key) { Mutex() }
+        return gate.withLock {
+            posterMemory.get(key)?.let { return@withLock it }
+            val start = System.nanoTime()
+            val storedJpeg = repository.openPoster(item.id)
+            if (storedJpeg != null &&
+                VaultThumbnails.posterLongestEdge(storedJpeg) >= VaultThumbnails.POSTER_MIN_ACCEPT_PX
+            ) {
+                val decoded = withContext(Dispatchers.IO) { VaultThumbnails.decodeStoredThumb(storedJpeg) }
+                if (decoded != null) {
+                    posterMemory.put(key, decoded)
+                    logTiming("disk-poster", item.id, start)
+                    return@withLock decoded
+                }
+            }
+            val backfilled = backfillPoster(context, item, repository)
+            if (backfilled != null) {
+                posterMemory.put(key, backfilled)
+                logTiming("backfill-poster", item.id, start)
+            }
+            backfilled
+        }
     }
 
-    /** Drop every decoded tile (vault lock / decoy switch). */
+    /**
+     * Regenerate the large poster from the encrypted blob for a pre-APP-435 video (or one whose
+     * stored poster is icon-sized), persist it encrypted, and return it. Streams the blob to a
+     * temp file so a large video never materializes as a ByteArray — same discipline as [backfill].
+     */
+    private suspend fun backfillPoster(
+        context: Context,
+        item: VaultItem,
+        repository: VaultContentRepository,
+    ): ImageBitmap? =
+        withContext(Dispatchers.IO) {
+            val tmp = File(context.cacheDir, "poster_${UUID.randomUUID()}")
+            val frame =
+                try {
+                    if (repository.decryptToFile(
+                            item.id,
+                            tmp
+                        )
+                    ) {
+                        VaultThumbnails.videoFrameFromFile(tmp.absolutePath)
+                    } else {
+                        null
+                    }
+                } finally {
+                    tmp.delete()
+                }
+            frame?.let { decoded ->
+                val oriented = VaultThumbnails.rotate(decoded, item.rotationDegrees)
+                runCatching { repository.savePoster(item.id, VaultThumbnails.toStoredPosterJpeg(oriented)) }
+                oriented.asImageBitmap()
+            }
+        }
+
+    /** Drop [itemId]'s decoded tile + poster (delete / restore invalidation). */
+    fun evict(itemId: String) {
+        memory.remove(cacheKey(itemId))
+        posterMemory.remove(posterKey(itemId))
+    }
+
+    /** Drop every decoded tile and poster (vault lock / decoy switch). */
     fun clear() {
         memory.clear()
+        posterMemory.clear()
         inFlight.clear()
     }
 
     /** Test probe: decoded tiles currently held. */
     internal fun cachedCount(): Int = memory.size()
 
+    /** Test probe: decoded posters currently held. */
+    internal fun cachedPosterCount(): Int = posterMemory.size()
+
     private fun cacheKey(itemId: String): String = "${VaultSession.namespace}|$itemId"
+
+    private fun posterKey(itemId: String): String = "${VaultSession.namespace}|poster|$itemId"
 
     private suspend fun loadStoredThumb(
         item: VaultItem,

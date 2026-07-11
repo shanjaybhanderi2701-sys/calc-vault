@@ -197,9 +197,11 @@ internal object DoDTestSupport {
      * playback DoD checks exercise a *real* container/codec instead of a fixture blob that
      * only pretends to be a video.
      */
-    fun synthesizeMp4Bytes(context: Context): ByteArray {
-        val width = 320
-        val height = 240
+    fun synthesizeMp4Bytes(
+        context: Context,
+        width: Int = 320,
+        height: Int = 240,
+    ): ByteArray {
         val fps = 15
         val frames = 15
         val format =
@@ -208,7 +210,7 @@ internal object DoDTestSupport {
                     MediaFormat.KEY_COLOR_FORMAT,
                     MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible,
                 )
-                setInteger(MediaFormat.KEY_BIT_RATE, 500_000)
+                setInteger(MediaFormat.KEY_BIT_RATE, 4_000_000)
                 setInteger(MediaFormat.KEY_FRAME_RATE, fps)
                 setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             }

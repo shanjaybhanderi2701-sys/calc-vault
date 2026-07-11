@@ -397,6 +397,27 @@ interface VaultContentRepository {
     ) {}
 
     /**
+     * Read [itemId]'s stored **large pager poster** as decrypted JPEG bytes (APP-435) — the
+     * ~[com.appblish.calculatorvault.vault.media.VaultThumbnails.POSTER_PX]px sharp frame the
+     * near-full-screen video pager renders, distinct from the ~200px grid thumb. Null when no
+     * poster has been generated yet (pre-APP-435 videos, non-video categories) or the vault is
+     * locked; callers then backfill via [savePoster] from the blob. Default null so in-memory
+     * fakes keep working.
+     */
+    suspend fun openPoster(itemId: String): ByteArray? = null
+
+    /**
+     * Persist [jpegBytes] as [itemId]'s stored large pager poster, **encrypted** — plaintext
+     * previews must never touch disk. Written at hide-time in the same pass as the grid thumb,
+     * and by the pipeline's lazy migration backfill for videos hidden before posters existed.
+     * Default no-op for fakes.
+     */
+    suspend fun savePoster(
+        itemId: String,
+        jpegBytes: ByteArray,
+    ) {}
+
+    /**
      * Read [itemId]'s stored scrub-preview storyboard as decrypted container bytes (APP-419,
      * the [com.appblish.calculatorvault.vault.media.VideoStoryboard] sprite-sheet), or null when
      * no strip was generated (audio, pre-APP-419 items, extract failure) or the vault is locked.

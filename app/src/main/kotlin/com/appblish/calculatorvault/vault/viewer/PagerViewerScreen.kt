@@ -339,11 +339,11 @@ private fun ViewerPager(
     LaunchedEffect(pagerState.settledPage, state.pages) {
         state.pages.getOrNull(pagerState.settledPage)?.let { viewModel.setActivePage(it.id) }
     }
-    // APP-419 (P0-A): pre-warm the adjacent video posters into the pipeline LRU so swiping to the
-    // next/previous video shows its pre-generated thumbnail instantly (photos are already
-    // pre-decrypted by the VM's {n-1, n, n+1} window; a video page carries only an id and so is
-    // not, hence this explicit n±1 warm). Cheap — a cache hit no-ops, a miss decrypts one ~200px
-    // thumb off-main; never the full video.
+    // APP-419 (P0-A) / APP-435: pre-warm the adjacent video **posters** into the poster LRU so
+    // swiping to the next/previous video shows its sharp pre-generated poster instantly (photos
+    // are already pre-decrypted by the VM's {n-1, n, n+1} window; a video page carries only an id
+    // and so is not, hence this explicit n±1 warm). Cheap — a cache hit no-ops, a miss reads one
+    // hide-time ~1080px poster off-main; never the full video (except a one-time migration backfill).
     val previewContext = LocalContext.current
     val previewRepository = VaultGraph.contentRepository
     LaunchedEffect(pagerState.settledPage, state.pages) {
@@ -351,7 +351,7 @@ private fun ViewerPager(
         for (i in neighbours) {
             val neighbour = state.pages.getOrNull(i) ?: continue
             if (neighbour.category == VaultCategory.VIDEOS) {
-                runCatching { VaultThumbnailPipeline.load(previewContext, neighbour, previewRepository) }
+                runCatching { VaultThumbnailPipeline.loadPoster(previewContext, neighbour, previewRepository) }
             }
         }
     }
@@ -818,10 +818,19 @@ private fun VideoPreviewPage(
     val context = LocalContext.current
     val repository = VaultGraph.contentRepository
     var barsVisible by remember(item.id) { mutableStateOf(true) }
-    // Poster frame from the cached pipeline (APP-419) — never an on-demand full-video decode.
-    // Audio blobs (hasVideoFrame == false) simply have no frame; the play button is the preview.
+    // Poster frame from the cached pipeline — never an on-demand full-video decode. APP-435: the
+    // near-full-screen pager renders the LARGE ~1080px hide-time poster (sharp, not the blurry
+    // upscaled ~200px grid thumb); if a poster couldn't be generated we fall back to the small
+    // thumb rather than a blank canvas. Audio blobs (hasVideoFrame == false) have no frame; the
+    // play button is the preview.
     val frame by produceState<ImageBitmap?>(initialValue = null, item.id, hasVideoFrame) {
-        value = if (!hasVideoFrame) null else VaultThumbnailPipeline.load(context, item, repository)
+        value =
+            if (!hasVideoFrame) {
+                null
+            } else {
+                VaultThumbnailPipeline.loadPoster(context, item, repository)
+                    ?: VaultThumbnailPipeline.load(context, item, repository)
+            }
     }
     Box(
         contentAlignment = Alignment.Center,
