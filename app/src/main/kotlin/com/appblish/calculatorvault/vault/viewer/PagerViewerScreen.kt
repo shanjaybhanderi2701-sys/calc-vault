@@ -268,6 +268,11 @@ private fun ViewerPager(
     val pageWindow by viewModel.pageWindow.collectAsStateWithLifecycle()
     val pagerState = rememberPagerState(initialPage = state.startIndex) { state.pages.size }
     var zoomed by remember { mutableStateOf(false) }
+    // APP-428: the pager gates its swipe on **actual playback**, not on page type. This mirrors
+    // the settled video/audio page's live player state (reported up from [VideoPage]). Preview /
+    // browse (not playing) → the pager is swipeable so the user can flick between videos; an
+    // active player → paging is locked so a horizontal drag belongs to seek/scrub, not next-video.
+    var playerActive by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     // The settled photo's display rotation, seeded from its **persisted** net orientation
     // (W3-E, spec §2.2) and accumulated per ⟳ tap. Kept un-modded so the 200ms turn
@@ -350,9 +355,12 @@ private fun ViewerPager(
             }
         }
     }
-    // A newly settled page starts un-zoomed, showing its own persisted orientation.
+    // A newly settled page starts un-zoomed, showing its own persisted orientation. It also
+    // starts in the preview (non-playing) state, so the pager is swipeable again the instant a
+    // video is settled onto — the newly-composed [VideoPage] re-reports its real state (APP-428).
     LaunchedEffect(pagerState.settledPage) {
         zoomed = false
+        playerActive = false
         rotationDegrees = state.pages.getOrNull(pagerState.settledPage)?.rotationDegrees ?: 0
     }
     // Zooming hides the chrome so it never floats over an inspected photo; returning to 1×
@@ -386,15 +394,18 @@ private fun ViewerPager(
             state = pagerState,
             // Zoomed pan must not fight the pager: swiping is only a pager gesture at 1x.
             //
-            // APP-398 (round 5c) · the ACTIVE video/audio player must NOT live inside a user-swipeable
-            // pager (owner: "once you're in the player, horizontal swipes should seek — not switch to
-            // the next video"). While the settled page is a video/audio, disable user paging so a
-            // horizontal drag on the body reaches [VideoPlayerSurface]'s swipe-to-seek gesture and the
-            // seekbar drag can never page the layout — the single root cause behind BOTH the
-            // body-swipe-switches-video and the seekbar-shifts-layout symptoms. Photo pages keep their
-            // swipe; switching videos still works via the transport Next/Prev buttons and the playlist
-            // (both call animateScrollToPage, which is programmatic and unaffected by this flag).
-            userScrollEnabled = !zoomed && !currentIsPlayable,
+            // APP-428 (APP-417 R6) · gate paging on **actual playback state**, NOT on page type.
+            // These are two states of the same pager and need opposite behaviour:
+            //  - Preview / browse (video NOT playing) → the pager IS swipeable, so the user flicks
+            //    between videos and each shows its large cached poster (owner R6: "the preview
+            //    screen was NOT restored" — round 5c had wrongly gated on `currentIsPlayable`, the
+            //    page-type flag, so a video page was never swipeable even before playback started).
+            //  - Player active (video IS playing) → paging is locked so a horizontal drag reaches
+            //    [VideoPlayerSurface]'s seek/scrub gesture instead of switching video (APP-398 —
+            //    the part the owner confirmed correct; kept, now keyed on real playback).
+            // Switching videos still works via the transport Next/Prev + playlist (both call
+            // animateScrollToPage, which is programmatic and unaffected by this flag).
+            userScrollEnabled = !zoomed && !playerActive,
             // Keep the immediate neighbours composed (APP-299 P0-1) so the common
             // swipe-forward-then-back never even disposes the page — instant return.
             beyondViewportPageCount = 1,
@@ -417,6 +428,9 @@ private fun ViewerPager(
                 bitmapCache = bitmapCache,
                 fileActions = fileActions,
                 playlist = playlistController,
+                // APP-428: only the settled video/audio page reports its live playback state,
+                // which drives the pager's swipe gate above.
+                onPlayingChanged = { playerActive = it },
             )
         }
 
@@ -492,6 +506,7 @@ private fun ViewerPage(
     bitmapCache: ViewerBitmapCache<ImageBitmap>,
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
+    onPlayingChanged: (Boolean) -> Unit,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -503,17 +518,18 @@ private fun ViewerPage(
                 )
             PageContent.Error -> ErrorPage()
             is PageContent.Media ->
-                // Only the settled page previews/plays; a page peeked mid-swipe spins.
-                if (isCurrent) {
-                    VideoPage(
-                        item = item,
-                        hasVideoFrame = content.hasVideoFrame,
-                        fileActions = fileActions,
-                        playlist = playlist,
-                    )
-                } else {
-                    CircularProgressIndicator(color = colors.accent, modifier = Modifier.size(32.dp))
-                }
+                // APP-428: every video/audio page renders its large cached poster preview — the
+                // settled page AND a page peeked mid-swipe — so flicking between videos shows each
+                // thumbnail instantly (no spinner). Only the settled page can actually start the
+                // player ([VideoPage] gates play on `isCurrent`); a neighbour always shows its poster.
+                VideoPage(
+                    item = item,
+                    hasVideoFrame = content.hasVideoFrame,
+                    isCurrent = isCurrent,
+                    fileActions = fileActions,
+                    playlist = playlist,
+                    onPlayingChanged = onPlayingChanged,
+                )
             is PageContent.Bytes ->
                 when (item.category) {
                     VaultCategory.CONTACTS -> ContactPage(item = item, bytes = content.bytes)
@@ -741,20 +757,37 @@ private fun ZoomableImage(
 private fun VideoPage(
     item: VaultItem,
     hasVideoFrame: Boolean,
+    isCurrent: Boolean,
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
+    onPlayingChanged: (Boolean) -> Unit,
 ) {
     // Wave 4 (APP-351): Expand from the mini player must resume the full player immediately —
     // start in the playing state (adopting the session's live player) instead of the preview.
     val session = rememberMiniPlayerSession()
     var playing by remember(item.id) { mutableStateOf(session.isExpandingInto(item.id)) }
-    if (playing) {
+    // APP-428: only the SETTLED page can actually play — a page peeked mid-swipe always shows its
+    // poster preview, so browsing between videos never spins up an off-screen player. `active` is
+    // therefore the real, on-screen playback state.
+    val active = isCurrent && playing
+    // Report the current page's real playback state up so the pager gates its swipe on playback
+    // (preview → swipeable, playing → locked). Only the current page reports, so a peeked
+    // neighbour (always `active == false`) can never clobber the settled page's state.
+    LaunchedEffect(active, isCurrent) {
+        if (isCurrent) onPlayingChanged(active)
+    }
+    // Swiping away drops back to the preview, so a return shows the poster (never a stale, still
+    // off-screen player) and the pager stays swipeable.
+    LaunchedEffect(isCurrent) {
+        if (!isCurrent) playing = false
+    }
+    if (active) {
         MediaPlayerPage(item.id, fileActions, playlist)
     } else {
         VideoPreviewPage(
             item = item,
             hasVideoFrame = hasVideoFrame,
-            onPlay = { playing = true },
+            onPlay = { if (isCurrent) playing = true },
             fileActions = fileActions,
         )
     }

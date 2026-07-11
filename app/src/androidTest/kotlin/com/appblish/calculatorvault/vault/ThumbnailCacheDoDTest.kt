@@ -111,13 +111,13 @@ class ThumbnailCacheDoDTest {
         )
     }
 
-    private fun stagedVideo(): VaultItem {
-        val name = "calcvault_thumb_dod_${System.nanoTime()}_v.mp4"
+    private fun stagedVideo(index: Int = 0): VaultItem {
+        val name = "calcvault_thumb_dod_${System.nanoTime()}_v$index.mp4"
         displayNames += name
         val uri =
             DoDTestSupport.insertPublicVideo(context, name, relativePath, DoDTestSupport.synthesizeMp4Bytes(context))
         return VaultItem(
-            id = "stagedv",
+            id = "stagedv$index",
             category = VaultCategory.VIDEOS,
             originalName = name,
             dateLabel = "Today",
@@ -175,6 +175,38 @@ class ThumbnailCacheDoDTest {
             assertThat(repo.fullDecrypts.get()).isEqualTo(0)
             assertThat(repo.thumbReads.get()).isEqualTo(thumbReadsAfterCold)
             Log.i("ThumbnailCacheDoD", "grid visit timing: cold=${cold}ms warmRevisit=${warm}ms")
+        }
+
+    /**
+     * APP-430 (APP-417 R6) — the video **preview pager** poster path. The restored preview state
+     * loads each video's large poster through the exact same [VaultThumbnailPipeline.load] the pager
+     * uses (settled page + the n±1 warm), NEVER an on-demand full-video frame extraction. This
+     * asserts the owner's decrypt-count requirement verbatim: browsing A → B → back to A must serve
+     * A's poster from the in-memory LRU with **zero re-decode** (and never a full-blob decrypt).
+     */
+    @Test
+    fun videoPreviewPager_AtoBtoA_servesPosterFromCacheWithoutReDecoding() =
+        runBlocking<Unit> {
+            val repo = newRepo()
+            val stored = repo.hide(listOf(stagedVideo(1), stagedVideo(2)))
+            assertThat(stored).hasSize(2)
+            val a = stored[0]
+            val b = stored[1]
+
+            // Visit A (cold): its pre-generated encrypted thumb is decrypted once — no full video.
+            assertThat(VaultThumbnailPipeline.load(context, a, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.thumbReads.get()).isEqualTo(1)
+
+            // Swipe to B (cold): its own thumb decrypts once — A stays warm in the LRU.
+            assertThat(VaultThumbnailPipeline.load(context, b, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.thumbReads.get()).isEqualTo(2)
+
+            // Swipe BACK to A: LRU hit — no stored-thumb read, no full decrypt (owner's A→B→A bar).
+            assertThat(VaultThumbnailPipeline.load(context, a, repo)).isNotNull()
+            assertThat(repo.fullDecrypts.get()).isEqualTo(0)
+            assertThat(repo.thumbReads.get()).isEqualTo(2)
         }
 
     @Test

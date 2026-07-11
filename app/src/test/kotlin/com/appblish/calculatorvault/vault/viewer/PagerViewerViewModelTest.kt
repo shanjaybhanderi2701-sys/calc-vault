@@ -350,6 +350,65 @@ class PagerViewerViewModelTest {
         }
 
     @Test
+    fun `settling on a video leaves its neighbours as media descriptors and never stream-decrypts`() =
+        runTest(dispatcher) {
+            // APP-428: browsing a folder of videos — settling on the middle video must leave BOTH
+            // neighbours holding a PageContent.Media descriptor (not Loading), so a swipe to either
+            // shows its cached poster thumbnail instantly instead of a spinner. And because a video
+            // page is a lightweight id-only descriptor, the peek must NOT stream-decrypt any blob.
+            val repo = InMemoryVaultContentRepository(seed = false)
+            val stored =
+                repo.hide(
+                    listOf(
+                        staged("a", sortKey = 3, category = VaultCategory.VIDEOS),
+                        staged("b", sortKey = 2, category = VaultCategory.VIDEOS),
+                        staged("c", sortKey = 1, category = VaultCategory.VIDEOS),
+                    ),
+                )
+            var decrypts = 0
+            val counting =
+                object : VaultContentRepository by repo {
+                    override suspend fun openDecrypted(itemId: String): ByteArray? {
+                        decrypts++
+                        return repo.openDecrypted(itemId)
+                    }
+
+                    override suspend fun decryptToFile(
+                        itemId: String,
+                        dest: java.io.File,
+                    ): Boolean {
+                        decrypts++
+                        return repo.decryptToFile(itemId, dest)
+                    }
+                }
+            val ids = stored.associate { it.originalName to it.id }
+            val viewModel =
+                PagerViewerViewModel(
+                    startItemId = ids.getValue("b.jpg"),
+                    category = VaultCategory.VIDEOS,
+                    folderId = null,
+                    context = null,
+                    repository = counting,
+                    ioDispatcher = dispatcher,
+                )
+            viewModel.state.first { it.loaded && it.pages.size == 3 }
+
+            viewModel.setActivePage(ids.getValue("b.jpg"))
+            dispatcher.scheduler.advanceUntilIdle()
+
+            // Newest-first [a, b, c]; settling on middle b leaves a, b AND c as Media descriptors.
+            val window = viewModel.pageWindow.value
+            listOf("a", "b", "c").forEach { name ->
+                val content = window[ids.getValue("$name.jpg")]
+                assertThat(content).isInstanceOf(PageContent.Media::class.java)
+                assertThat((content as PageContent.Media).hasVideoFrame).isTrue()
+            }
+            // A video page never stream-decrypts at browse/peek time (the source of the large-video
+            // "no thumbnail" failures the owner hit) — the poster is served from the thumb pipeline.
+            assertThat(decrypts).isEqualTo(0)
+        }
+
+    @Test
     fun `a forward-then-back slide never re-decrypts any revisited page`() =
         runTest(dispatcher) {
             // APP-314 P0 proof #1 (fullDecrypts discipline): A→B→C→B→A decrypts each distinct

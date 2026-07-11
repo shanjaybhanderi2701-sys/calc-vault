@@ -296,17 +296,29 @@ class PagerViewerViewModel(
         }
 
         // Neighbours: pre-decrypt now so their composed page already holds Bytes on arrival.
-        // Skip heavy video/audio neighbours — those stream to a temp file and decode only
-        // once settled (isCurrent), so eager decrypt would just churn large temp files.
+        // A video/audio neighbour is NOT stream-decrypted eagerly (that would churn large temp
+        // files) — but its [PageContent.Media] descriptor is just an id + a flag, so publish that
+        // immediately (APP-428) and the peeked page renders its cached poster thumbnail instead of
+        // a spinner. The heavy stream-decrypt still stays lazy, happening only once it is settled.
         windowItems.forEach { neighbourId ->
             if (neighbourId == itemId) return@forEach
             val nCached = cachedContent(neighbourId)
             when {
                 nCached != null -> putWindow(neighbourId, nCached)
-                isHeavyMedia(neighbourId) -> Unit
+                isHeavyMedia(neighbourId) -> putWindow(neighbourId, mediaContentFor(neighbourId))
                 else -> decryptInto(neighbourId)
             }
         }
+    }
+
+    /**
+     * The lightweight streamable [PageContent.Media] descriptor for a video/audio page — just the
+     * id + `hasVideoFrame`, no decrypt. Lets a peeked neighbour render its cached poster preview
+     * (APP-428) without any of the heavy on-settle stream-decrypt.
+     */
+    private fun mediaContentFor(itemId: String): PageContent {
+        val item = state.value.pages.firstOrNull { it.id == itemId } ?: return PageContent.Loading
+        return PageContent.Media(itemId, hasVideoFrame = item.category == VaultCategory.VIDEOS)
     }
 
     /** Put [content] into the window map for [itemId] (the screen renders pages from here). */
