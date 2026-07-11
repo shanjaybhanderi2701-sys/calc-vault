@@ -209,6 +209,18 @@ object VaultActionIcons {
         )
     }
 
+    /**
+     * Material `playlist_play` — the modern top-bar playlist/order glyph (APP-388 #3):
+     * three stacked lines with a right-pointing play triangle. Replaces the old bare
+     * `PlayArrow` triangle, which read as a plain play button, not a playlist.
+     */
+    val PlaylistPlay: ImageVector by lazy {
+        icon(
+            name = "Filled.PlaylistPlay",
+            pathData = "M3,10h11v2H3zM3,6h11v2H3zM3,14h7v2H3zM16,13v6l5,-3z",
+        )
+    }
+
     /** Material `subtitles` — the §4 subtitles entry glyph (⋯ menu). */
     val Subtitles: ImageVector by lazy {
         icon(

@@ -42,8 +42,8 @@ class MxPlayerRedesignDoDTest {
 
     private fun items() =
         listOf(
-            VaultItem("a", VaultCategory.VIDEOS, "First.mp4", "Today", 0L),
-            VaultItem("b", VaultCategory.VIDEOS, "Second.mp4", "Today", 1L),
+            VaultItem("a", VaultCategory.VIDEOS, "First.mp4", "Today", 0L, durationMs = 65_000L),
+            VaultItem("b", VaultCategory.VIDEOS, "Second.mp4", "Today", 1L, durationMs = 5_000L),
         )
 
     private fun controller() =
@@ -130,6 +130,30 @@ class MxPlayerRedesignDoDTest {
         for (label in listOf("Share", "Move", "Unhide", "Delete", "Info")) {
             assertThat(compose.onAllNodesWithText(label).fetchSemanticsNodes()).isNotEmpty()
         }
+    }
+
+    /**
+     * APP-388 #2/#3 — the top-bar playlist affordance opens the playlist sheet, whose rows carry
+     * the video title, its formatted duration, and a now-playing / play badge per row.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    @Test
+    fun playlistSheet_rowsShowTitleDurationAndBadge() {
+        overlay(locked = false)
+        // #3 — the modern top-bar playlist glyph is the labelled "Playlist" affordance.
+        compose.onNodeWithContentDescription("Playlist").performClick()
+        compose.waitForIdle()
+
+        // Each current-folder video renders as a row: title + formatted duration.
+        for (title in listOf("First.mp4", "Second.mp4")) {
+            assertThat(compose.onAllNodesWithText(title).fetchSemanticsNodes()).isNotEmpty()
+        }
+        assertThat(compose.onAllNodesWithText("1:05").fetchSemanticsNodes()).isNotEmpty()
+        assertThat(compose.onAllNodesWithText("0:05").fetchSemanticsNodes()).isNotEmpty()
+        // The current row (index 0) carries the now-playing badge on its thumbnail tile.
+        assertThat(
+            compose.onAllNodesWithContentDescription("Now playing").fetchSemanticsNodes(),
+        ).isNotEmpty()
     }
 
     /** #5 — locked hides ALL controls; the overlay renders no chrome. */

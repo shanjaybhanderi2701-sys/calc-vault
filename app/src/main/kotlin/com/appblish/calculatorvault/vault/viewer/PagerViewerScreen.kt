@@ -114,6 +114,7 @@ import com.appblish.calculatorvault.ui.components.DeleteChoiceDialog
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.VaultGraph
+import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
@@ -1198,6 +1199,8 @@ private fun MediaPlayerPage(
                         order = playlist.orderMode,
                     )
                 },
+                // APP-388 #2: playlist rows reuse the folder-grid encrypted-thumbnail pipeline.
+                loadThumbnail = { item -> VaultThumbnailPipeline.load(context, item, repository) },
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })

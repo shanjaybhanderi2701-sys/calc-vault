@@ -3,6 +3,7 @@ package com.appblish.calculatorvault.vault.viewer
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -40,7 +42,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -52,6 +53,7 @@ import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -59,7 +61,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.C
@@ -67,6 +71,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
+import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.delay
 
 private val ControlScrim = Color(0xCC000000)
@@ -78,6 +83,13 @@ private val TopGradient = Brush.verticalGradient(
 )
 private const val AUTO_HIDE_MS = 3_500L
 private const val UNLOCK_PILL_HIDE_MS = 2_000L
+
+// APP-388 #1 · thin seekbar dimensions/colors. A 2dp line with a 12dp round thumb replaces
+// the default Material Slider (≈4dp track / ≈20dp pill). Colors kept from the prior white bar.
+private val SEEK_TRACK_HEIGHT = 2.dp
+private val SEEK_THUMB_DIAMETER = 12.dp
+private val SeekActiveColor = Color.White
+private val SeekInactiveColor = Color(0x66FFFFFF)
 
 /**
  * CalcVault Phase B · Wave 3 · APP-350, MX-Player redesign · APP-384 — the controls overlay that
@@ -130,6 +142,9 @@ internal fun VideoPlayerControlsOverlay(
     onClearSubtitle: () -> Unit,
     // APP-351 (Wave 4): minimize into the in-app floating mini player (§5c).
     onMinimize: () -> Unit,
+    // APP-388 #2: per-row playlist thumbnails via the folder-grid encrypted-thumbnail pipeline
+    // (VaultThumbnailPipeline). Null → rows fall back to a plain glyph (e.g. previews/tests).
+    loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)? = null,
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -273,6 +288,10 @@ internal fun VideoPlayerControlsOverlay(
                         color = Color.White,
                         style = MaterialTheme.typography.labelMedium,
                     )
+                    // APP-388 #1 · thin seekbar: a 2dp progress line with a small round thumb
+                    // (owner reference). Keep the existing white colors/position — only the
+                    // default ~4dp track + ~20dp pill handle are replaced with slim slots.
+                    val trackFraction = (sliderValue / sliderMax).coerceIn(0f, 1f)
                     Slider(
                         value = sliderValue,
                         onValueChange = {
@@ -287,11 +306,37 @@ internal fun VideoPlayerControlsOverlay(
                             resetAutoHide()
                         },
                         valueRange = 0f..sliderMax,
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color.White,
-                            inactiveTrackColor = Color(0x66FFFFFF),
-                        ),
+                        thumb = {
+                            Box(
+                                modifier = Modifier
+                                    .size(SEEK_THUMB_DIAMETER)
+                                    .clip(CircleShape)
+                                    .background(SeekActiveColor),
+                            )
+                        },
+                        track = {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(SEEK_TRACK_HEIGHT),
+                                contentAlignment = Alignment.CenterStart,
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(SEEK_TRACK_HEIGHT)
+                                        .clip(CircleShape)
+                                        .background(SeekInactiveColor),
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth(trackFraction)
+                                        .height(SEEK_TRACK_HEIGHT)
+                                        .clip(CircleShape)
+                                        .background(SeekActiveColor),
+                                )
+                            }
+                        },
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 10.dp),
@@ -419,7 +464,7 @@ internal fun VideoPlayerControlsOverlay(
                     resetAutoHide()
                 }) {
                     Icon(
-                        imageVector = Icons.Filled.PlayArrow,
+                        imageVector = VaultActionIcons.PlaylistPlay,
                         contentDescription = "Playlist",
                         tint = Color.White,
                     )
@@ -630,12 +675,23 @@ internal fun VideoPlayerControlsOverlay(
                                     maxLines = 1,
                                 )
                             },
-                            leadingContent = {
-                                if (isPlaying) {
-                                    Icon(VaultActionIcons.Pause, contentDescription = "Now playing")
-                                } else {
-                                    Icon(Icons.Filled.PlayArrow, contentDescription = null)
+                            // APP-388 #2: show the item duration alongside the title.
+                            supportingContent = {
+                                if (item.durationMs > 0L) {
+                                    Text(
+                                        text = VideoGestureMath.formatTime(item.durationMs),
+                                        style = MaterialTheme.typography.labelSmall,
+                                    )
                                 }
+                            },
+                            // APP-388 #2: per-row encrypted thumbnail (folder-grid pipeline) with a
+                            // now-playing / play affordance overlaid; falls back to a glyph tile.
+                            leadingContent = {
+                                PlaylistRowThumbnail(
+                                    item = item,
+                                    isPlaying = isPlaying,
+                                    loadThumbnail = loadThumbnail,
+                                )
                             },
                             modifier = Modifier.clickable {
                                 playlist.onSelect(index)
@@ -667,6 +723,46 @@ internal fun VideoPlayerControlsOverlay(
                 Spacer(Modifier.height(16.dp))
             }
         }
+    }
+}
+
+/**
+ * APP-388 #2 — a playlist-row leading tile: the video's encrypted thumbnail (decoded via the
+ * same [loadThumbnail] pipeline the folder grid uses), 16:9, with a small play / now-playing
+ * badge overlaid. Falls back to a plain glyph tile when no thumbnail is available (or in
+ * previews/tests where [loadThumbnail] is null).
+ */
+@Composable
+private fun PlaylistRowThumbnail(
+    item: VaultItem,
+    isPlaying: Boolean,
+    loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)?,
+) {
+    val thumbnail: ImageBitmap? by produceState<ImageBitmap?>(initialValue = null, item.id) {
+        value = loadThumbnail?.invoke(item)
+    }
+    Box(
+        modifier = Modifier
+            .width(56.dp)
+            .aspectRatio(16f / 9f)
+            .clip(RoundedCornerShape(4.dp))
+            .background(ControlScrim),
+        contentAlignment = Alignment.Center,
+    ) {
+        thumbnail?.let { bmp ->
+            Image(
+                bitmap = bmp,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        }
+        Icon(
+            imageVector = if (isPlaying) VaultActionIcons.Pause else Icons.Filled.PlayArrow,
+            contentDescription = if (isPlaying) "Now playing" else null,
+            tint = Color.White,
+            modifier = Modifier.size(20.dp),
+        )
     }
 }
 
