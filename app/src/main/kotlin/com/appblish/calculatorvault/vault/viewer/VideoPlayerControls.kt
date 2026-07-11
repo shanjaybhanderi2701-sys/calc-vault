@@ -51,7 +51,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -385,15 +384,25 @@ internal fun VideoPlayerControlsOverlay(
     var playlistSheetVisible by remember { mutableStateOf(false) }
 
     // APP-384 · MX-Player bottom seekbar: poll the playhead while controls are visible so the
-    // full-width Slider tracks playback. Dragging the thumb latches [scrubbing] so the poll
-    // doesn't fight the finger; release commits the seek.
+    // full-width seekbar tracks playback. Dragging the thumb latches [SeekbarScrubState.scrubbing]
+    // so the poll doesn't fight the finger; release commits the ONE seek.
     var positionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
     var durationMs by remember { mutableLongStateOf(player.positiveDurationMs()) }
-    var scrubbing by remember { mutableStateOf(false) }
-    var scrubValueMs by remember { mutableFloatStateOf(0f) }
+    // APP-429 (P0, round 6) · seek-on-RELEASE only. The drag is held as pure UI state; the single
+    // seek to the final position fires on release via [player.seekTo] (ExoPlayer decrypts the new
+    // offset off-main on its loader thread). No seek/decrypt occurs during pointer-move — that was
+    // the freeze the owner rejected five times.
+    val scrub = remember(player) {
+        SeekbarScrubState(
+            commitSeek = { ms ->
+                player.seekTo(ms)
+                positionMs = ms
+            },
+        )
+    }
     LaunchedEffect(player, controlsVisible) {
         while (controlsVisible) {
-            if (!scrubbing) {
+            if (!scrub.scrubbing) {
                 positionMs = player.currentPosition.coerceAtLeast(0L)
                 durationMs = player.positiveDurationMs()
             }
@@ -472,14 +481,14 @@ internal fun VideoPlayerControlsOverlay(
             ) {
                 // Full-width seekbar: elapsed / [========o----] / total.
                 val sliderMax = durationMs.coerceAtLeast(1L).toFloat()
-                val sliderValue = (if (scrubbing) scrubValueMs else positionMs.toFloat())
+                val sliderValue = (if (scrub.scrubbing) scrub.scrubValueMs else positionMs.toFloat())
                     .coerceIn(0f, sliderMax)
                 // APP-419 (P1): live scrub-preview thumbnail. While dragging, the nearest
                 // pre-generated storyboard frame floats above the bar at the drag position — a
                 // pure in-memory sub-rect crop of the already-decoded sheet, never a per-tick
                 // decrypt. Only rendered when this item actually has a strip.
                 val strip = scrubPreview
-                if (scrubbing && strip != null) {
+                if (scrub.scrubbing && strip != null) {
                     ScrubPreview(strip = strip, fraction = (sliderValue / sliderMax).coerceIn(0f, 1f))
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -507,15 +516,15 @@ internal fun VideoPlayerControlsOverlay(
                     val trackFraction = (sliderValue / sliderMax).coerceIn(0f, 1f)
                     ThinSeekbar(
                         fraction = trackFraction,
+                        // APP-429 (P0) · WHILE DRAGGING: pure UI only — move the thumb + time label,
+                        // never seek, never decrypt, never touch the player.
                         onScrub = { f ->
-                            scrubbing = true
-                            scrubValueMs = f * sliderMax
+                            scrub.onScrub(f, durationMs)
                             resetAutoHide()
                         },
+                        // APP-429 (P0) · ON RELEASE: exactly one seek to the final position, off-main.
                         onScrubFinished = {
-                            player.seekTo(scrubValueMs.toLong())
-                            positionMs = scrubValueMs.toLong()
-                            scrubbing = false
+                            scrub.onScrubFinished(durationMs)
                             resetAutoHide()
                         },
                         modifier = Modifier
