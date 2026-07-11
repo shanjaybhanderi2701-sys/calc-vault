@@ -162,6 +162,21 @@ fun VaultNavHost() {
         }
     }
 
+    // APP-420: portrait-lock the whole app except the full-screen media viewers (photo
+    // viewer / video player = VIEWER, folder SLIDESHOW), which may rotate to portrait or
+    // landscape. Keyed on the settled route so it fires exactly once per screen change:
+    // a physical rotation and the in-viewer manual content-rotate transform both leave the
+    // route unchanged, so neither re-fires this and neither fights the sensor. With
+    // MainActivity's configChanges declaring `orientation`, flipping requestedOrientation
+    // delivers a configuration change (Compose relayout), not an activity recreate, so a
+    // video keeps playing from the same position across the rotation (OrientationPolicy /
+    // APP-381). Leaving a viewer back to a grid changes the route → snaps back to portrait.
+    val orientationActivity = LocalContext.current.findActivity()
+    val currentRoute = currentEntry?.destination?.route
+    LaunchedEffect(orientationActivity, currentRoute) {
+        orientationActivity?.requestedOrientation = OrientationPolicy.forRoute(currentRoute)
+    }
+
     // Wave 4 (APP-351): drive nav from the Mini Player mode. Minimize (→ MINI) returns the user
     // to the vault by popping the viewer; Expand (→ FULL with a held item) re-opens the viewer on
     // that item so it re-adopts the session's live player (Option A, APP-374). The overlay itself
