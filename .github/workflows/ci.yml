@@ -119,6 +119,9 @@ jobs:
             # FastScrollChevronCaptureTest while the emulator is still alive. Best-effort —
             # never let the pull mask the real gradle result.
             adb pull /sdcard/chevron-evidence ./chevron-evidence || true
+            # APP-384: pull the MX-Player redesign screenshots written by
+            # MxPlayerRedesignCaptureTest (bottom bar, overflow groups, locked, gesture overlays).
+            adb pull /sdcard/app384-evidence ./app384-evidence || true
             exit $gradle_code
 
       - name: Upload chevron on-device screenshots (APP-344)
@@ -127,6 +130,15 @@ jobs:
         with:
           name: chevron-evidence-api-${{ matrix.api-level }}
           path: ./chevron-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload MX-Player redesign screenshots (APP-384)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app384-evidence-api-${{ matrix.api-level }}
+          path: ./app384-evidence/
           if-no-files-found: ignore
           retention-days: 7
 

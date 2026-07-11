@@ -57,7 +57,6 @@ class PlayerGestureDoDTest {
                     // independent of controls-visibility, zoom, aspect, and rotation.
                     VideoPlayerSurface(
                         player = player,
-                        controlsVisible = true,
                         onToggleControls = {},
                         locked = false,
                         scale = 1f,
@@ -126,14 +125,17 @@ class PlayerGestureDoDTest {
         }
     }
 
-    /** Item 3 — vertical drag on the RIGHT half changes screen brightness and shows its bar. */
+    /**
+     * Item 3 (APP-384 #4 · MX-Player convention) — vertical drag on the LEFT half changes screen
+     * brightness and shows its bar.
+     */
     @Test
-    fun verticalDragRightHalf_changesBrightness_andShowsBar() {
+    fun verticalDragLeftHalf_changesBrightness_andShowsBar() {
         val player = FakeSeekPlayer(duration, startPos)
         setContent(player)
 
         compose.onNodeWithTag("surface").performTouchInput {
-            val x = width * 0.8f
+            val x = width * 0.2f
             down(Offset(x, height * 0.75f))
             moveTo(Offset(x, height * 0.25f)) // drag UP → brighten
             up()
@@ -150,14 +152,17 @@ class PlayerGestureDoDTest {
         assertThat(b).isAtMost(1f)
     }
 
-    /** Item 3 — vertical drag on the LEFT half targets volume and shows the volume bar. */
+    /**
+     * Item 3 (APP-384 #4 · MX-Player convention) — vertical drag on the RIGHT half targets volume
+     * and shows the volume bar (never brightness).
+     */
     @Test
-    fun verticalDragLeftHalf_showsVolumeBar() {
+    fun verticalDragRightHalf_showsVolumeBar() {
         val player = FakeSeekPlayer(duration, startPos)
         setContent(player)
 
         compose.onNodeWithTag("surface").performTouchInput {
-            val x = width * 0.2f
+            val x = width * 0.8f
             down(Offset(x, height * 0.75f))
             moveTo(Offset(x, height * 0.25f))
             up()
@@ -167,7 +172,7 @@ class PlayerGestureDoDTest {
         compose.onAllNodesWithText("Volume").fetchSemanticsNodes().let {
             assertThat(it).isNotEmpty()
         }
-        // Vertical-left must NOT be read as brightness (zone separation).
+        // Vertical-right must NOT be read as brightness (zone separation).
         compose.onAllNodesWithText("Brightness").fetchSemanticsNodes().let {
             assertThat(it).isEmpty()
         }

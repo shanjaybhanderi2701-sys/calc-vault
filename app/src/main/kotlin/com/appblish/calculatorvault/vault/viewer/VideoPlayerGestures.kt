@@ -19,8 +19,11 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -38,6 +41,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.onSizeChanged
@@ -48,6 +52,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
+import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.hypot
 import android.graphics.Color as AndroidColor
@@ -79,7 +84,6 @@ import android.graphics.Color as AndroidColor
 @Composable
 internal fun VideoPlayerSurface(
     player: Player,
-    controlsVisible: Boolean,
     onToggleControls: () -> Unit,
     locked: Boolean,
     scale: Float,
@@ -177,15 +181,17 @@ internal fun VideoPlayerSurface(
                     this.player = player
                     this.resizeMode = resizeMode
                     setBackgroundColor(AndroidColor.BLACK)
-                    // This overlay owns every touch; the controller only shows on our tap.
-                    controllerAutoShow = false
-                    controllerHideOnTouch = false
+                    // APP-384 #2 — the built-in PlayerView controller is fully OFF. It used to
+                    // render ExoPlayer's own center prev/rewind/pause cluster + timeline, which
+                    // overlapped (and duplicated) this app's overlay. Our [VideoPlayerControlsOverlay]
+                    // now owns the *entire* control set (single center play/pause, MX-style bottom
+                    // seekbar + control row), so nothing here draws chrome.
+                    useController = false
                 }
             },
             update = { view ->
                 view.player = player
                 view.resizeMode = resizeMode
-                if (controlsVisible) view.showController() else view.hideController()
             },
         )
 
@@ -231,7 +237,9 @@ internal fun VideoPlayerSurface(
                                     }
                                     VideoGestureMath.Axis.VERTICAL -> {
                                         val h = surfaceSize.height.toFloat()
-                                        if (zone == VideoGestureMath.Zone.RIGHT) {
+                                        // APP-384 #4 — MX-Player convention: LEFT edge = brightness,
+                                        // RIGHT edge = volume (previously inverted).
+                                        if (zone == VideoGestureMath.Zone.LEFT) {
                                             brightnessFraction =
                                                 VideoGestureMath.adjustBrightness(brightnessFraction, dragAmount.y, h)
                                             activity?.let { applyWindowBrightness(it, brightnessFraction) }
@@ -300,39 +308,44 @@ internal fun VideoPlayerSurface(
                     },
         )
 
-        // ---- Indicators ----
+        // ---- Indicators (APP-384 #4 — large, clean, MX-Player-style overlays) ----
+        // Double-tap seek delta ("+10s") stays on the tapped edge.
         seekLabel?.let { label ->
-            IndicatorPill(
+            SeekIndicator(
                 text = label,
                 alignment = if (seekZone == VideoGestureMath.Zone.LEFT) Alignment.CenterStart else Alignment.CenterEnd,
             )
         }
+        // Horizontal-swipe scrub → a big centered time/total card.
         if (scrubVisible) {
-            IndicatorPill(
+            SeekIndicator(
                 text = "${VideoGestureMath.formatTime(scrubTargetMs)} / ${VideoGestureMath.formatTime(scrubTotalMs)}",
                 alignment = Alignment.Center,
             )
         }
+        // Brightness → LEFT edge; Volume → RIGHT edge (MX-Player convention).
         if (brightnessVisible) {
-            VerticalLevelIndicator(
+            LevelIndicator(
+                icon = VaultActionIcons.Brightness,
                 caption = "Brightness",
                 fraction = brightnessFraction,
-                alignment = Alignment.CenterEnd,
+                alignment = Alignment.CenterStart,
             )
         }
         if (volumeVisible) {
-            VerticalLevelIndicator(
+            LevelIndicator(
+                icon = if (volumeFraction <= 0f) VaultActionIcons.VolumeOff else VaultActionIcons.VolumeOn,
                 caption = "Volume",
                 fraction = volumeFraction,
-                alignment = Alignment.CenterStart,
+                alignment = Alignment.CenterEnd,
             )
         }
     }
 }
 
-/** A dark rounded pill for the seek / scrub-time indicators. */
+/** A large, dark centered card for the seek / scrub-time indicators (MX-Player style). */
 @Composable
-private fun BoxScope.IndicatorPill(
+private fun BoxScope.SeekIndicator(
     text: String,
     alignment: Alignment,
 ) {
@@ -342,39 +355,48 @@ private fun BoxScope.IndicatorPill(
             Modifier
                 .align(alignment)
                 .padding(40.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .background(Color(0xB3000000))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .clip(RoundedCornerShape(12.dp))
+                .background(Color(0xCC000000))
+                .padding(horizontal = 24.dp, vertical = 16.dp),
     ) {
-        Text(text = text, color = Color.White)
+        Text(
+            text = text,
+            color = Color.White,
+            style = MaterialTheme.typography.headlineSmall,
+        )
     }
 }
 
-/** A slim vertical fill (0..1) with a caption, for brightness / volume. */
+/**
+ * A prominent brightness / volume overlay: an icon over a tall vertical fill (0..1) and a big
+ * percentage, in a dark rounded card pinned to the swipe's edge (APP-384 #4, MX-Player style).
+ */
 @Composable
-private fun BoxScope.VerticalLevelIndicator(
+private fun BoxScope.LevelIndicator(
+    icon: ImageVector,
     caption: String,
     fraction: Float,
     alignment: Alignment,
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(8.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp),
         modifier =
             Modifier
                 .align(alignment)
-                .padding(28.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color(0xB3000000))
-                .padding(12.dp),
+                .padding(32.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(Color(0xCC000000))
+                .padding(horizontal = 18.dp, vertical = 20.dp),
     ) {
-        Text(text = caption, color = Color.White)
+        Icon(imageVector = icon, contentDescription = caption, tint = Color.White, modifier = Modifier.size(28.dp))
+        Text(text = caption, color = Color.White, style = MaterialTheme.typography.labelMedium)
         Box(
             modifier =
                 Modifier
-                    .width(6.dp)
-                    .fillMaxHeight(0.4f)
-                    .clip(RoundedCornerShape(3.dp))
+                    .width(8.dp)
+                    .fillMaxHeight(0.5f)
+                    .clip(RoundedCornerShape(4.dp))
                     .background(Color(0x40FFFFFF)),
             contentAlignment = Alignment.BottomCenter,
         ) {
@@ -383,11 +405,15 @@ private fun BoxScope.VerticalLevelIndicator(
                     Modifier
                         .fillMaxWidth()
                         .fillMaxHeight(fraction.coerceIn(0f, 1f))
-                        .clip(RoundedCornerShape(3.dp))
+                        .clip(RoundedCornerShape(4.dp))
                         .background(Color.White),
             )
         }
-        Text(text = "${(fraction.coerceIn(0f, 1f) * 100).toInt()}%", color = Color.White)
+        Text(
+            text = "${(fraction.coerceIn(0f, 1f) * 100).toInt()}%",
+            color = Color.White,
+            style = MaterialTheme.typography.titleMedium,
+        )
     }
 }
 

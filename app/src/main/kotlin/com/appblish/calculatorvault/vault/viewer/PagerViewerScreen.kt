@@ -1141,7 +1141,6 @@ private fun MediaPlayerPage(
         Box(modifier = Modifier.fillMaxSize()) {
             VideoPlayerSurface(
                 player = player,
-                controlsVisible = controlsVisible,
                 onToggleControls = { controlsVisible = !controlsVisible },
                 locked = locked,
                 scale = scale,

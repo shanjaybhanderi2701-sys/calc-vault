@@ -7,6 +7,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -36,6 +37,8 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -43,7 +46,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -74,11 +79,18 @@ private const val AUTO_HIDE_MS = 3_500L
 private const val UNLOCK_PILL_HIDE_MS = 2_000L
 
 /**
- * CalcVault Phase B · Wave 3 · APP-350 — the controls overlay that sits above
- * [VideoPlayerSurface] (spec §5c / §6). Renders the scrim gradient, quick-control row,
- * ⋯ menu with track/aspect/speed submenus, speed chip dialog, playlist bottom-sheet, and the
- * center play/pause button. Auto-hides after [AUTO_HIDE_MS] ms of inactivity; any
- * interaction resets the timer (resetAutoHide increments the LaunchedEffect key).
+ * CalcVault Phase B · Wave 3 · APP-350, MX-Player redesign · APP-384 — the controls overlay that
+ * sits above [VideoPlayerSurface] (spec §5c / §6). MX-Player layout:
+ *  - a single large **center play/pause** (the only center affordance — no prev/rewind cluster;
+ *    the built-in PlayerView controller is fully off, APP-384 #2),
+ *  - a clean **bottom bar**: a full-width seekbar then a tidy control row grouped into transport
+ *    (prev · play/pause · next) and tools (lock · rotate · aspect · speed · full screen · mute),
+ *  - a **top bar**: back (start) and mini-player · playlist · speed-badge · ⋯ (end),
+ *  - the ⋯ menu split into **Playback settings** and a de-emphasized **File actions** group (#1).
+ *
+ * Auto-hides after [AUTO_HIDE_MS] ms of inactivity; any interaction resets the timer
+ * (resetAutoHide increments the LaunchedEffect key). While **locked** (#5) NONE of this chrome
+ * renders (`chromeVisible = controlsVisible && !locked`).
  *
  * The **lock overlay** ([VideoPlayerLockOverlay]) is a separate top-most composable — it must
  * intercept all pointer events *before* [VideoPlayerSurface]'s gesture layer sees them, so it
@@ -164,10 +176,31 @@ internal fun VideoPlayerControlsOverlay(
     var speedDialogVisible by remember { mutableStateOf(false) }
     var playlistSheetVisible by remember { mutableStateOf(false) }
 
+    // APP-384 · MX-Player bottom seekbar: poll the playhead while controls are visible so the
+    // full-width Slider tracks playback. Dragging the thumb latches [scrubbing] so the poll
+    // doesn't fight the finger; release commits the seek.
+    var positionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
+    var durationMs by remember { mutableLongStateOf(player.positiveDurationMs()) }
+    var scrubbing by remember { mutableStateOf(false) }
+    var scrubValueMs by remember { mutableFloatStateOf(0f) }
+    LaunchedEffect(player, controlsVisible) {
+        while (controlsVisible) {
+            if (!scrubbing) {
+                positionMs = player.currentPosition.coerceAtLeast(0L)
+                durationMs = player.positiveDurationMs()
+            }
+            delay(500)
+        }
+    }
+
+    // APP-384 #5 — Full immersive lock: while locked, NONE of the player chrome renders (just the
+    // video + the lock overlay's unlock affordance), so nothing can be triggered accidentally.
+    val chromeVisible = controlsVisible && !locked
+
     Box(modifier = modifier.fillMaxSize()) {
         // Bottom scrim gradient (sits behind quick-row).
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -182,7 +215,7 @@ internal fun VideoPlayerControlsOverlay(
 
         // Top scrim gradient (sits behind ⋯ menu / speed badge).
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopCenter),
@@ -197,7 +230,7 @@ internal fun VideoPlayerControlsOverlay(
 
         // ---- Top-left: back (exit the immersive player, APP-379) ----
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopStart),
@@ -217,112 +250,149 @@ internal fun VideoPlayerControlsOverlay(
             }
         }
 
-        // ---- §5c quick-control row ----
+        // ---- APP-384 · MX-Player bottom bar: full-width seekbar, then a grouped control row ----
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.BottomCenter),
         ) {
-            Row(
-                horizontalArrangement = Arrangement.SpaceEvenly,
-                verticalAlignment = Alignment.CenterVertically,
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(bottom = 72.dp, start = 4.dp, end = 4.dp),
+                    .padding(start = 12.dp, end = 12.dp, bottom = 20.dp),
             ) {
-                IconButton(onClick = {
-                    // §5d Previous: PlaylistEngine.manualPrev (always wraps) → pager switch.
-                    playlist.onPrevious()
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.SkipPrevious,
-                        contentDescription = "Previous",
-                        tint = Color.White,
+                // Full-width seekbar: elapsed / [========o----] / total.
+                val sliderMax = durationMs.coerceAtLeast(1L).toFloat()
+                val sliderValue = (if (scrubbing) scrubValueMs else positionMs.toFloat())
+                    .coerceIn(0f, sliderMax)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = VideoGestureMath.formatTime(sliderValue.toLong()),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
+                    )
+                    Slider(
+                        value = sliderValue,
+                        onValueChange = {
+                            scrubbing = true
+                            scrubValueMs = it
+                            resetAutoHide()
+                        },
+                        onValueChangeFinished = {
+                            player.seekTo(scrubValueMs.toLong())
+                            positionMs = scrubValueMs.toLong()
+                            scrubbing = false
+                            resetAutoHide()
+                        },
+                        valueRange = 0f..sliderMax,
+                        colors = SliderDefaults.colors(
+                            thumbColor = Color.White,
+                            activeTrackColor = Color.White,
+                            inactiveTrackColor = Color(0x66FFFFFF),
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 10.dp),
+                    )
+                    Text(
+                        text = VideoGestureMath.formatTime(durationMs),
+                        color = Color.White,
+                        style = MaterialTheme.typography.labelMedium,
                     )
                 }
-                // Lock screen: activates the lock overlay layer above this composable.
-                IconButton(onClick = {
-                    onLockChanged(true)
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.Unhide,
-                        contentDescription = "Lock screen",
-                        tint = Color.White,
-                    )
-                }
-                IconButton(onClick = {
-                    onRotationChanged(VideoScaleMath.nextRotation(rotationDegrees))
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.ScreenRotation,
-                        contentDescription = "Rotate",
-                        tint = Color.White,
-                    )
-                }
-                // Display-mode: quick Fit ⇄ Fill toggle (§5c).
-                IconButton(onClick = {
-                    onAspectModeChanged(VideoScaleMath.nextDisplayMode(aspectMode))
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.AspectRatio,
-                        contentDescription = "Display mode",
-                        tint = Color.White,
-                    )
-                }
-                // Full Screen: toggle the system status/navigation bars for a larger viewing area
-                // (APP-381 #4, design-reference "Full Screen").
-                IconButton(onClick = {
-                    onFullscreenChanged(!fullscreen)
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.Fullscreen,
-                        contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
-                        tint = Color.White,
-                    )
-                }
-                IconButton(onClick = {
-                    playlistSheetVisible = true
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = Icons.Filled.PlayArrow,
-                        contentDescription = "Playlist",
-                        tint = Color.White,
-                    )
-                }
-                IconButton(onClick = {
-                    onMutedChanged(!muted)
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = if (muted) VaultActionIcons.VolumeOff else VaultActionIcons.VolumeOn,
-                        contentDescription = if (muted) "Unmute" else "Mute",
-                        tint = Color.White,
-                    )
-                }
-                IconButton(onClick = {
-                    // §5d Next: PlaylistEngine.manualNext (always wraps) → pager switch.
-                    playlist.onNext()
-                    resetAutoHide()
-                }) {
-                    Icon(
-                        imageVector = VaultActionIcons.SkipNext,
-                        contentDescription = "Next",
-                        tint = Color.White,
-                    )
+
+                // Control row — two logical groups: transport (left), display/tools (right).
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    // Transport group: previous · play/pause · next.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {
+                            // §5d Previous: PlaylistEngine.manualPrev (always wraps) → pager switch.
+                            playlist.onPrevious()
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.SkipPrevious, "Previous", tint = Color.White)
+                        }
+                        IconButton(onClick = {
+                            if (player.isPlaying) player.pause() else player.play()
+                            resetAutoHide()
+                        }) {
+                            Icon(
+                                imageVector = if (isPlaying) VaultActionIcons.Pause else Icons.Filled.PlayArrow,
+                                contentDescription = if (isPlaying) "Pause" else "Play",
+                                tint = Color.White,
+                            )
+                        }
+                        IconButton(onClick = {
+                            // §5d Next: PlaylistEngine.manualNext (always wraps) → pager switch.
+                            playlist.onNext()
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.SkipNext, "Next", tint = Color.White)
+                        }
+                    }
+                    // Display/tools group: lock · rotate · aspect · speed · full screen · mute.
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        IconButton(onClick = {
+                            // Lock: activates the full-immersive lock overlay above this composable.
+                            onLockChanged(true)
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.Lock, "Lock controls", tint = Color.White)
+                        }
+                        IconButton(onClick = {
+                            onRotationChanged(VideoScaleMath.nextRotation(rotationDegrees))
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.ScreenRotation, "Rotate", tint = Color.White)
+                        }
+                        IconButton(onClick = {
+                            // Quick Fit ⇄ Fill toggle (§5c); full mode list lives in the ⋯ menu.
+                            onAspectModeChanged(VideoScaleMath.nextDisplayMode(aspectMode))
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.AspectRatio, "Aspect ratio", tint = Color.White)
+                        }
+                        IconButton(onClick = {
+                            speedDialogVisible = true
+                            resetAutoHide()
+                        }) {
+                            Icon(VaultActionIcons.Speed, "Playback speed", tint = Color.White)
+                        }
+                        IconButton(onClick = {
+                            // Full Screen: toggle the system bars for a larger viewing area
+                            // (APP-381 #4, design-reference "Full Screen").
+                            onFullscreenChanged(!fullscreen)
+                            resetAutoHide()
+                        }) {
+                            Icon(
+                                imageVector = VaultActionIcons.Fullscreen,
+                                contentDescription = if (fullscreen) "Exit full screen" else "Full screen",
+                                tint = Color.White,
+                            )
+                        }
+                        IconButton(onClick = {
+                            onMutedChanged(!muted)
+                            resetAutoHide()
+                        }) {
+                            Icon(
+                                imageVector = if (muted) VaultActionIcons.VolumeOff else VaultActionIcons.VolumeOn,
+                                contentDescription = if (muted) "Unmute" else "Mute",
+                                tint = Color.White,
+                            )
+                        }
+                    }
                 }
             }
         }
 
-        // ---- Top-right: speed badge + ⋯ menu ----
+        // ---- Top-right: mini player · playlist · speed badge · ⋯ menu ----
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.TopEnd),
@@ -339,6 +409,17 @@ internal fun VideoPlayerControlsOverlay(
                     Icon(
                         imageVector = VaultActionIcons.PictureInPicture,
                         contentDescription = "Mini player",
+                        tint = Color.White,
+                    )
+                }
+                // §5d Playlist: current-folder videos + order modes (moved off the bottom bar).
+                IconButton(onClick = {
+                    playlistSheetVisible = true
+                    resetAutoHide()
+                }) {
+                    Icon(
+                        imageVector = Icons.Filled.PlayArrow,
+                        contentDescription = "Playlist",
                         tint = Color.White,
                     )
                 }
@@ -372,6 +453,8 @@ internal fun VideoPlayerControlsOverlay(
                         expanded = moreMenuExpanded,
                         onDismissRequest = { moreMenuExpanded = false },
                     ) {
+                        // APP-384 #1(a) — PLAYBACK SETTINGS group (primary while watching).
+                        MenuSectionHeader("Playback settings")
                         DropdownMenuItem(
                             text = { Text("Subtitles") },
                             leadingIcon = {
@@ -384,6 +467,9 @@ internal fun VideoPlayerControlsOverlay(
                         )
                         DropdownMenuItem(
                             text = { Text("Audio track") },
+                            leadingIcon = {
+                                Icon(VaultActionIcons.VolumeOn, contentDescription = null)
+                            },
                             onClick = {
                                 moreMenuExpanded = false
                                 audioMenuExpanded = true
@@ -401,14 +487,19 @@ internal fun VideoPlayerControlsOverlay(
                         )
                         DropdownMenuItem(
                             text = { Text("Playback speed") },
+                            leadingIcon = {
+                                Icon(VaultActionIcons.Speed, contentDescription = null)
+                            },
                             onClick = {
                                 moreMenuExpanded = false
                                 speedDialogVisible = true
                             },
                         )
-                        // APP-379: the vault file actions live here in the temporary ⋯
-                        // overflow — reachable, but never a permanent bar over the video.
+                        // APP-384 #1(b) — FILE ACTIONS group, visually separated and
+                        // de-emphasized (secondary while watching). APP-379: reachable here in
+                        // the temporary ⋯ overflow — never a permanent bar over the video.
                         HorizontalDivider()
+                        MenuSectionHeader("File actions")
                         FileActionMenuItems(
                             fileActions = fileActions,
                             closeMenu = { moreMenuExpanded = false },
@@ -454,7 +545,7 @@ internal fun VideoPlayerControlsOverlay(
 
         // Center play/pause: shown when controls are visible (replaces built-in controller).
         AnimatedVisibility(
-            visible = controlsVisible,
+            visible = chromeVisible,
             enter = fadeIn(),
             exit = fadeOut(),
             modifier = Modifier.align(Alignment.Center),
@@ -770,4 +861,24 @@ private fun AspectRatioMenu(
             )
         }
     }
+}
+
+/**
+ * APP-384 #1 — a small, de-emphasized group label inside the ⋯ overflow, used to visually
+ * separate the **Playback settings** group from the secondary **File actions** group.
+ */
+@Composable
+private fun MenuSectionHeader(text: String) {
+    Text(
+        text = text.uppercase(),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
+    )
+}
+
+/** ExoPlayer duration in ms, clamped to a non-negative value (UNSET/live → 0). */
+private fun Player.positiveDurationMs(): Long {
+    val d = duration
+    return if (d > 0L) d else 0L
 }

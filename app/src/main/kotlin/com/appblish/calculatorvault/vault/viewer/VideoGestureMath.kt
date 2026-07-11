@@ -19,8 +19,8 @@ import kotlin.math.abs
  *    ratchet, each showing a brief indicator.
  *  - **Drag** → the *dominant axis* is latched once the finger passes touch-slop and cannot
  *    flip mid-gesture ([dominantAxis]), so a horizontal scrub never leaks into brightness:
- *      - **Vertical drag, RIGHT half** → screen brightness.
- *      - **Vertical drag, LEFT half** → media volume.
+ *      - **Vertical drag, LEFT half** → screen brightness (MX-Player convention, APP-384 #4).
+ *      - **Vertical drag, RIGHT half** → media volume.
  *      - **Horizontal drag (either half)** → scrub with a time preview.
  *
  * Pinch (two-finger) is intentionally *not* handled here — Wave 3 adds pinch-zoom, and these
