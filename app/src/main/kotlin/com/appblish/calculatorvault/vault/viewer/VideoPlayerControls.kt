@@ -63,6 +63,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
@@ -183,26 +184,40 @@ internal fun ThinSeekbar(
         )
 
         // ---- Gesture layer covering the whole touch area (tap-to-seek + press-drag-to-scrub) ----
-        // APP-398 (round 5a): one deterministic gesture loop handles BOTH tap and drag. The previous
-        // two-detector setup (detectTapGestures + detectHorizontalDragGestures) required crossing the
-        // horizontal touch-slop before the drag detector engaged, so on-device the thumb refused to
-        // grab under the finger (owner: "the seek bar is not draggable"). Here the thumb latches to
-        // the finger on the DOWN event (no slop gate — YouTube/MX behaviour: press = grab) and follows
-        // it continuously; a down+up with no movement is just a tap-to-jump. Every event for our
-        // pointer is consumed so the video-body swipe-to-seek gesture can never fight the scrub.
+        // APP-398 (round 5b): one deterministic gesture loop handles BOTH tap and drag, and it runs on
+        // the **Initial** pointer pass so it pre-empts every ancestor gesture.
+        //
+        // Round-5a (Main-pass consume) still failed on-device with a *regression*: dragging the seekbar
+        // shifted the whole screen. Root cause — the video page is a child of the viewer's
+        // [androidx.compose.foundation.pager.HorizontalPager] (userScrollEnabled while un-zoomed) and the
+        // pager's horizontal-scroll detector is an *ancestor*. A Main-pass consume happens too late in
+        // practice: the pager claimed the horizontal drag first and paged the whole layout, so the thumb
+        // never grabbed. Consuming on the Initial pass (root→leaf) marks every event handled *before* the
+        // pager's and the video-body's Main-pass detectors ever see it, so neither can start a drag that
+        // began inside the seekbar. This is the "seekbar consumes its own drag so the two don't fight"
+        // guarantee from the DoD, and it kills the page-shift regression.
+        //
+        // Behaviour: the thumb latches to the finger on the DOWN event (no slop gate — YouTube/MX
+        // "press = grab") and follows it continuously; a down+up with no movement is just a tap-to-jump.
         Box(
             modifier = Modifier
                 .matchParentSize()
                 .pointerInput(travelPx, thumbPx) {
                     awaitEachGesture {
-                        val down = awaitFirstDown(requireUnconsumed = false)
+                        // Initial pass: seize the gesture before the pager / body-swipe detectors.
+                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                         down.consume()
                         // Grab immediately: thumb + live time jump to the touch point.
                         onScrub(xToFraction(down.position.x))
                         while (true) {
-                            val event = awaitPointerEvent()
+                            val event = awaitPointerEvent(PointerEventPass.Initial)
                             val change = event.changes.firstOrNull { it.id == down.id }
-                            if (change == null || !change.pressed) break
+                            if (change == null) break
+                            if (!change.pressed) {
+                                // Consume the up too, so no ancestor reads a fling off the release.
+                                change.consume()
+                                break
+                            }
                             if (change.positionChanged()) {
                                 onScrub(xToFraction(change.position.x))
                             }
@@ -408,11 +423,23 @@ internal fun VideoPlayerControlsOverlay(
                 val sliderValue = (if (scrubbing) scrubValueMs else positionMs.toFloat())
                     .coerceIn(0f, sliderMax)
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        text = VideoGestureMath.formatTime(sliderValue.toLong()),
-                        color = Color.White,
-                        style = MaterialTheme.typography.labelMedium,
-                    )
+                    // APP-398 (round 5b) · no-layout-shift: the elapsed label grows as the scrub value
+                    // climbs (0:05 → 1:23:45), which would reflow this Row and slide the seekbar under
+                    // the finger mid-drag. Pin the elapsed slot to the (never-shorter) duration string —
+                    // an invisible sizer reserves that width so the seekbar's origin is rock-steady while
+                    // dragging.
+                    Box(contentAlignment = Alignment.CenterStart) {
+                        Text(
+                            text = VideoGestureMath.formatTime(durationMs),
+                            color = Color.Transparent,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                        Text(
+                            text = VideoGestureMath.formatTime(sliderValue.toLong()),
+                            color = Color.White,
+                            style = MaterialTheme.typography.labelMedium,
+                        )
+                    }
                     // APP-388 #1 / APP-395 #1 · thin seekbar: a 2dp progress line with a small round
                     // thumb (owner reference). [ThinSeekbar] anchors the track and thumb to one shared
                     // vertical centre, so the thumb stays centred on the track at every position and
