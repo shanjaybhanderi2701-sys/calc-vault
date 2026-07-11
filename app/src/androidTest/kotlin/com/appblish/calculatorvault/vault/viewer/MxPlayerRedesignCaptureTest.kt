@@ -6,22 +6,17 @@ import android.os.Looper
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.size
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.platform.testTag
-import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
-import androidx.compose.ui.unit.dp
 import androidx.media3.common.Player
 import androidx.media3.common.SimpleBasePlayer
 import androidx.media3.common.util.UnstableApi
@@ -46,6 +41,12 @@ import java.io.File
  * `adb pull` + upload them as artifacts (the same evidence path the chevron capture uses). The
  * arrangement itself is *asserted* by [MxPlayerRedesignDoDTest]; this class only *photographs* it.
  *
+ * Capture uses the whole-screen [android.app.UiAutomation.takeScreenshot] (not
+ * `captureToImage`) so it reliably grabs the ⋯ **DropdownMenu popup** (a separate window) and the
+ * [androidx.media3.ui.PlayerView] `AndroidView` surface — both of which a single-root Compose
+ * capture cannot. Each shot is its own `@Test` for a fresh activity. Every stage is best-effort
+ * (wrapped) so a capture hiccup never turns the instrumented job red.
+ *
  * Shots (suffixed with the emulator API level):
  *   1. `app384_bottom_bar_<api>.png`      — full-width seekbar + tidy control row (#3).
  *   2. `app384_overflow_groups_<api>.png` — ⋯ split into Playback settings / File actions (#1).
@@ -53,27 +54,48 @@ import java.io.File
  *   4. `app384_gesture_brightness_<api>.png` — left-edge vertical swipe overlay (#4).
  *   5. `app384_gesture_volume_<api>.png`     — right-edge vertical swipe overlay (#4).
  *   6. `app384_gesture_seek_<api>.png`       — horizontal swipe scrub overlay (#4).
- *
- * Capture is deliberately **best-effort** (every stage wrapped) so a capture hiccup on a given
- * emulator never turns the instrumented job red.
  */
 @RunWith(AndroidJUnit4::class)
 class MxPlayerRedesignCaptureTest {
     @get:Rule
     val compose = createComposeRule()
 
+    private val instrumentation = InstrumentationRegistry.getInstrumentation()
     private val suffix: String = "api${android.os.Build.VERSION.SDK_INT}"
 
     private fun outDir(): File {
-        val ctx = InstrumentationRegistry.getInstrumentation().targetContext
+        val ctx = instrumentation.targetContext
         runCatching { DoDTestSupport.grantAllFilesAccess(ctx) }
         return File(Environment.getExternalStorageDirectory(), "app384-evidence").also { it.mkdirs() }
     }
 
+    private fun writePng(name: String) {
+        val bmp: Bitmap = instrumentation.uiAutomation.takeScreenshot()
+        File(outDir(), name).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
+
+    /** Static overlay capture — safe to fully settle (no time-limited indicator on screen). */
     private fun snap(name: String) {
         runCatching {
-            val bmp: Bitmap = compose.onRoot().captureToImage().asAndroidBitmap()
-            File(outDir(), name).outputStream().use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
+            compose.waitForIdle()
+            instrumentation.waitForIdleSync()
+            // Let the compositor present the frame before grabbing the screen.
+            Thread.sleep(500)
+            writePng(name)
+        }
+    }
+
+    /**
+     * Gesture-indicator capture — the brightness/volume/seek overlays auto-hide ~650ms after the
+     * last drag event, and the auto-advancing compose clock means `waitForIdle` can run past that
+     * window. So this only syncs the instrumentation queue (renders the indicator frame) with a
+     * short real-time settle, then grabs the screen immediately — no `compose.waitForIdle()`.
+     */
+    private fun gestureSnap(name: String) {
+        runCatching {
+            instrumentation.waitForIdleSync()
+            Thread.sleep(120)
+            writePng(name)
         }
     }
 
@@ -138,21 +160,26 @@ class MxPlayerRedesignCaptureTest {
         compose.waitForIdle()
     }
 
+    /** (1) bottom bar — full-width seekbar + control row. */
     @androidx.annotation.OptIn(UnstableApi::class)
     @Test
-    fun captureBottomBarAndOverflow() {
+    fun captureBottomBar() {
         setOverlay(locked = false)
-        // (1) bottom bar — seekbar + control row.
         snap("app384_bottom_bar_$suffix.png")
+    }
 
-        // (2) ⋯ overflow, split into two labelled groups.
+    /** (2) ⋯ overflow, split into two labelled groups. */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    @Test
+    fun captureOverflowGroups() {
+        setOverlay(locked = false)
         runCatching {
             compose.onNodeWithContentDescription("More options").performClick()
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithText("FILE ACTIONS").fetchSemanticsNodes().isNotEmpty()
             }
-            snap("app384_overflow_groups_$suffix.png")
         }
+        snap("app384_overflow_groups_$suffix.png")
     }
 
     /** (3) locked — the lock overlay's "Tap to unlock" pill over the bare video. */
@@ -168,11 +195,6 @@ class MxPlayerRedesignCaptureTest {
             }
         }
         compose.waitForIdle()
-        runCatching {
-            compose.waitUntil(5_000) {
-                compose.onAllNodesWithText("Tap to unlock").fetchSemanticsNodes().isNotEmpty()
-            }
-        }
         snap("app384_locked_$suffix.png")
     }
 
@@ -180,7 +202,7 @@ class MxPlayerRedesignCaptureTest {
     private fun setSurface() {
         compose.setContent {
             CalculatorVaultTheme {
-                Box(Modifier.size(800.dp, 400.dp).testTag("surface").background(Color.Black)) {
+                Box(Modifier.fillMaxSize().testTag("surface").background(Color.Black)) {
                     VideoPlayerSurface(
                         player = CaptureInertPlayer(),
                         onToggleControls = {},
@@ -198,55 +220,62 @@ class MxPlayerRedesignCaptureTest {
         compose.waitForIdle()
     }
 
-    /** (4) the three gesture overlays — captured mid-gesture (pointer held down). */
+    /** (4a) Brightness — LEFT-edge vertical swipe up, captured mid-gesture (pointer held). */
     @androidx.annotation.OptIn(UnstableApi::class)
     @Test
-    fun captureGestureOverlays() {
-        // Brightness — LEFT-edge vertical swipe up.
+    fun captureGestureBrightness() {
+        setSurface()
         runCatching {
-            setSurface()
             compose.onNodeWithTag("surface").performTouchInput {
                 val x = width * 0.2f
                 down(Offset(x, height * 0.8f))
-                moveTo(Offset(x, height * 0.35f))
+                moveTo(Offset(x, height * 0.4f))
                 moveTo(Offset(x, height * 0.3f))
             }
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithText("Brightness").fetchSemanticsNodes().isNotEmpty()
             }
-            snap("app384_gesture_brightness_$suffix.png")
+            gestureSnap("app384_gesture_brightness_$suffix.png")
             compose.onNodeWithTag("surface").performTouchInput { up() }
         }
+    }
 
-        // Volume — RIGHT-edge vertical swipe up.
+    /** (4b) Volume — RIGHT-edge vertical swipe up. */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    @Test
+    fun captureGestureVolume() {
+        setSurface()
         runCatching {
-            setSurface()
             compose.onNodeWithTag("surface").performTouchInput {
                 val x = width * 0.8f
                 down(Offset(x, height * 0.8f))
-                moveTo(Offset(x, height * 0.35f))
+                moveTo(Offset(x, height * 0.4f))
                 moveTo(Offset(x, height * 0.3f))
             }
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithText("Volume").fetchSemanticsNodes().isNotEmpty()
             }
-            snap("app384_gesture_volume_$suffix.png")
+            gestureSnap("app384_gesture_volume_$suffix.png")
             compose.onNodeWithTag("surface").performTouchInput { up() }
         }
+    }
 
-        // Seek — horizontal swipe (shows the centered time/total scrub card).
+    /** (4c) Seek — horizontal swipe (centered time/total scrub card). */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    @Test
+    fun captureGestureSeek() {
+        setSurface()
         runCatching {
-            setSurface()
             compose.onNodeWithTag("surface").performTouchInput {
                 val y = height * 0.5f
                 down(Offset(width * 0.3f, y))
-                moveTo(Offset(width * 0.75f, y))
+                moveTo(Offset(width * 0.7f, y))
                 moveTo(Offset(width * 0.8f, y))
             }
             compose.waitUntil(5_000) {
                 compose.onAllNodesWithText(" / ", substring = true).fetchSemanticsNodes().isNotEmpty()
             }
-            snap("app384_gesture_seek_$suffix.png")
+            gestureSnap("app384_gesture_seek_$suffix.png")
             compose.onNodeWithTag("surface").performTouchInput { up() }
         }
     }
