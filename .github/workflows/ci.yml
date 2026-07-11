@@ -125,6 +125,9 @@ jobs:
             # APP-388: pull the round-3 polish screenshots written by Round3PolishCaptureTest
             # (thin seekbar, playlist thumbnails, modern playlist icon).
             adb pull /sdcard/app388-evidence ./app388-evidence || true
+            # APP-395: pull the cropped/zoomed seekbar centring screenshots written by
+            # SeekbarCenteringCaptureTest (thumb centred on track, at rest + mid-drag).
+            adb pull /sdcard/app395-evidence ./app395-evidence || true
             exit $gradle_code
 
       - name: Upload chevron on-device screenshots (APP-344)
@@ -151,6 +154,15 @@ jobs:
         with:
           name: app388-evidence-api-${{ matrix.api-level }}
           path: ./app388-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload seekbar centring screenshots (APP-395)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app395-evidence-api-${{ matrix.api-level }}
+          path: ./app395-evidence/
           if-no-files-found: ignore
           retention-days: 7
 

@@ -8,8 +8,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -41,7 +45,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -64,7 +67,10 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.media3.common.C
 import androidx.media3.common.Player
@@ -73,6 +79,7 @@ import androidx.media3.common.util.UnstableApi
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.delay
+import kotlin.math.roundToInt
 
 private val ControlScrim = Color(0xCC000000)
 private val BottomGradient = Brush.verticalGradient(
@@ -86,10 +93,121 @@ private const val UNLOCK_PILL_HIDE_MS = 2_000L
 
 // APP-388 #1 · thin seekbar dimensions/colors. A 2dp line with a 12dp round thumb replaces
 // the default Material Slider (≈4dp track / ≈20dp pill). Colors kept from the prior white bar.
+// APP-395 (round 4): the Material3 Slider slot API positioned the thumb and the custom track with
+// two independent vertical-offset computations, which drifted off each other on-device (owner: "seek
+// bar thumb not centred"). Replaced by [ThinSeekbar] — both the track and the thumb are laid out in
+// one Box and anchored to the SAME vertical centre line, so they can never diverge.
 private val SEEK_TRACK_HEIGHT = 2.dp
 private val SEEK_THUMB_DIAMETER = 12.dp
+
+// The invisible grab/touch area around the thin visuals — thumb + track are centred within it.
+private val SEEK_TOUCH_HEIGHT = 24.dp
 private val SeekActiveColor = Color.White
 private val SeekInactiveColor = Color(0x66FFFFFF)
+
+// APP-395 · test tags so an instrumented layout assertion can prove the thumb's vertical centre
+// matches the track's vertical centre (see SeekbarThumbCenteringDoDTest).
+internal const val SEEK_THUMB_TAG = "seek_thumb"
+internal const val SEEK_TRACK_TAG = "seek_track"
+
+/**
+ * APP-395 (round 4) · the thin video seekbar. Replaces the Material3 [androidx.compose.material3.Slider]
+ * whose slot API computed the thumb offset and the custom-track offset independently, letting the round
+ * thumb drift off the 2dp track vertically on-device.
+ *
+ * Centring guarantee: the track and the thumb live in ONE [Box] and are both anchored with a
+ * `CenterStart`/`Center` alignment, i.e. to the *same* vertical centre line of that box. There is no
+ * second, independent vertical-offset computation that could diverge — so the thumb's centre sits
+ * exactly on the track's centre at every [fraction] (start / mid / end) and while dragging. A layout
+ * assertion in `SeekbarThumbCenteringDoDTest` locks this to ±1px.
+ *
+ * @param fraction current progress in `0f..1f`.
+ * @param onScrub called with the touched fraction on tap and continuously during a drag.
+ * @param onScrubFinished called once the gesture ends (parent commits the latched scrub position).
+ */
+@Composable
+internal fun ThinSeekbar(
+    fraction: Float,
+    onScrub: (Float) -> Unit,
+    onScrubFinished: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val clamped = fraction.coerceIn(0f, 1f)
+    BoxWithConstraints(
+        modifier = modifier.height(SEEK_TOUCH_HEIGHT),
+        contentAlignment = Alignment.CenterStart,
+    ) {
+        val density = LocalDensity.current
+        val widthPx = constraints.maxWidth.toFloat()
+        val thumbPx = with(density) { SEEK_THUMB_DIAMETER.toPx() }
+        // The thumb centre travels between thumbPx/2 (fraction 0) and widthPx - thumbPx/2 (fraction 1);
+        // the same inset is applied to the track so the active-fill edge always meets the thumb centre.
+        val travelPx = (widthPx - thumbPx).coerceAtLeast(0f)
+        val thumbInset = SEEK_THUMB_DIAMETER / 2
+
+        fun xToFraction(x: Float): Float = if (travelPx <= 0f) 0f else ((x - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
+
+        // ---- Track (inactive + active), vertically centred within the touch area ----
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = thumbInset)
+                .height(SEEK_TRACK_HEIGHT)
+                .align(Alignment.CenterStart)
+                .testTag(SEEK_TRACK_TAG),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(SEEK_TRACK_HEIGHT)
+                    .clip(CircleShape)
+                    .background(SeekInactiveColor),
+            )
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth(clamped)
+                    .height(SEEK_TRACK_HEIGHT)
+                    .clip(CircleShape)
+                    .background(SeekActiveColor),
+            )
+        }
+
+        // ---- Thumb: same box, same centre line, only translated horizontally by the fraction ----
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterStart)
+                .offset { IntOffset(x = (travelPx * clamped).roundToInt(), y = 0) }
+                .size(SEEK_THUMB_DIAMETER)
+                .clip(CircleShape)
+                .background(SeekActiveColor)
+                .testTag(SEEK_THUMB_TAG),
+        )
+
+        // ---- Gesture layer covering the whole touch area (tap-to-seek + drag-to-scrub) ----
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .pointerInput(travelPx, thumbPx) {
+                    detectTapGestures(
+                        onTap = { pos ->
+                            onScrub(xToFraction(pos.x))
+                            onScrubFinished()
+                        },
+                    )
+                }.pointerInput(travelPx, thumbPx) {
+                    detectHorizontalDragGestures(
+                        onDragStart = { pos -> onScrub(xToFraction(pos.x)) },
+                        onHorizontalDrag = { change, _ ->
+                            onScrub(xToFraction(change.position.x))
+                            change.consume()
+                        },
+                        onDragEnd = { onScrubFinished() },
+                        onDragCancel = { onScrubFinished() },
+                    )
+                },
+        )
+    }
+}
 
 /**
  * CalcVault Phase B · Wave 3 · APP-350, MX-Player redesign · APP-384 — the controls overlay that
@@ -288,54 +406,23 @@ internal fun VideoPlayerControlsOverlay(
                         color = Color.White,
                         style = MaterialTheme.typography.labelMedium,
                     )
-                    // APP-388 #1 · thin seekbar: a 2dp progress line with a small round thumb
-                    // (owner reference). Keep the existing white colors/position — only the
-                    // default ~4dp track + ~20dp pill handle are replaced with slim slots.
+                    // APP-388 #1 / APP-395 #1 · thin seekbar: a 2dp progress line with a small round
+                    // thumb (owner reference). [ThinSeekbar] anchors the track and thumb to one shared
+                    // vertical centre, so the thumb stays centred on the track at every position and
+                    // during an active drag (round-4 fix).
                     val trackFraction = (sliderValue / sliderMax).coerceIn(0f, 1f)
-                    Slider(
-                        value = sliderValue,
-                        onValueChange = {
+                    ThinSeekbar(
+                        fraction = trackFraction,
+                        onScrub = { f ->
                             scrubbing = true
-                            scrubValueMs = it
+                            scrubValueMs = f * sliderMax
                             resetAutoHide()
                         },
-                        onValueChangeFinished = {
+                        onScrubFinished = {
                             player.seekTo(scrubValueMs.toLong())
                             positionMs = scrubValueMs.toLong()
                             scrubbing = false
                             resetAutoHide()
-                        },
-                        valueRange = 0f..sliderMax,
-                        thumb = {
-                            Box(
-                                modifier = Modifier
-                                    .size(SEEK_THUMB_DIAMETER)
-                                    .clip(CircleShape)
-                                    .background(SeekActiveColor),
-                            )
-                        },
-                        track = {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(SEEK_TRACK_HEIGHT),
-                                contentAlignment = Alignment.CenterStart,
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .height(SEEK_TRACK_HEIGHT)
-                                        .clip(CircleShape)
-                                        .background(SeekInactiveColor),
-                                )
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth(trackFraction)
-                                        .height(SEEK_TRACK_HEIGHT)
-                                        .clip(CircleShape)
-                                        .background(SeekActiveColor),
-                                )
-                            }
                         },
                         modifier = Modifier
                             .weight(1f)
