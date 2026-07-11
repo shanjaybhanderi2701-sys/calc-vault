@@ -368,7 +368,16 @@ private fun ViewerPager(
         HorizontalPager(
             state = pagerState,
             // Zoomed pan must not fight the pager: swiping is only a pager gesture at 1x.
-            userScrollEnabled = !zoomed,
+            //
+            // APP-398 (round 5c) · the ACTIVE video/audio player must NOT live inside a user-swipeable
+            // pager (owner: "once you're in the player, horizontal swipes should seek — not switch to
+            // the next video"). While the settled page is a video/audio, disable user paging so a
+            // horizontal drag on the body reaches [VideoPlayerSurface]'s swipe-to-seek gesture and the
+            // seekbar drag can never page the layout — the single root cause behind BOTH the
+            // body-swipe-switches-video and the seekbar-shifts-layout symptoms. Photo pages keep their
+            // swipe; switching videos still works via the transport Next/Prev buttons and the playlist
+            // (both call animateScrollToPage, which is programmatic and unaffected by this flag).
+            userScrollEnabled = !zoomed && !currentIsPlayable,
             // Keep the immediate neighbours composed (APP-299 P0-1) so the common
             // swipe-forward-then-back never even disposes the page — instant return.
             beyondViewportPageCount = 1,
