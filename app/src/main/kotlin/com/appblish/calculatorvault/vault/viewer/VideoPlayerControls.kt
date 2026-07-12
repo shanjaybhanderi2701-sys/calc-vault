@@ -1,5 +1,6 @@
 package com.appblish.calculatorvault.vault.viewer
 
+import android.util.Log
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -55,6 +56,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -115,6 +117,12 @@ private val SeekInactiveColor = Color(0x66FFFFFF)
 internal const val SEEK_THUMB_TAG = "seek_thumb"
 internal const val SEEK_BAR_TAG = "seek_bar"
 
+// APP-448 (board proof requirement #3) · every pointer event on the seekbar and every seekTo is
+// logged under this tag, so a long-video real-device drag can be verified from `adb logcat -s
+// VideoSeekbar` (down / move / up / cancel + a monotonic seek counter). Debug level: stripped by
+// the release log config, free in debug/instrumented runs.
+private const val SEEK_LOG_TAG = "VideoSeekbar"
+
 /**
  * APP-442 (R7 · APP-441 spec §2) — the video seekbar, **rebuilt from scratch**. Rounds 1–6 layered
  * gesture consumers, pager gates, throttles and preview thumbnails on top of each other until the
@@ -163,6 +171,10 @@ internal fun VideoSeekbar(
     // recomposes anything outside this composable.
     var isDragging by remember { mutableStateOf(false) }
     var dragPositionMs by remember { mutableLongStateOf(0L) }
+    // APP-448 (board proof requirement #3) · monotonic count of seeks this component has issued.
+    // Held across the pointerInput's Unit key so it survives recomposition; logged next to every
+    // release so `logcat -s VideoSeekbar` proves exactly-once-per-drag on the long-video matrix.
+    var seekCount by remember { mutableIntStateOf(0) }
 
     val safeDuration = durationMs.coerceAtLeast(1L)
 
@@ -202,12 +214,27 @@ internal fun VideoSeekbar(
             // fraction 1; the drawn track uses the same inset so the active fill always meets the thumb.
             val travelPx = (widthPx - 2f * edgePx - thumbPx).coerceAtLeast(0f)
 
+            // APP-448 (spec fix #2 — the *self-inflicted* cancel) · The gesture below is keyed on a
+            // stable Unit, so a geometry/duration refresh mid-drag (a long video buffering refines its
+            // reported `duration`; a rotation refines `width`) can NEVER tear down and restart the
+            // pointerInput — which used to surface the release as a Cancel, so `seekTo` never fired.
+            // The live values are read through these updated-state refs instead, so the in-flight
+            // positionFromX math always uses the latest geometry without a relaunch.
+            val travelPxRef = rememberUpdatedState(travelPx)
+            val edgePxRef = rememberUpdatedState(edgePx)
+            val thumbPxRef = rememberUpdatedState(thumbPx)
+            val durationRef = rememberUpdatedState(safeDuration)
+
             // positionFromX (spec §2): map a touch x to a clip position in ms. Pure math, no player read.
             // A touch in either end gutter clamps to 0/duration, so an imprecise press near an edge grabs.
+            // Reads geometry/duration through the refs (see above) so the closure captured once by the
+            // Unit-keyed pointerInput always computes against live values.
             fun positionFromX(x: Float): Long {
-                if (travelPx <= 0f) return 0L
-                val fraction = ((x - edgePx - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
-                return (fraction * safeDuration).toLong().coerceIn(0L, safeDuration)
+                val travel = travelPxRef.value
+                if (travel <= 0f) return 0L
+                val duration = durationRef.value
+                val fraction = ((x - edgePxRef.value - thumbPxRef.value / 2f) / travel).coerceIn(0f, 1f)
+                return (fraction * duration).toLong().coerceIn(0L, duration)
             }
 
             // Deferred readers: these lambdas run in the layout/draw phase, so changing dragPositionMs
@@ -247,20 +274,29 @@ internal fun VideoSeekbar(
             )
 
             // ---- Gesture owner: the four events (spec §2), consuming on the Initial pass ----
+            // APP-448 (spec fix #2) · Keyed on a **stable Unit** — NOT (travelPx, safeDuration) —
+            // so an in-flight drag is never torn down and restarted (which surfaced as a Cancel) by a
+            // geometry/duration refresh. Live geometry is read via the refs in positionFromX above.
             Box(
                 modifier = Modifier
                     .matchParentSize()
-                    .pointerInput(travelPx, safeDuration) {
+                    .pointerInput(Unit) {
                         awaitEachGesture {
                             // Initial pass → seize before the pager / body-swipe (Main-pass) detectors.
                             val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                             // DOWN: start dragging, jump to the touch point. No seek. No player call.
+                            // Flipping isDragging + onDraggingChanged(true) HERE, at DOWN on the Initial
+                            // pass (spec fix #3), makes the hoisted `seekbarDragging` true before any
+                            // competitor (pager / VideoPlayerSurface scrub layer) crosses touch-slop —
+                            // so they self-disable and can no longer cancel this pointer (spec #1/#2).
                             dragPositionMs = positionFromX(down.position.x)
                             isDragging = true
                             onDraggingChanged(true)
                             down.consume()
+                            Log.d(SEEK_LOG_TAG, "down x=${down.position.x} -> ${dragPositionMs}ms")
 
                             var released = false
+                            var moves = 0
                             while (true) {
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
@@ -271,17 +307,31 @@ internal fun VideoSeekbar(
                                     // as a non-pressed change, so require the event type to be Release.
                                     released = event.type == PointerEventType.Release
                                     change.consume()
+                                    val endMsg =
+                                        if (released) {
+                                            "up -> ${dragPositionMs}ms (after $moves moves)"
+                                        } else {
+                                            "cancel (type=${event.type}, after $moves moves) — NO seek"
+                                        }
+                                    Log.d(SEEK_LOG_TAG, endMsg)
                                     break
                                 }
                                 if (change.positionChanged()) {
                                     // MOVE: pure UI math only.
                                     dragPositionMs = positionFromX(change.position.x)
+                                    moves++
+                                    Log.d(SEEK_LOG_TAG, "move x=${change.position.x} -> ${dragPositionMs}ms")
                                 }
                                 change.consume()
                             }
 
                             // UP → exactly ONE seek to the final position. CANCEL → no seek.
-                            if (released) onSeek(dragPositionMs.coerceIn(0L, safeDuration))
+                            if (released) {
+                                val target = dragPositionMs.coerceIn(0L, durationRef.value)
+                                seekCount++
+                                Log.d(SEEK_LOG_TAG, "seekTo ${target}ms (seekCount=$seekCount)")
+                                onSeek(target)
+                            }
                             isDragging = false
                             onDraggingChanged(false)
                         }
@@ -345,6 +395,11 @@ internal fun VideoPlayerControlsOverlay(
     // APP-388 #2: per-row playlist thumbnails via the folder-grid encrypted-thumbnail pipeline
     // (VaultThumbnailPipeline). Null → rows fall back to a plain glyph (e.g. previews/tests).
     loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)? = null,
+    // APP-448 · the seekbar-drag signal, HOISTED so the whole player stack shares ONE source of
+    // truth. Fired at drag start/end; the parent uses it to structurally disable the pager swipe and
+    // the VideoPlayerSurface scrub layer for the duration of a seek drag (spec fix #1). Defaulted so
+    // the assembled-stack test and any lone caller need not wire it.
+    onSeekbarDraggingChanged: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -502,7 +557,11 @@ internal fun VideoPlayerControlsOverlay(
                             resetAutoHide()
                         },
                         onDraggingChanged = { dragging ->
+                            // Local: pause auto-hide for the whole drag. Hoisted (APP-448): tell the
+                            // parent so it can disable the pager swipe + the surface scrub layer — the
+                            // structural fix that stops a competitor cancelling the seek pointer.
                             seekbarDragging = dragging
+                            onSeekbarDraggingChanged(dragging)
                             resetAutoHide()
                         },
                         modifier = Modifier.weight(1f),

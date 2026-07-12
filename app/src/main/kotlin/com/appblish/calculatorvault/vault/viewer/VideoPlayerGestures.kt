@@ -92,6 +92,12 @@ internal fun VideoPlayerSurface(
     onPinch: (newScale: Float, newPanX: Float, newPanY: Float) -> Unit,
     resizeMode: Int,
     rotationDegrees: Int,
+    // APP-448 (spec fix #1) · true while the bottom seekbar is being dragged. This scrub/tap/volume
+    // layer is a **parallel** gesture arbiter — its `awaitFirstDown(requireUnconsumed = false)` used
+    // to start a competing gesture on the SAME pointer as an in-progress seek drag, and the
+    // arbitration between the two surfaced the seek's release as a Cancel (so `seekTo` never fired).
+    // While a seek drag owns the pointer this whole layer turns OFF, removing the arbiter entirely.
+    seekbarDragging: Boolean = false,
 ) {
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
@@ -203,8 +209,14 @@ internal fun VideoPlayerSurface(
             modifier =
                 Modifier
                     .fillMaxSize()
-                    .pointerInput(surfaceSize, locked) {
-                        if (locked) return@pointerInput
+                    .pointerInput(surfaceSize, locked, seekbarDragging) {
+                        // APP-448 (spec fix #1) · Skip this entire layer while locked OR while a seek
+                        // drag owns the pointer. Keying on `seekbarDragging` relaunches this
+                        // pointerInput the instant a drag starts, tearing down any competing gesture
+                        // this layer had begun on the same pointer — so it can no longer cancel the
+                        // seek. The seekbar flips the flag at DOWN on the Initial pass (before this
+                        // Main-pass layer crosses slop), so the hand-off is race-free.
+                        if (locked || seekbarDragging) return@pointerInput
                         awaitEachGesture {
                             val down = awaitFirstDown(requireUnconsumed = false)
 
