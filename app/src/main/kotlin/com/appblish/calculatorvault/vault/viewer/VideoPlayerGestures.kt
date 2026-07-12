@@ -53,6 +53,8 @@ import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.PlayerView
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
+import com.appblish.playerkit.VideoGestureMath
+import com.appblish.playerkit.VideoZoomMath
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.hypot
 import android.graphics.Color as AndroidColor

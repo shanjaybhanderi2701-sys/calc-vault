@@ -96,6 +96,10 @@ dependencies {
     implementation(libs.androidx.media3.ui)
     implementation(libs.androidx.media3.datasource)
 
+    // Shared Media3 video-player kit (gesture/scale/zoom math + PlaybackSource seam), vendored via
+    // git subtree from canonical player-kit (APP-413). CalcVault plugs in EncryptedVaultPlaybackSource.
+    implementation(project(":playerkit"))
+
     val composeBom = platform(libs.androidx.compose.bom)
     implementation(composeBom)
     androidTestImplementation(composeBom)

@@ -80,6 +80,8 @@ import androidx.media3.common.util.UnstableApi
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.vault.media.VideoStoryboard
 import com.appblish.calculatorvault.vault.model.VaultItem
+import com.appblish.playerkit.VideoGestureMath
+import com.appblish.playerkit.VideoScaleMath
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
 
