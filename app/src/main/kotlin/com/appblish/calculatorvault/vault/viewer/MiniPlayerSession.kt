@@ -7,14 +7,13 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.lifecycle.ViewModel
-import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.MediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.model.VaultCategory
+import com.appblish.playerkit.progressiveMediaSource
 
 /**
  * CalcVault Phase B · Wave 4 · APP-351 — the **in-app Mini Player** session (spec §5c),
@@ -244,6 +243,5 @@ class MiniPlayerSession : ViewModel() {
  */
 @androidx.annotation.OptIn(UnstableApi::class)
 internal fun buildVaultVideoSource(itemId: String): MediaSource =
-    ProgressiveMediaSource
-        .Factory(EncryptedVaultDataSource.Factory { id -> VaultGraph.contentRepository.openBlobReader(id) })
-        .createMediaSource(MediaItem.fromUri(EncryptedVaultDataSource.vaultMediaUri(itemId)))
+    EncryptedVaultPlaybackSource(itemId) { id -> VaultGraph.contentRepository.openBlobReader(id) }
+        .progressiveMediaSource()

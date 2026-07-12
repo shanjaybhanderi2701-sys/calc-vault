@@ -1,11 +1,11 @@
-package com.appblish.calculatorvault.vault.viewer
+package com.appblish.playerkit
 
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * APP-350 (Wave 3) — pinch-zoom / pan clamp math (spec §5: "pinch-to-zoom ... pannable when
- * zoomed"), pinned on the JVM so the DoD "pinch-to-zoom zooms and pans when zoomed" is proven
+ * APP-402 — pinch-zoom / pan clamp math (extracted from the origin app, spec §5: "pinch-to-zoom ...
+ * pannable when zoomed"), pinned on the JVM so "pinch-to-zoom zooms and pans when zoomed" is proven
  * by the clamp rules rather than only by device feel.
  */
 class VideoZoomMathTest {
@@ -25,7 +25,7 @@ class VideoZoomMathTest {
     @Test
     fun `no pan room at 1x, grows with scale`() {
         assertThat(VideoZoomMath.maxPanX(1000f, 1.0f)).isEqualTo(0f)
-        assertThat(VideoZoomMath.maxPanX(1000f, 2.0f)).isEqualTo(500f) // (2000-1000)/2
+        assertThat(VideoZoomMath.maxPanX(1000f, 2.0f)).isEqualTo(500f)
         assertThat(VideoZoomMath.maxPanY(800f, 2.0f)).isEqualTo(400f)
     }
 
@@ -44,13 +44,13 @@ class VideoZoomMathTest {
                 panX = 0f,
                 panY = 0f,
                 pinchZoom = 2.0f,
-                panDeltaX = 10_000f, // way past the edge
+                panDeltaX = 10_000f,
                 panDeltaY = 0f,
                 containerW = 1000f,
                 containerH = 800f,
             )
         assertThat(scale).isEqualTo(2.0f)
-        assertThat(x).isEqualTo(500f) // pinned to the max reachable pan
+        assertThat(x).isEqualTo(500f)
         assertThat(y).isEqualTo(0f)
     }
 
@@ -61,7 +61,7 @@ class VideoZoomMathTest {
                 scale = 2.0f,
                 panX = 300f,
                 panY = 120f,
-                pinchZoom = 0.1f, // collapses back to 1x
+                pinchZoom = 0.1f,
                 panDeltaX = 50f,
                 panDeltaY = 50f,
                 containerW = 1000f,

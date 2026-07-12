@@ -1,17 +1,17 @@
-package com.appblish.calculatorvault.vault.viewer
+package com.appblish.playerkit
 
 /**
- * CalcVault Phase B · Wave 3 · APP-350 — pure pinch-to-zoom / pan core for the video surface
- * (spec §5: "pinch-to-zoom to zoom into the video freely, pannable when zoomed"). Kept
- * side-effect-free so the clamp math is unit-testable on the JVM; the Compose layer feeds it
- * raw `Transformable`/`detectTransformGestures` deltas and applies the returned scale/offset
- * to `graphicsLayer`.
+ * Pure pinch-to-zoom / pan core for the shared video surface (APP-402, extracted verbatim from
+ * the origin app, spec §5: "pinch-to-zoom to zoom into the video freely, pannable when zoomed"). Kept
+ * side-effect-free so the clamp math is unit-testable on the JVM; the Compose layer feeds it raw
+ * `Transformable`/`detectTransformGestures` deltas and applies the returned scale/offset to
+ * `graphicsLayer`.
  *
- * **Coexistence with Wave-2 gestures (spec §3).** Wave 2 deliberately handles only
- * *single-pointer* drags (scrub / brightness / volume) and leaves multi-touch free (see
- * [VideoPlayerGestures]). Pinch is a *two-pointer* gesture, so the two never fight: the
- * dispatcher routes ≥2 active pointers here and 1 pointer to [VideoGestureMath]. When zoomed
- * back to [MIN_SCALE] the pan resets to centre so the video can never be stranded off-screen.
+ * **Coexistence with single-pointer gestures.** [VideoGestureMath] handles only single-pointer drags
+ * (scrub / brightness / volume) and leaves multi-touch free. Pinch is a two-pointer gesture, so the
+ * two never fight: the dispatcher routes ≥2 active pointers here and 1 pointer to [VideoGestureMath].
+ * When zoomed back to [MIN_SCALE] the pan resets to centre so the video can never be stranded
+ * off-screen.
  */
 object VideoZoomMath {
     /** At 1× the video sits exactly as its [VideoScaleMath.AspectMode] lays it out — no zoom. */
@@ -30,9 +30,9 @@ object VideoZoomMath {
     fun isZoomed(scale: Float): Boolean = scale > MIN_SCALE + ZOOM_EPSILON
 
     /**
-     * Max |translation| from centre, per axis, that keeps a [containerW]×[containerH] surface
-     * scaled by [scale] from being panned past its own edge into empty space. Zero on an axis
-     * when un-zoomed (nothing overflows), so [clampPan] pins the video centred at 1×.
+     * Max |translation| from centre, per axis, that keeps a [containerW]×[containerH] surface scaled
+     * by [scale] from being panned past its own edge into empty space. Zero on an axis when un-zoomed
+     * (nothing overflows), so [clampPan] pins the video centred at 1×.
      */
     fun maxPanX(
         containerW: Float,
@@ -54,8 +54,8 @@ object VideoZoomMath {
 
     /**
      * Resolves a full pinch update in one call: applies [pinchZoom] to [scale], clamps it, then
-     * clamps the panned offset to the new bounds. When the result is back at 1× the offset snaps
-     * to (0, 0) so releasing a pinch always re-centres the video.
+     * clamps the panned offset to the new bounds. When the result is back at 1× the offset snaps to
+     * (0, 0) so releasing a pinch always re-centres the video.
      *
      * @return Triple(newScale, newPanX, newPanY).
      */
