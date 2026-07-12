@@ -22,6 +22,7 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.appblish.calculatorvault.ui.theme.CalculatorVaultTheme
+import com.appblish.playerkit.VideoScaleMath
 import com.google.common.truth.Truth.assertThat
 import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
