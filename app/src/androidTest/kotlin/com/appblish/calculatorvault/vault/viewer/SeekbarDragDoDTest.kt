@@ -45,6 +45,11 @@ import org.junit.runner.RunWith
  *    (`userScrollEnabled = true`), yet a horizontal drag that starts on the seekbar must NOT page —
  *    the seekbar consumes the pointer on the Initial pass before the pager can claim it.
  *
+ * APP-448 adds [longDrag_whenPlaybackGoesInactiveMidDrag_stillSeeksOnce_pagerNeverPages], which wires
+ * the stack the way [PagerViewerScreen] does (`userScrollEnabled = !playerActive && !seekbarDragging`,
+ * plus `seekbarDragging` fed to [VideoPlayerSurface]) and flips `playerActive` FALSE mid-drag to
+ * reproduce the long-video **buffering steal** — the failure the short-clip tests never triggered.
+ *
  * The overlay runs an infinite ~2 Hz playhead poll (a `while (controlsVisible) { … delay }`), so the
  * test freezes the clock (`autoAdvance = false`) and steps frames manually; the poll and 3.5 s
  * auto-hide never fire within a single-frame step, and `waitForIdle()` (which would spin on the poll
@@ -124,6 +129,126 @@ class SeekbarDragDoDTest {
         compose.mainClock.advanceTimeByFrame()
     }
 
+    /**
+     * APP-448 — the **structural** regression that the isolated/short-clip tests missed for seven
+     * rounds. This harness wires the stack exactly as [PagerViewerScreen] does in production:
+     *  - `playerActive` gates the pager (starts TRUE = playing, so paging is locked as it is once a
+     *    video plays), and `seekbarDragging` gates it too — `userScrollEnabled =
+     *    !playerActive && !seekbarDragging`.
+     *  - The **buffering steal** is simulated: the moment the seek drag starts, `playerActive` flips
+     *    FALSE (a long video buffering mid-drag makes ExoPlayer report `isPlaying = false`). BEFORE
+     *    the APP-448 fix that alone re-opened the pager → it stole the long horizontal drag →
+     *    cancelled the seek pointer → `seekTo` never fired. The `!seekbarDragging` guard is what keeps
+     *    the pager locked anyway, so the drag survives and seeks exactly once on release.
+     *  - `seekbarDragging` is also handed to [VideoPlayerSurface] so its parallel scrub arbiter is
+     *    off for the whole drag.
+     */
+    @androidx.annotation.OptIn(UnstableApi::class)
+    private fun setContentProductionWired(player: Player) {
+        compose.mainClock.autoAdvance = false
+        compose.setContent {
+            CalculatorVaultTheme {
+                pagerState = rememberPagerState(pageCount = { 2 })
+                // The hoisted signals, mirroring ViewerPager/MediaPlayerPage exactly.
+                var seekbarDragging by remember { mutableStateOf(false) }
+                var playerActive by remember { mutableStateOf(true) }
+                HorizontalPager(
+                    state = pagerState,
+                    // Production gate: playback OR a seek drag locks paging. The drag flips
+                    // playerActive false (buffering), so ONLY !seekbarDragging keeps it locked.
+                    userScrollEnabled = !playerActive && !seekbarDragging,
+                    modifier = Modifier.fillMaxSize(),
+                ) { page ->
+                    if (page == 0) {
+                        var controlsVisible by remember { mutableStateOf(true) }
+                        Box(Modifier.fillMaxSize()) {
+                            VideoPlayerSurface(
+                                player = player,
+                                onToggleControls = { controlsVisible = !controlsVisible },
+                                locked = false,
+                                scale = 1f,
+                                panX = 0f,
+                                panY = 0f,
+                                onPinch = { _, _, _ -> },
+                                resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT,
+                                rotationDegrees = 0,
+                                seekbarDragging = seekbarDragging,
+                            )
+                            VideoPlayerControlsOverlay(
+                                player = player,
+                                controlsVisible = controlsVisible,
+                                onToggleControls = { controlsVisible = !controlsVisible },
+                                fileActions = inertFileActions(),
+                                locked = false,
+                                onLockChanged = {},
+                                speed = 1f,
+                                onSpeedChanged = {},
+                                aspectMode = VideoScaleMath.AspectMode.FIT,
+                                onAspectModeChanged = {},
+                                rotationDegrees = 0,
+                                onRotationChanged = {},
+                                muted = false,
+                                onMutedChanged = {},
+                                fullscreen = false,
+                                onFullscreenChanged = {},
+                                playlist = inertPlaylist(),
+                                currentSubtitleLabel = null,
+                                onLoadDeviceSubtitle = {},
+                                onLoadVaultSubtitle = {},
+                                onClearSubtitle = {},
+                                onMinimize = {},
+                                loadThumbnail = null,
+                                onSeekbarDraggingChanged = { dragging ->
+                                    seekbarDragging = dragging
+                                    // The steal: a long video buffers the instant the drag begins, so
+                                    // ExoPlayer reports not-playing → playerActive false. Only the
+                                    // seekbarDragging guard now keeps the pager from paging.
+                                    if (dragging) playerActive = false
+                                },
+                            )
+                        }
+                    } else {
+                        Box(Modifier.fillMaxSize())
+                    }
+                }
+            }
+        }
+        compose.mainClock.advanceTimeByFrame()
+        compose.mainClock.advanceTimeByFrame()
+    }
+
+    @Test
+    fun longDrag_whenPlaybackGoesInactiveMidDrag_stillSeeksOnce_pagerNeverPages() {
+        // The exact reported failure: a long video, a full-width drag, buffering mid-drag. Asserts the
+        // structural fix (spec #1): the pager stays locked via !seekbarDragging even though
+        // playerActive flipped false, so the drag is never stolen and seeks exactly once on release.
+        val player = CountingSeekPlayer(duration, initialPositionMs = 0L, playing = true)
+        setContentProductionWired(player)
+
+        val bar = compose.onNodeWithTag(SEEK_BAR_TAG)
+        bar.performTouchInput {
+            down(Offset(width * 0.03f, centerY))
+            val steps = 30
+            for (i in 1..steps) {
+                moveTo(Offset(width * (0.03f + 0.94f * i / steps), centerY))
+            }
+        }
+        compose.mainClock.advanceTimeByFrame()
+
+        // No seek during the drag; the pager did NOT page despite playback going inactive mid-drag.
+        assertThat(player.seekCount).isEqualTo(0)
+        assertThat(pagerState.currentPage).isEqualTo(0)
+
+        bar.performTouchInput { up() }
+        compose.mainClock.advanceTimeByFrame()
+
+        // Release → exactly ONE seek near the right edge; the gesture ended as a real UP, not a Cancel.
+        assertThat(player.seekCount).isEqualTo(1)
+        assertThat(player.contentPos).isGreaterThan((duration * 0.7f).toLong())
+        assertThat(player.contentPos).isAtMost(duration)
+        assertThat(pagerState.currentPage).isEqualTo(0)
+    }
+
     @Test
     fun realDragOnAssembledStack_zeroSeeksDuringDrag_oneOnRelease_pagerNeverPages() {
         val player = CountingSeekPlayer(duration, initialPositionMs = 0L, playing = true)
@@ -162,8 +287,18 @@ class SeekbarDragDoDTest {
 
     @Test
     fun canceledDrag_firesZeroSeeks() {
-        // Spec §2: a pointer CANCEL (system/ancestor steals the pointer mid-drag) is NOT a release —
-        // no seek fires and the thumb is left to snap back to the player position.
+        // Spec §2 (APP-447): a pointer CANCEL — system/ancestor steals the gesture mid-drag — is NOT a
+        // release, so no seek fires and the thumb snaps back to the player position.
+        //
+        // APP-448 — why this test is satisfiable where a naive `event.type == Release` guard made it
+        // impossible: on Compose ui 1.7.6 the compose-ui-test `cancel()` DSL delivers a terminal
+        // non-pressed change whose `event.type` is `Release` (identical to `up()`), BUT it arrives
+        // already **consumed** (verified via logcat on emulator API 30/35: cancel → `isConsumed=true`,
+        // up → `isConsumed=false`). The production guard is now `change.changedToUp()`
+        // (`!isConsumed && !pressed && previousPressed`), which is false for the pre-consumed cancel and
+        // true for a genuine up — so this test and `realDragOnAssembledStack…oneOnRelease` are both
+        // satisfiable from the same DSL. It also matches the real steal: an ancestor that consumes the
+        // pointer is exactly a consumed terminal change → no seek.
         val player = CountingSeekPlayer(duration, initialPositionMs = 0L, playing = true)
         setContent(player)
 
@@ -175,7 +310,7 @@ class SeekbarDragDoDTest {
         }
         compose.mainClock.advanceTimeByFrame()
 
-        // Cancel must not be mistaken for a release: zero seeks, playhead untouched.
+        // Cancel must not be mistaken for a release: zero seeks, playhead untouched, no page.
         assertThat(player.seekCount).isEqualTo(0)
         assertThat(player.contentPos).isEqualTo(0L)
         assertThat(pagerState.currentPage).isEqualTo(0)

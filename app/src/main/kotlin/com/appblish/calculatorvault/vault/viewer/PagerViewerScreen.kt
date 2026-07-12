@@ -271,6 +271,12 @@ private fun ViewerPager(
     // browse (not playing) → the pager is swipeable so the user can flick between videos; an
     // active player → paging is locked so a horizontal drag belongs to seek/scrub, not next-video.
     var playerActive by remember { mutableStateOf(false) }
+    // APP-448: true while the bottom seekbar is being dragged, reported up from the settled
+    // [VideoPage]. It gates the pager swipe INDEPENDENTLY of [playerActive] (which follows ExoPlayer
+    // isPlaying and flips false on buffering): a long video that buffers mid-drag must NOT re-open the
+    // pager and steal (→ cancel) the seek pointer. This is the structural fix — the pager cannot page
+    // during a seek drag regardless of playback state (spec fix #1).
+    var seekbarDragging by remember { mutableStateOf(false) }
     var chromeVisible by remember { mutableStateOf(true) }
     // The settled photo's display rotation, seeded from its **persisted** net orientation
     // (W3-E, spec §2.2) and accumulated per ⟳ tap. Kept un-modded so the 200ms turn
@@ -359,6 +365,9 @@ private fun ViewerPager(
     LaunchedEffect(pagerState.settledPage) {
         zoomed = false
         playerActive = false
+        // A settle can only complete once no drag owns the pointer, but clear defensively so a stale
+        // true can never wedge the pager off (APP-448).
+        seekbarDragging = false
         rotationDegrees = state.pages.getOrNull(pagerState.settledPage)?.rotationDegrees ?: 0
     }
     // Zooming hides the chrome so it never floats over an inspected photo; returning to 1×
@@ -403,7 +412,12 @@ private fun ViewerPager(
             //    the part the owner confirmed correct; kept, now keyed on real playback).
             // Switching videos still works via the transport Next/Prev + playlist (both call
             // animateScrollToPage, which is programmatic and unaffected by this flag).
-            userScrollEnabled = !zoomed && !playerActive,
+            //
+            // APP-448 (spec fix #1): `!seekbarDragging` is the structural guarantee — the pager can
+            // never page while a seek drag is in flight, EVEN if `playerActive` flips false because a
+            // long video buffered mid-drag. Without it, a buffering long video re-opened the pager,
+            // which stole the long horizontal drag and cancelled the seek pointer (the reported bug).
+            userScrollEnabled = !zoomed && !playerActive && !seekbarDragging,
             // Keep the immediate neighbours composed (APP-299 P0-1) so the common
             // swipe-forward-then-back never even disposes the page — instant return.
             beyondViewportPageCount = 1,
@@ -429,6 +443,9 @@ private fun ViewerPager(
                 // APP-428: only the settled video/audio page reports its live playback state,
                 // which drives the pager's swipe gate above.
                 onPlayingChanged = { playerActive = it },
+                // APP-448: the settled player reports seekbar-drag start/end so the pager gate can
+                // lock paging for the whole drag (independent of playback/buffering state).
+                onSeekbarDraggingChanged = { seekbarDragging = it },
             )
         }
 
@@ -505,6 +522,7 @@ private fun ViewerPage(
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
     onPlayingChanged: (Boolean) -> Unit,
+    onSeekbarDraggingChanged: (Boolean) -> Unit,
 ) {
     val colors = VaultTheme.colors
     Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
@@ -527,6 +545,7 @@ private fun ViewerPage(
                     fileActions = fileActions,
                     playlist = playlist,
                     onPlayingChanged = onPlayingChanged,
+                    onSeekbarDraggingChanged = onSeekbarDraggingChanged,
                 )
             is PageContent.Bytes ->
                 when (item.category) {
@@ -759,6 +778,7 @@ private fun VideoPage(
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
     onPlayingChanged: (Boolean) -> Unit,
+    onSeekbarDraggingChanged: (Boolean) -> Unit,
 ) {
     // Wave 4 (APP-351): Expand from the mini player must resume the full player immediately —
     // start in the playing state (adopting the session's live player) instead of the preview.
@@ -780,7 +800,7 @@ private fun VideoPage(
         if (!isCurrent) playing = false
     }
     if (active) {
-        MediaPlayerPage(item.id, fileActions, playlist)
+        MediaPlayerPage(item.id, fileActions, playlist, onSeekbarDraggingChanged)
     } else {
         VideoPreviewPage(
             item = item,
@@ -1000,6 +1020,7 @@ private fun MediaPlayerPage(
     itemId: String,
     fileActions: ViewerFileActions,
     playlist: VideoPlaylistController,
+    onSeekbarDraggingChanged: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val repository = VaultGraph.contentRepository
@@ -1150,6 +1171,10 @@ private fun MediaPlayerPage(
     // APP-381 #4 · Full Screen — hides the system status/navigation bars for a larger viewing
     // area (design-reference "Full Screen"). Survives a config change/recreate (rememberSaveable).
     var fullscreen by rememberSaveable(itemId) { mutableStateOf(false) }
+    // APP-448: the single seekbar-drag flag for THIS player. It is read by [VideoPlayerSurface] (to
+    // turn off its parallel scrub/tap/volume arbiter) and reported up to [ViewerPager] (to lock the
+    // pager swipe) — one source of truth shared by all three gesture surfaces (spec fix #1).
+    var seekbarDragging by remember(itemId) { mutableStateOf(false) }
 
     // Propagate speed + mute to ExoPlayer whenever they change.
     LaunchedEffect(speed) { player.setPlaybackSpeed(speed) }
@@ -1212,6 +1237,9 @@ private fun MediaPlayerPage(
                 },
                 resizeMode = resizeMode,
                 rotationDegrees = rotationDegrees,
+                // APP-448 (spec fix #1): while a seek drag owns the pointer, this surface's parallel
+                // scrub/tap/volume detector fully self-disables, so it can no longer cancel the seek.
+                seekbarDragging = seekbarDragging,
             )
             VideoPlayerControlsOverlay(
                 player = player,
@@ -1259,6 +1287,12 @@ private fun MediaPlayerPage(
                 },
                 // APP-388 #2: playlist rows reuse the folder-grid encrypted-thumbnail pipeline.
                 loadThumbnail = { item -> VaultThumbnailPipeline.load(context, item, repository) },
+                // APP-448: drag start/end updates the local flag (→ VideoPlayerSurface) AND is reported
+                // up to the pager (→ userScrollEnabled) — one signal, three surfaces.
+                onSeekbarDraggingChanged = { dragging ->
+                    seekbarDragging = dragging
+                    onSeekbarDraggingChanged(dragging)
+                },
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })
