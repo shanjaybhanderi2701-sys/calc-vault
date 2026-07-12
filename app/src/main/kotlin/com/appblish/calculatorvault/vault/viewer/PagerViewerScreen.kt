@@ -102,6 +102,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.Renderer
 import androidx.media3.exoplayer.RenderersFactory
+import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
 import androidx.media3.exoplayer.source.ProgressiveMediaSource
@@ -1067,6 +1068,14 @@ private fun MediaPlayerPage(
         remember(itemId) {
             session.consumePlayerForExpand(itemId)
                 ?: ExoPlayer.Builder(context, legacySubtitleRenderersFactory(context)).build().apply {
+                    // APP-451: on long encrypted videos the default EXACT seek forces the video
+                    // decoder to render the precise target position; with no nearby I-frame it
+                    // stalls while audio (already at a sync point) plays on → frozen frame after
+                    // seek. PREVIOUS_SYNC snaps every seek to the nearest keyframe *before* the
+                    // target, so the decoder always starts from a valid I-frame and presents a
+                    // fresh frame immediately (playing or paused). The seekbar release path
+                    // (APP-448: exactly one seekTo per drag) is untouched.
+                    setSeekParameters(SeekParameters.PREVIOUS_SYNC)
                     setMediaSource(buildMediaSource(null))
                     prepare()
                     playWhenReady = true
