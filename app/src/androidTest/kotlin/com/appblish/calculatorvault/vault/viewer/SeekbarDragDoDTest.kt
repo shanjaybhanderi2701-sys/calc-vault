@@ -161,6 +161,27 @@ class SeekbarDragDoDTest {
     }
 
     @Test
+    fun canceledDrag_firesZeroSeeks() {
+        // Spec §2: a pointer CANCEL (system/ancestor steals the pointer mid-drag) is NOT a release —
+        // no seek fires and the thumb is left to snap back to the player position.
+        val player = CountingSeekPlayer(duration, initialPositionMs = 0L, playing = true)
+        setContent(player)
+
+        compose.onNodeWithTag(SEEK_BAR_TAG).performTouchInput {
+            down(Offset(width * 0.05f, centerY))
+            moveTo(Offset(width * 0.50f, centerY))
+            moveTo(Offset(width * 0.85f, centerY))
+            cancel()
+        }
+        compose.mainClock.advanceTimeByFrame()
+
+        // Cancel must not be mistaken for a release: zero seeks, playhead untouched.
+        assertThat(player.seekCount).isEqualTo(0)
+        assertThat(player.contentPos).isEqualTo(0L)
+        assertThat(pagerState.currentPage).isEqualTo(0)
+    }
+
+    @Test
     fun tapOnBar_firesExactlyOneSeek() {
         val player = CountingSeekPlayer(duration, initialPositionMs = 0L, playing = false)
         setContent(player)

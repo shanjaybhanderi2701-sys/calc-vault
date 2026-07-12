@@ -64,6 +64,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.PointerEventType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChanged
 import androidx.compose.ui.layout.ContentScale
@@ -264,8 +265,11 @@ internal fun VideoSeekbar(
                                 val event = awaitPointerEvent(PointerEventPass.Initial)
                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                 if (!change.pressed) {
-                                    // UP: a clean release. Seek fires below.
-                                    released = true
+                                    // Pointer no longer down. Only a genuine UP (Release) seeks; a
+                                    // CANCEL — system/ancestor stole the gesture — must NOT (spec §2),
+                                    // so the thumb snaps back to the player position. Both surface here
+                                    // as a non-pressed change, so require the event type to be Release.
+                                    released = event.type == PointerEventType.Release
                                     change.consume()
                                     break
                                 }
