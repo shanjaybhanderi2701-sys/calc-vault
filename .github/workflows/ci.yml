@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes, app-301-saf-relock, app-304-collision-test, app-314-round3, app-317-hermetic-decrypt, app-322-recovery-crypto, app-324-recovery-setup-entry, app-326-recovery-settings, app-325-recovery-reset, app-325-integration, app-338-recovery-survive, app-344-fastscroll-chevron-land, app-345-fastscroll-neutral, app-359-doubletap-fix, app-350-w3-tracks-controls, app-351-w4-mini-player, app-379-immersive-video-player]
+    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes, app-301-saf-relock, app-304-collision-test, app-314-round3, app-317-hermetic-decrypt, app-322-recovery-crypto, app-324-recovery-setup-entry, app-326-recovery-settings, app-325-recovery-reset, app-325-integration, app-338-recovery-survive, app-344-fastscroll-chevron-land, app-345-fastscroll-neutral, app-359-doubletap-fix, app-350-w3-tracks-controls, app-351-w4-mini-player, app-379-immersive-video-player, app-447-seekbar-cancel-no-seek]
   pull_request:
   workflow_dispatch:
 
