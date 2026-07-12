@@ -114,8 +114,6 @@ import com.appblish.calculatorvault.ui.theme.VaultActionIcons
 import com.appblish.calculatorvault.ui.theme.VaultTheme
 import com.appblish.calculatorvault.vault.VaultGraph
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
-import com.appblish.calculatorvault.vault.media.VideoStoryboard
-import com.appblish.calculatorvault.vault.media.VideoStoryboardCache
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
@@ -1139,13 +1137,6 @@ private fun MediaPlayerPage(
         }
     }
 
-    // APP-419 (P1): the decoded scrub-preview storyboard for THIS video, loaded once (LRU-backed)
-    // so a seekbar drag can crop frames from it in-memory. Null when the item has no strip (audio,
-    // pre-APP-419 item, extract failure) — the seekbar then shows only its time-code bubble.
-    val scrubPreview by produceState<VideoStoryboard.Strip?>(initialValue = null, itemId) {
-        value = runCatching { VideoStoryboardCache.load(itemId, repository) }.getOrNull()
-    }
-
     // ---- Wave 3 (APP-350) state hoisted here so all three layers share it ----
     var controlsVisible by remember(itemId) { mutableStateOf(true) }
     var locked by remember(itemId) { mutableStateOf(false) }
@@ -1268,8 +1259,6 @@ private fun MediaPlayerPage(
                 },
                 // APP-388 #2: playlist rows reuse the folder-grid encrypted-thumbnail pipeline.
                 loadThumbnail = { item -> VaultThumbnailPipeline.load(context, item, repository) },
-                // APP-419 (P1): the current video's scrub-preview storyboard for live seek preview.
-                scrubPreview = scrubPreview,
             )
             if (locked) {
                 VideoPlayerLockOverlay(onUnlock = { locked = false })

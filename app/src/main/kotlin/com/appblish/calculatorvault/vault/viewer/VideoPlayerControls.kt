@@ -5,7 +5,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -60,6 +59,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -77,7 +77,6 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import com.appblish.calculatorvault.ui.theme.VaultActionIcons
-import com.appblish.calculatorvault.vault.media.VideoStoryboard
 import com.appblish.calculatorvault.vault.model.VaultItem
 import kotlinx.coroutines.delay
 import kotlin.math.roundToInt
@@ -92,208 +91,199 @@ private val TopGradient = Brush.verticalGradient(
 private const val AUTO_HIDE_MS = 3_500L
 private const val UNLOCK_PILL_HIDE_MS = 2_000L
 
-// APP-388 #1 · thin seekbar dimensions/colors. A 2dp line with a 12dp round thumb replaces
-// the default Material Slider (≈4dp track / ≈20dp pill). Colors kept from the prior white bar.
-// APP-395 (round 4): the Material3 Slider slot API positioned the thumb and the custom track with
-// two independent vertical-offset computations, which drifted off each other on-device (owner: "seek
-// bar thumb not centred"). Replaced by [ThinSeekbar] — both the track and the thumb are laid out in
-// one Box and anchored to the SAME vertical centre line, so they can never diverge.
+// APP-442 (R7, FULL REWRITE from scratch — APP-441 spec) · seekbar dimensions/colors. A 2dp visual
+// line with a 12dp round thumb; the interactive hit box is far taller/wider than the visuals.
 private val SEEK_TRACK_HEIGHT = 2.dp
 private val SEEK_THUMB_DIAMETER = 12.dp
 
-// The invisible grab/touch area around the thin visuals — thumb + track are centred within it.
-// APP-418 (P0) · this was 24dp. On a real device the owner's finger, aiming at the thin 2dp line,
-// routinely landed a few px above/below the 24dp band, so the press fell through to the fullscreen
-// [VideoPlayerSurface] body swipe-to-seek layer instead of grabbing the seekbar — the "press-and-drag
-// doesn't scrub" half of the twice-failed re-test (a touch that never lands on the seekbar can't be
-// consumed by it, no matter how correct the Initial-pass consume is). Bumped to the 48dp Material
-// minimum touch target so a natural press reliably lands *inside the seekbar bounds* (DoD #2) and the
-// seekbar owns the whole gesture. The visible track (2dp) + thumb (12dp) are unchanged and stay centred.
+// APP-441 spec §2 (touch target) / §1 cause #9 · the interactive region is ≥48dp tall (Material
+// minimum), centred on the thin visual bar and extending above AND below it, so a natural press lands
+// inside the seekbar bounds without precise aiming. The visual track (2dp) + thumb (12dp) stay thin.
 private val SEEK_TOUCH_HEIGHT = 48.dp
 
-// APP-434 (APP-417 R7) · horizontal grab tolerance. The 2dp track sits inset from the seekbar's own
-// weighted bounds by this much (it used to be a `.padding(horizontal = 10.dp)` applied by the caller,
-// *outside* the ThinSeekbar node — so those two end gutters were dead: a press that landed a fat
-// finger's width past the thumb near either edge fell through to the fullscreen body swipe layer and
-// never grabbed). The padding is now applied *inside* ThinSeekbar to the drawn track + thumb only, so
-// the visuals are pixel-identical, while the invisible gesture layer spans the FULL node width and
-// swallows both gutters. Net effect: the interactive region is decoupled from the visual size and is
-// ~10dp more generous at each track edge, with zero layout shift (drawn thumb 12dp / track 2dp
-// unchanged, APP-418/APP-429 ±1px no-shift invariant preserved).
-private val SEEK_EDGE_PADDING = 10.dp
+// APP-441 spec §2 (touch target — "generous horizontally") · the drawn track/thumb are inset from the
+// node's full width by this much on each side; the invisible gesture layer spans the FULL node width,
+// so a press in either end gutter (a fat finger past the thumb near an edge) still grabs the bar
+// instead of falling through to the fullscreen body-swipe layer. Zero layout shift: the visuals are
+// unchanged, only the hit box is wider than they are.
+private val SEEK_EDGE_PADDING = 12.dp
 private val SeekActiveColor = Color.White
 private val SeekInactiveColor = Color(0x66FFFFFF)
 
-// APP-395 · test tags so an instrumented layout assertion can prove the thumb's vertical centre
-// matches the track's vertical centre (see SeekbarThumbCenteringDoDTest).
+// Test tags for the single assembled-stack gesture test (SeekbarDragDoDTest).
 internal const val SEEK_THUMB_TAG = "seek_thumb"
-internal const val SEEK_TRACK_TAG = "seek_track"
+internal const val SEEK_BAR_TAG = "seek_bar"
 
 /**
- * APP-395 (round 4) · the thin video seekbar. Replaces the Material3 [androidx.compose.material3.Slider]
- * whose slot API computed the thumb offset and the custom-track offset independently, letting the round
- * thumb drift off the 2dp track vertically on-device.
+ * APP-442 (R7 · APP-441 spec §2) — the video seekbar, **rebuilt from scratch**. Rounds 1–6 layered
+ * gesture consumers, pager gates, throttles and preview thumbnails on top of each other until the
+ * mechanisms fought and the thumb froze on-device. This is a delete-and-replace to the spec, not a
+ * patch.
  *
- * Centring guarantee: the track and the thumb live in ONE [Box] and are both anchored with a
- * `CenterStart`/`Center` alignment, i.e. to the *same* vertical centre line of that box. There is no
- * second, independent vertical-offset computation that could diverge — so the thumb's centre sits
- * exactly on the track's centre at every [fraction] (start / mid / end) and while dragging. A layout
- * assertion in `SeekbarThumbCenteringDoDTest` locks this to ±1px.
+ * **The single reason a seekbar drag freezes is expensive work while the finger moves** (spec §1). So
+ * this component owns *all* of its drag state internally ([isDragging] + [dragPositionMs]) and the
+ * drag path performs **pure UI math only**:
+ *  - Because the drag state lives here and the parent overlay never reads it, a pointer-move triggers
+ *    **zero recomposition of the parent** (the 9-button control row, menus, etc. never recompose
+ *    mid-drag). Only this small composable re-lays-out/redraws (spec §1 cause #4).
+ *  - The thumb offset and the active-fill width are read inside deferred `offset{}` / `drawBehind{}`
+ *    lambdas, so a move is a layout/draw pass — not even a recomposition of this node.
+ *  - Rendering (spec §2): while dragging, the thumb + time label read [dragPositionMs]; otherwise they
+ *    read [positionMs] (the parent's ~2 Hz playhead poll). While dragging **the player is never read**.
  *
- * @param fraction current progress in `0f..1f`.
- * @param onScrub called with the touched fraction on tap and continuously during a drag.
- * @param onScrubFinished called once the gesture ends (parent commits the latched scrub position).
+ * **Gesture handling** (spec §2, the four events) runs in one `awaitEachGesture` loop that **consumes
+ * every pointer change on the Initial pass**, so the ancestor [HorizontalPager] and the sibling
+ * [VideoPlayerSurface] scrub detector (both act on the Main pass) never see a drag that began inside
+ * the bar — the seekbar owns it exclusively (spec §1 causes #6/#7):
+ *  - DOWN inside the hit box → `isDragging = true`, `dragPositionMs = positionFromX`, consume. Nothing else.
+ *  - MOVE → `dragPositionMs = positionFromX`, consume. **That is all** — no seek/decrypt/IO/player read.
+ *  - UP → exactly **one** [onSeek]`(dragPositionMs)`, then `isDragging = false`.
+ *  - CANCEL → `isDragging = false`, **no seek** (thumb snaps back to the player position).
+ *
+ * The scrub-preview thumbnail from prior rounds is intentionally **removed** (spec §2): it could not be
+ * made a free in-memory lookup (it re-cropped a bitmap on frame changes), and a smooth drag is worth
+ * far more than a preview.
+ *
+ * @param positionMs the current playhead position (polled ~2 Hz by the parent while not dragging).
+ * @param durationMs the clip duration in ms; `dragPositionMs` is clamped to `0..durationMs`.
+ * @param onSeek fired **exactly once per drag**, on release, with the final [dragPositionMs].
+ * @param onDraggingChanged notifies the parent when a drag starts/ends so it can pause auto-hide
+ *   (one call at start, one at end — never per move).
  */
 @Composable
-internal fun ThinSeekbar(
-    fraction: Float,
-    onScrub: (Float) -> Unit,
-    onScrubFinished: () -> Unit,
+internal fun VideoSeekbar(
+    positionMs: Long,
+    durationMs: Long,
+    onSeek: (Long) -> Unit,
+    onDraggingChanged: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val clamped = fraction.coerceIn(0f, 1f)
-    BoxWithConstraints(
-        modifier = modifier.height(SEEK_TOUCH_HEIGHT),
-        contentAlignment = Alignment.CenterStart,
+    // The ENTIRE state the seekbar needs (spec §2). Held here, not in the parent, so a move never
+    // recomposes anything outside this composable.
+    var isDragging by remember { mutableStateOf(false) }
+    var dragPositionMs by remember { mutableLongStateOf(0L) }
+
+    val safeDuration = durationMs.coerceAtLeast(1L)
+
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        val density = LocalDensity.current
-        val widthPx = constraints.maxWidth.toFloat()
-        val thumbPx = with(density) { SEEK_THUMB_DIAMETER.toPx() }
-        // APP-434 (R7): the drawn track/thumb are inset from the node's full width by SEEK_EDGE_PADDING
-        // on each side (see the constant), so the gesture layer below can extend into those gutters.
-        val edgePx = with(density) { SEEK_EDGE_PADDING.toPx() }
-        val thumbInset = SEEK_THUMB_DIAMETER / 2
-        // The thumb centre travels between (edge + thumbPx/2) at fraction 0 and (width - edge - thumbPx/2)
-        // at fraction 1; the same inset is applied to the track so the active-fill edge always meets the
-        // thumb centre.
-        val travelPx = (widthPx - 2f * edgePx - thumbPx).coerceAtLeast(0f)
-
-        // A press anywhere on the band maps to the nearest track fraction (jump-to-finger). A touch in
-        // either end gutter (x below/above the track range) clamps to 0f/1f, so a fat-fingered press
-        // offset from the thumb near an edge still latches the drag instead of falling through.
-        fun xToFraction(x: Float): Float =
-            if (travelPx <= 0f) 0f else ((x - edgePx - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
-
-        // ---- Track (inactive + active), vertically centred within the touch area ----
-        Box(
+        // Elapsed time label — shows dragPositionMs while dragging, else the playhead (spec §2).
+        // Kept inside this composable so a drag updates only this small scope, never the parent
+        // control column. The slot is width-pinned to the (never-shorter) duration string so the
+        // label growing (0:05 → 1:23:45) can't reflow the Row and slide the bar under the finger.
+        Box(contentAlignment = Alignment.CenterStart) {
+            Text(
+                text = VideoGestureMath.formatTime(durationMs),
+                color = Color.Transparent,
+                style = MaterialTheme.typography.labelMedium,
+            )
+            Text(
+                text = VideoGestureMath.formatTime(if (isDragging) dragPositionMs else positionMs),
+                color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+            )
+        }
+        Spacer(Modifier.width(8.dp))
+        BoxWithConstraints(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = SEEK_EDGE_PADDING + thumbInset)
-                .height(SEEK_TRACK_HEIGHT)
-                .align(Alignment.CenterStart)
-                .testTag(SEEK_TRACK_TAG),
+                .weight(1f)
+                .height(SEEK_TOUCH_HEIGHT)
+                .testTag(SEEK_BAR_TAG),
+            contentAlignment = Alignment.CenterStart,
         ) {
+            val density = LocalDensity.current
+            val widthPx = constraints.maxWidth.toFloat()
+            val thumbPx = with(density) { SEEK_THUMB_DIAMETER.toPx() }
+            val edgePx = with(density) { SEEK_EDGE_PADDING.toPx() }
+            // Thumb centre travels from (edge + thumbPx/2) at fraction 0 to (width - edge - thumbPx/2) at
+            // fraction 1; the drawn track uses the same inset so the active fill always meets the thumb.
+            val travelPx = (widthPx - 2f * edgePx - thumbPx).coerceAtLeast(0f)
+
+            // positionFromX (spec §2): map a touch x to a clip position in ms. Pure math, no player read.
+            // A touch in either end gutter clamps to 0/duration, so an imprecise press near an edge grabs.
+            fun positionFromX(x: Float): Long {
+                if (travelPx <= 0f) return 0L
+                val fraction = ((x - edgePx - thumbPx / 2f) / travelPx).coerceIn(0f, 1f)
+                return (fraction * safeDuration).toLong().coerceIn(0L, safeDuration)
+            }
+
+            // Deferred readers: these lambdas run in the layout/draw phase, so changing dragPositionMs
+            // moves the thumb / fill WITHOUT recomposing even this node (spec §1 cause #4).
+            val currentFraction: () -> Float = {
+                val ms = if (isDragging) dragPositionMs else positionMs
+                (ms.toFloat() / safeDuration).coerceIn(0f, 1f)
+            }
+
+            // ---- Track: inactive full-width line + active fill drawn to the current fraction ----
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .padding(horizontal = SEEK_EDGE_PADDING + SEEK_THUMB_DIAMETER / 2)
                     .height(SEEK_TRACK_HEIGHT)
+                    .align(Alignment.CenterStart)
                     .clip(CircleShape)
-                    .background(SeekInactiveColor),
+                    .background(SeekInactiveColor)
+                    .drawBehind {
+                        // Active fill read in the draw phase — no recomposition on drag move.
+                        drawRect(
+                            color = SeekActiveColor,
+                            size = size.copy(width = size.width * currentFraction()),
+                        )
+                    },
             )
+
+            // ---- Thumb: offset read in the layout phase — no recomposition on drag move ----
             Box(
                 modifier = Modifier
-                    .fillMaxWidth(clamped)
-                    .height(SEEK_TRACK_HEIGHT)
+                    .align(Alignment.CenterStart)
+                    .offset { IntOffset(x = (edgePx + travelPx * currentFraction()).roundToInt(), y = 0) }
+                    .size(SEEK_THUMB_DIAMETER)
                     .clip(CircleShape)
-                    .background(SeekActiveColor),
+                    .background(SeekActiveColor)
+                    .testTag(SEEK_THUMB_TAG),
+            )
+
+            // ---- Gesture owner: the four events (spec §2), consuming on the Initial pass ----
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .pointerInput(travelPx, safeDuration) {
+                        awaitEachGesture {
+                            // Initial pass → seize before the pager / body-swipe (Main-pass) detectors.
+                            val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                            // DOWN: start dragging, jump to the touch point. No seek. No player call.
+                            dragPositionMs = positionFromX(down.position.x)
+                            isDragging = true
+                            onDraggingChanged(true)
+                            down.consume()
+
+                            var released = false
+                            while (true) {
+                                val event = awaitPointerEvent(PointerEventPass.Initial)
+                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                if (!change.pressed) {
+                                    // UP: a clean release. Seek fires below.
+                                    released = true
+                                    change.consume()
+                                    break
+                                }
+                                if (change.positionChanged()) {
+                                    // MOVE: pure UI math only.
+                                    dragPositionMs = positionFromX(change.position.x)
+                                }
+                                change.consume()
+                            }
+
+                            // UP → exactly ONE seek to the final position. CANCEL → no seek.
+                            if (released) onSeek(dragPositionMs.coerceIn(0L, safeDuration))
+                            isDragging = false
+                            onDraggingChanged(false)
+                        }
+                    },
             )
         }
-
-        // ---- Thumb: same box, same centre line, only translated horizontally by the fraction ----
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterStart)
-                .offset { IntOffset(x = (edgePx + travelPx * clamped).roundToInt(), y = 0) }
-                .size(SEEK_THUMB_DIAMETER)
-                .clip(CircleShape)
-                .background(SeekActiveColor)
-                .testTag(SEEK_THUMB_TAG),
-        )
-
-        // ---- Gesture layer covering the whole touch area (tap-to-seek + press-drag-to-scrub) ----
-        // APP-398 (round 5b): one deterministic gesture loop handles BOTH tap and drag, and it runs on
-        // the **Initial** pointer pass so it pre-empts every ancestor gesture.
-        //
-        // Round-5a (Main-pass consume) still failed on-device with a *regression*: dragging the seekbar
-        // shifted the whole screen. Root cause — the video page is a child of the viewer's
-        // [androidx.compose.foundation.pager.HorizontalPager] (userScrollEnabled while un-zoomed) and the
-        // pager's horizontal-scroll detector is an *ancestor*. A Main-pass consume happens too late in
-        // practice: the pager claimed the horizontal drag first and paged the whole layout, so the thumb
-        // never grabbed. Consuming on the Initial pass (root→leaf) marks every event handled *before* the
-        // pager's and the video-body's Main-pass detectors ever see it, so neither can start a drag that
-        // began inside the seekbar. This is the "seekbar consumes its own drag so the two don't fight"
-        // guarantee from the DoD, and it kills the page-shift regression.
-        //
-        // Behaviour: the thumb latches to the finger on the DOWN event (no slop gate — YouTube/MX
-        // "press = grab") and follows it continuously; a down+up with no movement is just a tap-to-jump.
-        Box(
-            modifier = Modifier
-                .matchParentSize()
-                .pointerInput(travelPx, thumbPx) {
-                    awaitEachGesture {
-                        // Initial pass: seize the gesture before the pager / body-swipe detectors.
-                        val down = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
-                        down.consume()
-                        // Grab immediately: thumb + live time jump to the touch point.
-                        onScrub(xToFraction(down.position.x))
-                        while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Initial)
-                            val change = event.changes.firstOrNull { it.id == down.id }
-                            if (change == null) break
-                            if (!change.pressed) {
-                                // Consume the up too, so no ancestor reads a fling off the release.
-                                change.consume()
-                                break
-                            }
-                            if (change.positionChanged()) {
-                                onScrub(xToFraction(change.position.x))
-                            }
-                            change.consume()
-                        }
-                        // Release (or cancel): parent commits the latched scrub position via seekTo.
-                        onScrubFinished()
-                    }
-                },
-        )
-    }
-}
-
-/**
- * APP-419 (P1) · the live scrub-preview thumbnail. While the seekbar is dragged, the frame nearest
- * [fraction] of the timeline floats above the bar (YouTube/MX "hover" style). The frame is a pure
- * in-memory sub-rect crop of the already-decoded [VideoStoryboard.Strip] — no decryption or decode
- * per drag tick — and is only re-cropped when the drag crosses into a new storyboard frame (the
- * [remember] key is the frame index, not the raw fraction). The preview tracks the finger by
- * offsetting within the bar's width, clamped so it never spills past either edge.
- */
-@Composable
-private fun ScrubPreview(
-    strip: VideoStoryboard.Strip,
-    fraction: Float,
-) {
-    val frameIndex = VideoStoryboard.frameIndexFor(fraction, strip.frameCount)
-    val frame = remember(strip, frameIndex) { strip.frameAt(fraction) }
-    val aspect = strip.frameWidth.toFloat() / strip.frameHeight.coerceAtLeast(1)
-    BoxWithConstraints(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(bottom = 8.dp),
-    ) {
-        val previewWidth = 104.dp
-        val offsetX = ((maxWidth - previewWidth) * fraction.coerceIn(0f, 1f))
-            .coerceIn(0.dp, (maxWidth - previewWidth).coerceAtLeast(0.dp))
-        Image(
-            bitmap = frame,
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .offset(x = offsetX)
-                .width(previewWidth)
-                .aspectRatio(aspect.coerceIn(0.2f, 5f))
-                .clip(RoundedCornerShape(6.dp))
-                .background(Color.Black)
-                .border(1.dp, Color.White.copy(alpha = 0.7f), RoundedCornerShape(6.dp)),
-        )
     }
 }
 
@@ -351,10 +341,6 @@ internal fun VideoPlayerControlsOverlay(
     // APP-388 #2: per-row playlist thumbnails via the folder-grid encrypted-thumbnail pipeline
     // (VaultThumbnailPipeline). Null → rows fall back to a plain glyph (e.g. previews/tests).
     loadThumbnail: (suspend (VaultItem) -> ImageBitmap?)? = null,
-    // APP-419 (P1): the current video's decoded scrub-preview storyboard (a sprite-sheet of small
-    // frames generated once at hide-time, LRU-cached). Non-null → dragging the seekbar shows a live
-    // frame preview at the drag position; null (audio, pre-APP-419 item, no strip) → time-code only.
-    scrubPreview: VideoStoryboard.Strip? = null,
     modifier: Modifier = Modifier,
 ) {
     // Auto-hide: bump nonce to restart the 3.5-second idle timer.
@@ -364,8 +350,15 @@ internal fun VideoPlayerControlsOverlay(
         autoHideNonce++
     }
 
-    LaunchedEffect(autoHideNonce, controlsVisible) {
-        if (!controlsVisible) return@LaunchedEffect
+    // APP-442 (R7): true while the seekbar is being dragged. The auto-hide timer is PAUSED for the
+    // whole drag (so a long 5s+ drag never makes the controls vanish under the finger) via a single
+    // flag flip at drag start/end — NOT by calling resetAutoHide() on every pointer-move, which in
+    // prior rounds restarted this coroutine ~60x/s and contributed to the mid-drag churn (spec §1
+    // cause #4).
+    var seekbarDragging by remember { mutableStateOf(false) }
+
+    LaunchedEffect(autoHideNonce, controlsVisible, seekbarDragging) {
+        if (!controlsVisible || seekbarDragging) return@LaunchedEffect
         delay(AUTO_HIDE_MS)
         onToggleControls()
     }
@@ -402,26 +395,14 @@ internal fun VideoPlayerControlsOverlay(
     var speedDialogVisible by remember { mutableStateOf(false) }
     var playlistSheetVisible by remember { mutableStateOf(false) }
 
-    // APP-384 · MX-Player bottom seekbar: poll the playhead while controls are visible so the
-    // full-width seekbar tracks playback. Dragging the thumb latches [SeekbarScrubState.scrubbing]
-    // so the poll doesn't fight the finger; release commits the ONE seek.
+    // APP-384 · MX-Player bottom seekbar: poll the playhead ~2 Hz while controls are visible so the
+    // full-width seekbar tracks playback. The poll is paused while [seekbarDragging] so it never
+    // fights the finger; the seekbar renders its own internal drag state during a drag (APP-442).
     var positionMs by remember { mutableLongStateOf(player.currentPosition.coerceAtLeast(0L)) }
     var durationMs by remember { mutableLongStateOf(player.positiveDurationMs()) }
-    // APP-429 (P0, round 6) · seek-on-RELEASE only. The drag is held as pure UI state; the single
-    // seek to the final position fires on release via [player.seekTo] (ExoPlayer decrypts the new
-    // offset off-main on its loader thread). No seek/decrypt occurs during pointer-move — that was
-    // the freeze the owner rejected five times.
-    val scrub = remember(player) {
-        SeekbarScrubState(
-            commitSeek = { ms ->
-                player.seekTo(ms)
-                positionMs = ms
-            },
-        )
-    }
     LaunchedEffect(player, controlsVisible) {
         while (controlsVisible) {
-            if (!scrub.scrubbing) {
+            if (!seekbarDragging) {
                 positionMs = player.currentPosition.coerceAtLeast(0L)
                 durationMs = player.positiveDurationMs()
             }
@@ -499,56 +480,27 @@ internal fun VideoPlayerControlsOverlay(
                     .padding(start = 12.dp, end = 12.dp, bottom = 20.dp),
             ) {
                 // Full-width seekbar: elapsed / [========o----] / total.
-                val sliderMax = durationMs.coerceAtLeast(1L).toFloat()
-                val sliderValue = (if (scrub.scrubbing) scrub.scrubValueMs else positionMs.toFloat())
-                    .coerceIn(0f, sliderMax)
-                // APP-419 (P1): live scrub-preview thumbnail. While dragging, the nearest
-                // pre-generated storyboard frame floats above the bar at the drag position — a
-                // pure in-memory sub-rect crop of the already-decoded sheet, never a per-tick
-                // decrypt. Only rendered when this item actually has a strip.
-                val strip = scrubPreview
-                if (scrub.scrubbing && strip != null) {
-                    ScrubPreview(strip = strip, fraction = (sliderValue / sliderMax).coerceIn(0f, 1f))
-                }
+                // APP-442 (R7): the seekbar owns its own drag state; the parent only feeds it the
+                // polled playhead + duration and receives ONE seek on release. The elapsed time label
+                // lives INSIDE [VideoSeekbar] so that, while dragging, only that small composable
+                // recomposes — never this whole control column (spec §1 cause #4).
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    // APP-398 (round 5b) · no-layout-shift: the elapsed label grows as the scrub value
-                    // climbs (0:05 → 1:23:45), which would reflow this Row and slide the seekbar under
-                    // the finger mid-drag. Pin the elapsed slot to the (never-shorter) duration string —
-                    // an invisible sizer reserves that width so the seekbar's origin is rock-steady while
-                    // dragging.
-                    Box(contentAlignment = Alignment.CenterStart) {
-                        Text(
-                            text = VideoGestureMath.formatTime(durationMs),
-                            color = Color.Transparent,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                        Text(
-                            text = VideoGestureMath.formatTime(sliderValue.toLong()),
-                            color = Color.White,
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
-                    // APP-388 #1 / APP-395 #1 · thin seekbar: a 2dp progress line with a small round
-                    // thumb (owner reference). [ThinSeekbar] anchors the track and thumb to one shared
-                    // vertical centre, so the thumb stays centred on the track at every position and
-                    // during an active drag (round-4 fix).
-                    val trackFraction = (sliderValue / sliderMax).coerceIn(0f, 1f)
-                    ThinSeekbar(
-                        fraction = trackFraction,
-                        // APP-429 (P0) · WHILE DRAGGING: pure UI only — move the thumb + time label,
-                        // never seek, never decrypt, never touch the player.
-                        onScrub = { f ->
-                            scrub.onScrub(f, durationMs)
+                    VideoSeekbar(
+                        positionMs = positionMs,
+                        durationMs = durationMs,
+                        // ON RELEASE: exactly one seek to the final position. ExoPlayer's seekTo must
+                        // run on the app thread but is non-blocking — the decrypt-at-offset read runs
+                        // off-main on its loader thread (EncryptedVaultDataSource). Play/pause state is
+                        // preserved automatically (seekTo does not touch playWhenReady).
+                        onSeek = { ms ->
+                            player.seekTo(ms)
+                            positionMs = ms
                             resetAutoHide()
                         },
-                        // APP-429 (P0) · ON RELEASE: exactly one seek to the final position, off-main.
-                        onScrubFinished = {
-                            scrub.onScrubFinished(durationMs)
+                        onDraggingChanged = { dragging ->
+                            seekbarDragging = dragging
                             resetAutoHide()
                         },
-                        // APP-434 (R7): the 10dp horizontal inset is now applied *inside* ThinSeekbar
-                        // (SEEK_EDGE_PADDING) to the drawn track/thumb only, so the invisible gesture
-                        // band spans the full weighted width and the end gutters become grabbable.
                         modifier = Modifier.weight(1f),
                     )
                     Text(
