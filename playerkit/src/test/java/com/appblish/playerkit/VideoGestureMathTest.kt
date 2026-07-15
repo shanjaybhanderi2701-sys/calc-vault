@@ -1,17 +1,17 @@
-package com.appblish.calculatorvault.vault.viewer
+package com.appblish.playerkit
 
-import com.appblish.calculatorvault.vault.viewer.VideoGestureMath.Axis
-import com.appblish.calculatorvault.vault.viewer.VideoGestureMath.Zone
+import com.appblish.playerkit.VideoGestureMath.Axis
+import com.appblish.playerkit.VideoGestureMath.Zone
 import com.google.common.truth.Truth.assertThat
 import org.junit.Test
 
 /**
- * APP-349 (Wave 2) — the gesture-zone map and per-gesture math for the in-vault video player
- * (spec §3), unit-tested on the JVM so the "gestures must not misfire" gate is proven by the
- * rules, not only by on-device feel. Every branch of [VideoGestureMath] is pinned here.
+ * APP-402 — the gesture-zone map and per-gesture math for the shared video player (extracted from
+ * the origin app Wave-2, spec §3), unit-tested on the JVM so the "gestures must not misfire" gate is
+ * proven by the rules, not only by on-device feel. Every branch of [VideoGestureMath] is pinned.
  */
 class VideoGestureMathTest {
-    // ---- zones (spec §3: left/right split at the midpoint) ----
+    // ---- zones (left/right split at the midpoint) ----
 
     @Test
     fun `left of centre is the LEFT zone, midpoint and beyond is RIGHT`() {
@@ -75,7 +75,6 @@ class VideoGestureMathTest {
 
     @Test
     fun `a full-width right drag advances by the scrub span`() {
-        // startMs 0, drag one full width right over a 5-minute clip.
         val target = VideoGestureMath.scrubTargetMs(0L, 1000f, 1000f, 300_000L)
         assertThat(target).isEqualTo(VideoGestureMath.SCRUB_FULL_WIDTH_MS)
     }
@@ -101,11 +100,8 @@ class VideoGestureMathTest {
 
     @Test
     fun `dragging up brightens, down darkens, clamped to 1percent-100percent`() {
-        // Drag up half the surface height → +0.5.
         assertThat(VideoGestureMath.adjustBrightness(0.4f, -500f, 1000f)).isWithin(1e-4f).of(0.9f)
-        // Overshoot up clamps at 1.0.
         assertThat(VideoGestureMath.adjustBrightness(0.8f, -500f, 1000f)).isEqualTo(1.0f)
-        // Overshoot down clamps at the 1% floor, never fully black.
         assertThat(VideoGestureMath.adjustBrightness(0.2f, 1000f, 1000f))
             .isEqualTo(VideoGestureMath.MIN_BRIGHTNESS)
     }

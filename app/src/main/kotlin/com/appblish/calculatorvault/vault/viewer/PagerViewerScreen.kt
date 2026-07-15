@@ -105,7 +105,6 @@ import androidx.media3.exoplayer.RenderersFactory
 import androidx.media3.exoplayer.SeekParameters
 import androidx.media3.exoplayer.source.MediaSource
 import androidx.media3.exoplayer.source.MergingMediaSource
-import androidx.media3.exoplayer.source.ProgressiveMediaSource
 import androidx.media3.exoplayer.source.SingleSampleMediaSource
 import androidx.media3.exoplayer.text.TextOutput
 import androidx.media3.exoplayer.text.TextRenderer
@@ -120,6 +119,9 @@ import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
+import com.appblish.playerkit.VideoScaleMath
+import com.appblish.playerkit.VideoZoomMath
+import com.appblish.playerkit.progressiveMediaSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -1037,11 +1039,11 @@ private fun MediaPlayerPage(
     // NEVER MediaItem.setSubtitleConfigurations on the progressive source (that would stage a
     // plaintext temp for a vault-hidden sub) — always an explicit merged SingleSampleMediaSource.
     fun buildMediaSource(sub: LoadedSubtitle?): MediaSource {
-        val vaultFactory = EncryptedVaultDataSource.Factory { id -> repository.openBlobReader(id) }
-        val videoSource =
-            ProgressiveMediaSource
-                .Factory(vaultFactory)
-                .createMediaSource(MediaItem.fromUri(EncryptedVaultDataSource.vaultMediaUri(itemId)))
+        val playbackSource = EncryptedVaultPlaybackSource(itemId) { id -> repository.openBlobReader(id) }
+        // Reuse the very same decrypting factory for the subtitle leg — a vault-hidden sub must keep
+        // streaming through EncryptedVaultDataSource, never a plaintext temp (APP-370 §7–§8).
+        val vaultFactory = playbackSource.dataSourceFactory()
+        val videoSource = playbackSource.progressiveMediaSource()
         if (sub == null) return videoSource
         val subConfig =
             MediaItem.SubtitleConfiguration

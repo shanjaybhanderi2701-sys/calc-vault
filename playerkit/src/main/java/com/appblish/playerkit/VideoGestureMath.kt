@@ -1,40 +1,37 @@
-package com.appblish.calculatorvault.vault.viewer
+package com.appblish.playerkit
 
 import kotlin.math.abs
 
 /**
- * CalcVault Phase B · Wave 2 · APP-349 — pure gesture-resolution core for the in-vault
- * video player (spec §3). Every rule that decides *which* gesture a touch is and *how far*
- * it moves the player lives here as side-effect-free functions so it is unit-testable on the
- * JVM and the Compose overlay ([VideoPlayerSurface]) stays a thin dispatcher.
+ * Pure gesture-resolution core for the shared in-app video player (APP-402, extracted verbatim from
+ * the origin app's Wave-2 player, spec §3). Every rule that decides *which* gesture a touch is and *how
+ * far* it moves the player lives here as side-effect-free functions so it is unit-testable on the
+ * JVM and the Compose overlay stays a thin dispatcher.
  *
- * **Gesture-zone map & priority (spec §3, design gate).** The player surface is split into a
- * LEFT and RIGHT half at the horizontal midpoint. A single finger resolves to exactly one
- * gesture, decided so nothing misfires:
+ * **Gesture-zone map & priority.** The player surface is split into a LEFT and RIGHT half at the
+ * horizontal midpoint. A single finger resolves to exactly one gesture, decided so nothing misfires:
  *
- *  - **Single tap** → toggle the controls chrome. (Emitted only after the double-tap
- *    window elapses, so a double-tap is never read as two single taps.)
- *  - **Double-tap** → seek: LEFT half −[SEEK_STEP_MS], RIGHT half +[SEEK_STEP_MS], and
- *    consecutive double-taps on the same side accumulate (−10s, −20s, …) like a scrubbing
- *    ratchet, each showing a brief indicator.
- *  - **Drag** → the *dominant axis* is latched once the finger passes touch-slop and cannot
- *    flip mid-gesture ([dominantAxis]), so a horizontal scrub never leaks into brightness:
- *      - **Vertical drag, LEFT half** → screen brightness (MX-Player convention, APP-384 #4).
+ *  - **Single tap** → toggle the controls chrome. (Emitted only after the double-tap window elapses,
+ *    so a double-tap is never read as two single taps.)
+ *  - **Double-tap** → seek: LEFT half −[SEEK_STEP_MS], RIGHT half +[SEEK_STEP_MS], and consecutive
+ *    double-taps on the same side accumulate (−10s, −20s, …) like a scrubbing ratchet.
+ *  - **Drag** → the *dominant axis* is latched once the finger passes touch-slop and cannot flip
+ *    mid-gesture ([dominantAxis]), so a horizontal scrub never leaks into brightness:
+ *      - **Vertical drag, LEFT half** → screen brightness.
  *      - **Vertical drag, RIGHT half** → media volume.
  *      - **Horizontal drag (either half)** → scrub with a time preview.
  *
- * Pinch (two-finger) is intentionally *not* handled here — Wave 3 adds pinch-zoom, and these
- * single-pointer rules must yield to a second pointer. The overlay only starts a drag gesture
- * for a single pointer, leaving multi-touch free for the Wave-3 transformable.
+ * Pinch (two-finger) is intentionally *not* handled here — pinch-zoom lives in [VideoZoomMath] and
+ * these single-pointer rules must yield to a second pointer.
  */
 object VideoGestureMath {
-    /** One double-tap seek step (spec §3: "e.g. +10s"). */
+    /** One double-tap seek step. */
     const val SEEK_STEP_MS: Long = 10_000L
 
     /**
-     * Horizontal-scrub sensitivity: dragging a full surface-width left→right moves the
-     * playhead by this much. Keeps scrub predictable regardless of clip length (the value is
-     * clamped to the real duration in [scrubTargetMs]).
+     * Horizontal-scrub sensitivity: dragging a full surface-width left→right moves the playhead by
+     * this much. Keeps scrub predictable regardless of clip length (clamped to the real duration in
+     * [scrubTargetMs]).
      */
     const val SCRUB_FULL_WIDTH_MS: Long = 90_000L
 
@@ -49,24 +46,24 @@ object VideoGestureMath {
     /** Which half of the surface the touch started in. Exact midpoint counts as RIGHT. */
     fun zoneFor(
         x: Float,
-        width: Float
+        width: Float,
     ): Zone = if (width <= 0f || x < width / 2f) Zone.LEFT else Zone.RIGHT
 
     /**
-     * Latches the drag axis from the accumulated movement since the finger went down. A tie
-     * (or no movement) resolves to [Axis.HORIZONTAL] so an ambiguous flick scrubs rather than
-     * fights the vertical controls. Callers latch this ONCE (past touch-slop) and keep it for
-     * the whole gesture so the axis can't flip.
+     * Latches the drag axis from the accumulated movement since the finger went down. A tie (or no
+     * movement) resolves to [Axis.HORIZONTAL] so an ambiguous flick scrubs rather than fights the
+     * vertical controls. Callers latch this ONCE (past touch-slop) and keep it for the whole gesture
+     * so the axis can't flip.
      */
     fun dominantAxis(
         totalDx: Float,
-        totalDy: Float
+        totalDy: Float,
     ): Axis = if (abs(totalDx) >= abs(totalDy)) Axis.HORIZONTAL else Axis.VERTICAL
 
     /**
-     * Signed seek delta for a double-tap in [zone] that is the [tapCount]-th consecutive
-     * double-tap on that side (1-based). RIGHT adds, LEFT subtracts; magnitude ratchets by
-     * [SEEK_STEP_MS] per repeat.
+     * Signed seek delta for a double-tap in [zone] that is the [tapCount]-th consecutive double-tap
+     * on that side (1-based). RIGHT adds, LEFT subtracts; magnitude ratchets by [SEEK_STEP_MS] per
+     * repeat.
      */
     fun seekDeltaMs(
         zone: Zone,
@@ -84,9 +81,9 @@ object VideoGestureMath {
     ): Long = (currentMs + deltaMs).coerceIn(0L, totalMs.coerceAtLeast(0L))
 
     /**
-     * Absolute playhead target for a horizontal scrub: [startMs] plus a delta proportional to
-     * the horizontal drag ([dragXpx] px over a surface [widthPx] px wide, scaled by
-     * [SCRUB_FULL_WIDTH_MS]). Clamped to [0, totalMs]. A right-drag advances, left rewinds.
+     * Absolute playhead target for a horizontal scrub: [startMs] plus a delta proportional to the
+     * horizontal drag ([dragXpx] px over a surface [widthPx] px wide, scaled by [SCRUB_FULL_WIDTH_MS]).
+     * Clamped to [0, totalMs]. A right-drag advances, left rewinds.
      */
     fun scrubTargetMs(
         startMs: Long,
@@ -100,9 +97,8 @@ object VideoGestureMath {
     }
 
     /**
-     * New brightness for a vertical drag of [dragYpx] px over a [heightPx]-tall surface.
-     * Dragging UP (negative px, screen-space) brightens. Result is clamped to
-     * [[MIN_BRIGHTNESS], [MAX_BRIGHTNESS]].
+     * New brightness for a vertical drag of [dragYpx] px over a [heightPx]-tall surface. Dragging UP
+     * (negative px, screen-space) brightens. Result is clamped to [[MIN_BRIGHTNESS], [MAX_BRIGHTNESS]].
      */
     fun adjustBrightness(
         current: Float,
@@ -115,9 +111,8 @@ object VideoGestureMath {
     }
 
     /**
-     * New volume fraction (0f..1f) for a vertical drag of [dragYpx] px over a [heightPx]-tall
-     * surface. Dragging UP raises volume. Callers map the fraction onto the audio stream's
-     * integer range.
+     * New volume fraction (0f..1f) for a vertical drag of [dragYpx] px over a [heightPx]-tall surface.
+     * Dragging UP raises volume. Callers map the fraction onto the audio stream's integer range.
      */
     fun adjustVolumeFraction(
         current: Float,
