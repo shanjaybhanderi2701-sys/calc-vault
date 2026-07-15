@@ -71,20 +71,67 @@ class VaultPickerParityCaptureTest {
     }
 
     /**
-     * Full-screen framebuffer capture (the test Activity has no FLAG_SECURE) so DropdownMenu
-     * popups render in the shot; falls back to the Compose root bitmap if the platform screenshot
-     * comes back null.
+     * Reliable Compose-content capture: renders the semantics root straight to a bitmap, so it
+     * never depends on SurfaceFlinger having presented the frame (the earlier API-35 shot came
+     * back a white pre-present blank even though the semantics tree was ready). Use for any
+     * surface WITHOUT a popup window — the folder grid and the opened item picker.
+     */
+    private fun snapContent(name: String) {
+        compose.waitForIdle()
+        runCatching { save(name, compose.onRoot().captureToImage().asAndroidBitmap()) }
+    }
+
+    /**
+     * Full-screen framebuffer capture (the test Activity has no FLAG_SECURE) so a `DropdownMenu`
+     * popup — which renders in its own window, outside the Compose root — appears in the shot.
+     * Retries once on a blank/unpresented framebuffer, and only then falls back to the (popup-less)
+     * Compose-root bitmap. Reserved for the sort-menu shot, which is captured dead last.
      */
     private fun snap(name: String) {
         compose.waitForIdle()
         runCatching {
-            val shot = InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()
-            if (shot != null) {
+            val ua = InstrumentationRegistry.getInstrumentation().uiAutomation
+            var shot = ua.takeScreenshot()
+            if (shot == null || isBlank(shot)) {
+                Thread.sleep(600)
+                compose.waitForIdle()
+                shot = ua.takeScreenshot()
+            }
+            if (shot != null && !isBlank(shot)) {
                 save(name, shot)
             } else {
                 save(name, compose.onRoot().captureToImage().asAndroidBitmap())
             }
         }
+    }
+
+    /**
+     * A settled picker frame is dark; an unpresented framebuffer is near-white. Sample the centre
+     * region and treat "almost entirely very light" as blank so [snap] can retry.
+     */
+    private fun isBlank(bmp: Bitmap): Boolean {
+        val w = bmp.width
+        val h = bmp.height
+        if (w == 0 || h == 0) return true
+        var light = 0
+        var total = 0
+        val stepX = (w / 16).coerceAtLeast(1)
+        val stepY = (h / 16).coerceAtLeast(1)
+        var y = h / 4
+        while (y < h * 3 / 4) {
+            var x = w / 4
+            while (x < w * 3 / 4) {
+                val c = bmp.getPixel(x, y)
+                val r = (c shr 16) and 0xFF
+                val g = (c shr 8) and 0xFF
+                val b = c and 0xFF
+                if (r > 230 && g > 230 && b > 230) light++
+                total++
+                x += stepX
+            }
+            y += stepY
+        }
+        return total > 0 && light * 100 / total > 90
     }
 
     private fun textPresent(text: String): Boolean = compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
@@ -125,19 +172,35 @@ class VaultPickerParityCaptureTest {
             }
         }
 
+        // The three surfaces are captured in an order that keeps the fragile popup shot LAST:
+        // grid → item picker (both driven by clean ViewModel state, snapped via the reliable
+        // Compose-content path) → sort menu (device framebuffer, dead last so a lingering popup
+        // can never bleed into another shot — the defect that made the earlier run's item-picker
+        // shot a byte-for-byte duplicate of the sort-menu shot).
+
         // (1) Folder-thumbnail grid — the picker's initial folder step (albums seeded, no album
         // opened yet). Recent aggregate leads, then the source device buckets. "Hide Now" is the
         // always-present anchor; wait on it (20s) so a slow, contended emulator can't photograph a
-        // pre-layout blank frame (the earlier API-35 blank shot).
+        // half-settled tree.
         waitForText("Hide Now")
         waitForText("Recent")
-        snap("app214_a_folder_grid_$suffix.png")
+        snapContent("app214_a_folder_grid_$suffix.png")
 
-        // (2) Sort menu expanded — captured HERE, on the stable folder grid, BEFORE any album is
-        // opened. Opening an album kicks an async recompose that dismisses the DropdownMenu popup,
-        // which is why the earlier run's sort shot came back menu-less. The trigger is a merged
-        // TextButton whose active-sort label ("Added time") is the reliable click target; fall
-        // back to the "Sort" overflow-icon content description.
+        // (2) Recent / All-Files aggregate opened → date-grouped item picker. Navigation is driven
+        // directly through the VM (no fragile popup interaction). "Selected - 0" is the header the
+        // picker shows the instant an album opens (independent of how the sample dates bucket), so
+        // it's a robust settle anchor. Then step back to the folder grid via clearAlbum().
+        runCatching { compose.runOnUiThread { vm.selectAlbum(SourceAlbum.RECENT_ID) } }
+        waitForText("Selected - 0")
+        snapContent("app214_b_recent_items_$suffix.png")
+        runCatching { compose.runOnUiThread { vm.clearAlbum() } }
+        waitForText("Hide Now")
+        waitForText("Recent")
+
+        // (3) Sort menu expanded — captured DEAD LAST on the stable folder grid. The trigger is a
+        // merged TextButton whose active-sort label ("Added time") is the reliable click target;
+        // fall back to the "Sort" overflow-icon content description. This shot needs the device
+        // framebuffer because the DropdownMenu is a separate popup window outside the Compose root.
         val opened =
             runCatching {
                 compose.onNodeWithText(PickerSort.ADDED_TIME.label).performClick()
@@ -149,16 +212,5 @@ class VaultPickerParityCaptureTest {
             waitForText(PickerSort.SIZE.label, timeoutMs = 8_000)
         }
         snap("app214_c_sort_menu_$suffix.png")
-        // Dismiss the menu by re-selecting the active sort (keeps ADDED_TIME, closes the popup)
-        // so it doesn't overlay the item-picker shot.
-        runCatching { compose.runOnUiThread { vm.setSort(PickerSort.ADDED_TIME) } }
-        compose.waitForIdle()
-
-        // (3) Recent / All-Files aggregate opened → date-grouped item picker. "Selected - 0" is
-        // the header the picker shows the instant an album opens (independent of how the sample
-        // dates bucket), so it's a more robust settle anchor than a specific "Today" section.
-        runCatching { compose.runOnUiThread { vm.selectAlbum(SourceAlbum.RECENT_ID) } }
-        waitForText("Selected - 0")
-        snap("app214_b_recent_items_$suffix.png")
     }
 }
