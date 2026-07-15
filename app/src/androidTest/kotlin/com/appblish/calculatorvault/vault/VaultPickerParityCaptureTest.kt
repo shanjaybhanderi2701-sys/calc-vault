@@ -9,6 +9,7 @@ import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -86,6 +87,16 @@ class VaultPickerParityCaptureTest {
         }
     }
 
+    private fun textPresent(text: String): Boolean = compose.onAllNodesWithText(text).fetchSemanticsNodes().isNotEmpty()
+
+    private fun waitForText(
+        text: String,
+        timeoutMs: Long = 20_000,
+    ) {
+        runCatching { compose.waitUntil(timeoutMs) { textPresent(text) } }
+        compose.waitForIdle()
+    }
+
     @Test
     fun capturePickerParitySurfaces() {
         // Pre-grant the media read permission so the picker's runtime-permission LaunchedEffect
@@ -115,33 +126,39 @@ class VaultPickerParityCaptureTest {
         }
 
         // (1) Folder-thumbnail grid — the picker's initial folder step (albums seeded, no album
-        // opened yet). Recent aggregate leads, then the source device buckets.
-        runCatching {
-            compose.waitUntil(10_000) {
-                compose.onAllNodesWithText("Recent").fetchSemanticsNodes().isNotEmpty()
-            }
-        }
+        // opened yet). Recent aggregate leads, then the source device buckets. "Hide Now" is the
+        // always-present anchor; wait on it (20s) so a slow, contended emulator can't photograph a
+        // pre-layout blank frame (the earlier API-35 blank shot).
+        waitForText("Hide Now")
+        waitForText("Recent")
         snap("app214_a_folder_grid_$suffix.png")
 
-        // (2) Recent / All-Files aggregate opened → date-grouped item picker ("Today" section).
-        runCatching { compose.runOnUiThread { vm.selectAlbum(SourceAlbum.RECENT_ID) } }
-        runCatching {
-            compose.waitUntil(10_000) {
-                compose.onAllNodesWithText("Today").fetchSemanticsNodes().isNotEmpty()
-            }
-        }
-        snap("app214_b_recent_items_$suffix.png")
-
-        // (3) Sort menu expanded — tap the "Sort" control (merged TextButton) and wait for a
-        // menu-only option to appear before photographing the floating overlay.
-        runCatching { compose.onNodeWithContentDescription("Sort").performClick() }
-        runCatching {
-            compose.waitUntil(5_000) {
-                // "Last modified" only exists inside the expanded menu (the button label is
-                // the active sort, "Added time"), so its presence proves the menu is open.
-                compose.onAllNodesWithText("Last modified").fetchSemanticsNodes().isNotEmpty()
-            }
+        // (2) Sort menu expanded — captured HERE, on the stable folder grid, BEFORE any album is
+        // opened. Opening an album kicks an async recompose that dismisses the DropdownMenu popup,
+        // which is why the earlier run's sort shot came back menu-less. The trigger is a merged
+        // TextButton whose active-sort label ("Added time") is the reliable click target; fall
+        // back to the "Sort" overflow-icon content description.
+        val opened =
+            runCatching {
+                compose.onNodeWithText(PickerSort.ADDED_TIME.label).performClick()
+            }.isSuccess ||
+                runCatching { compose.onNodeWithContentDescription("Sort").performClick() }.isSuccess
+        if (opened) {
+            // "Size" only exists inside the expanded menu (never as the active button label here),
+            // so its presence proves the floating overlay is open.
+            waitForText(PickerSort.SIZE.label, timeoutMs = 8_000)
         }
         snap("app214_c_sort_menu_$suffix.png")
+        // Dismiss the menu by re-selecting the active sort (keeps ADDED_TIME, closes the popup)
+        // so it doesn't overlay the item-picker shot.
+        runCatching { compose.runOnUiThread { vm.setSort(PickerSort.ADDED_TIME) } }
+        compose.waitForIdle()
+
+        // (3) Recent / All-Files aggregate opened → date-grouped item picker. "Selected - 0" is
+        // the header the picker shows the instant an album opens (independent of how the sample
+        // dates bucket), so it's a more robust settle anchor than a specific "Today" section.
+        runCatching { compose.runOnUiThread { vm.selectAlbum(SourceAlbum.RECENT_ID) } }
+        waitForText("Selected - 0")
+        snap("app214_b_recent_items_$suffix.png")
     }
 }
