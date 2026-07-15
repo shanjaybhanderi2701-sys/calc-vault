@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes, app-301-saf-relock, app-304-collision-test, app-314-round3, app-317-hermetic-decrypt, app-322-recovery-crypto, app-324-recovery-setup-entry, app-326-recovery-settings, app-325-recovery-reset, app-325-integration, app-338-recovery-survive, app-344-fastscroll-chevron-land, app-345-fastscroll-neutral, app-359-doubletap-fix, app-350-w3-tracks-controls, app-351-w4-mini-player, app-379-immersive-video-player, app-447-seekbar-cancel-no-seek, app-448-seekbar-exclusive-gesture-ownership]
+    branches: [main, app-163-phase6-integration, app-225-phase1-wave1, app-225-phase1-wave1-app248, app-255-phaseb-viewer, app-254-photo-actions, app-254-integration, app-256-multiselect, app-257-recycle-bin, app-279-album-management, app-287-org-polish, app-293-device-fix-pass, app-294-share, app-299-round2-fixes, app-301-saf-relock, app-304-collision-test, app-314-round3, app-317-hermetic-decrypt, app-322-recovery-crypto, app-324-recovery-setup-entry, app-326-recovery-settings, app-325-recovery-reset, app-325-integration, app-338-recovery-survive, app-344-fastscroll-chevron-land, app-345-fastscroll-neutral, app-359-doubletap-fix, app-350-w3-tracks-controls, app-351-w4-mini-player, app-379-immersive-video-player, app-447-seekbar-cancel-no-seek, app-448-seekbar-exclusive-gesture-ownership, app-214-picker-parity-capture]
   pull_request:
   workflow_dispatch:
 
@@ -128,6 +128,9 @@ jobs:
             # APP-395: pull the cropped/zoomed seekbar centring screenshots written by
             # SeekbarCenteringCaptureTest (thumb centred on track, at rest + mid-drag).
             adb pull /sdcard/app395-evidence ./app395-evidence || true
+            # APP-214: pull the xlock-parity in-vault picker screenshots written by
+            # VaultPickerParityCaptureTest (folder grid, Recent/All-Files aggregate, sort menu).
+            adb pull /sdcard/app214-evidence ./app214-evidence || true
             exit $gradle_code
 
       - name: Upload chevron on-device screenshots (APP-344)
@@ -163,6 +166,15 @@ jobs:
         with:
           name: app395-evidence-api-${{ matrix.api-level }}
           path: ./app395-evidence/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload xlock-parity picker screenshots (APP-214)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: app214-evidence-api-${{ matrix.api-level }}
+          path: ./app214-evidence/
           if-no-files-found: ignore
           retention-days: 7
 
