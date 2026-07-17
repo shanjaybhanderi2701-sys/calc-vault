@@ -330,9 +330,13 @@ internal fun AudioNowPlayingContent(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
+                // Total duration. The reused seekbar renders the *elapsed* label (and an invisible
+                // width-pin of the duration); this is the on-screen total, tagged so the DoD can
+                // assert it unambiguously (the seekbar's transparent pin also carries the same text).
                 Text(
                     text = VideoGestureMath.formatTime(durationMs),
                     color = AudioOnCanvasMuted,
+                    modifier = Modifier.testTag(AUDIO_TOTAL_TAG),
                 )
             }
 
@@ -406,7 +410,12 @@ private fun AudioPlaylistSheet(
                 if (vaultItem.category == VaultCategory.AUDIOS) index to vaultItem else null
             }
         }
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = rememberModalBottomSheetState()) {
+    // skipPartiallyExpanded: open straight to full height so the whole playlist + all five order
+    // modes are on-screen at once (no half-sheet fold hiding the lower order modes).
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
         Text(
             text = "Playlist (${audioRows.size})",
             fontWeight = FontWeight.SemiBold,
@@ -528,6 +537,7 @@ private fun decodeArtwork(data: ByteArray?): ImageBitmap? {
 internal const val AUDIO_PLAYER_TAG = "audio.nowPlaying"
 internal const val AUDIO_ART_TAG = "audio.art"
 internal const val AUDIO_TITLE_TAG = "audio.title"
+internal const val AUDIO_TOTAL_TAG = "audio.total"
 internal const val AUDIO_PLAY_PAUSE_TAG = "audio.playPause"
 internal const val AUDIO_PREV_TAG = "audio.prev"
 internal const val AUDIO_NEXT_TAG = "audio.next"

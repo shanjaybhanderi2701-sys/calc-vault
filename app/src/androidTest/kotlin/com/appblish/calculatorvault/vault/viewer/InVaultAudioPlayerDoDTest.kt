@@ -2,6 +2,7 @@ package com.appblish.calculatorvault.vault.viewer
 
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertIsDisplayed
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -109,8 +110,10 @@ class InVaultAudioPlayerDoDTest {
         // Album-art placeholder tile present (no video surface): the now-playing screen, not a player.
         composeRule.onNodeWithTag(AUDIO_ART_TAG).assertIsDisplayed()
         // The reused seek-on-release bar is present and the total time (3:20) is shown next to it.
+        // Assert the total via its own tag: the reused seekbar also carries "3:20" as an invisible
+        // width-pin, so a bare text match would be ambiguous (two nodes).
         composeRule.onNodeWithTag(SEEK_BAR_TAG).assertIsDisplayed()
-        composeRule.onNodeWithText("3:20").assertIsDisplayed()
+        composeRule.onNodeWithTag(AUDIO_TOTAL_TAG).assertTextEquals("3:20")
     }
 
     @Test
