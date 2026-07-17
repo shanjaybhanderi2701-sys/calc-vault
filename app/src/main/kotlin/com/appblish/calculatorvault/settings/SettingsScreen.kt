@@ -10,7 +10,6 @@ import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.runtime.Composable
@@ -24,7 +23,7 @@ import com.appblish.calculatorvault.ui.components.ListRow
 import com.appblish.calculatorvault.ui.components.RowTrailing
 
 /**
- * Settings root: App language, Change password, Switch app icon, Theme, All files access,
+ * Settings root: App language, Change password, Switch app icon, All files access,
  * the opt-in Hide-from-recents toggle (spec §10), and version/about (row set per design
  * sign-off S22 on APP-224). PIN Recovery W4 adds the **PIN Recovery** entry (management hub,
  * screen 14) and the **Allow screenshots** toggle (release-build FLAG_SECURE, default OFF —
@@ -35,7 +34,6 @@ import com.appblish.calculatorvault.ui.components.RowTrailing
 fun SettingsScreen(
     onBack: () -> Unit,
     onChangePin: () -> Unit,
-    onTheme: () -> Unit,
     onPermissions: () -> Unit,
     onLanguage: () -> Unit,
     onPinRecovery: () -> Unit,
@@ -61,13 +59,6 @@ fun SettingsScreen(
             leadingIcon = Icons.Filled.Lock,
             trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
             onClick = onChangePin,
-        )
-        ListRow(
-            title = "Theme",
-            subtitle = "${settings.keypadSkin.displayName} · ${settings.unlockAnimation.displayName} unlock",
-            leadingIcon = Icons.Filled.Settings,
-            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
-            onClick = onTheme,
         )
 
         SettingsSectionHeader("Privacy")

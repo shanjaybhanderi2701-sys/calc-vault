@@ -14,16 +14,16 @@ import kotlinx.coroutines.launch
 
 /**
  * The ordered steps of the first-run wizard. Phase 1 (build spec §1) is a clean
- * calculator/PIN setup only — no upfront permission wall and no recovery step of any kind:
- * per build spec §0, PIN recovery is deferred to a later phase entirely (accepted risk).
- * All Files Access is primed at first vault open and accessibility at first App-Lock enable.
+ * calculator/PIN setup only — no upfront permission wall, no recovery step of any kind, and
+ * no intro carousel: onboarding goes straight to language → PIN, then lands in the vault.
+ * (APP-528: the 2-page intro viewpager was removed.) Per build spec §0, PIN recovery is
+ * deferred to a later phase entirely (accepted risk). All Files Access is primed at first
+ * vault open and accessibility at first App-Lock enable.
  */
 enum class OnboardingStep {
     LANGUAGE,
     CREATE_PIN,
     CONFIRM_PIN,
-    INTRO_PRIVATE,
-    INTRO_ICONS,
 }
 
 /** Minimum time the "Setting Up Language" loader (S3) stays visible after Done is tapped. */
@@ -40,10 +40,11 @@ data class OnboardingUiState(
 )
 
 /**
- * Drives the onboarding wizard: language → create PIN → confirm PIN → the two intro cards.
- * The real PIN is persisted the moment the confirm matches the draft; onboarding is flagged
- * complete when the final intro card is dismissed. There is deliberately no permission wall
- * and no recovery step here — permissions are primed at first use, and recovery does not
+ * Drives the onboarding wizard: language → create PIN → confirm PIN. The real PIN is
+ * persisted the moment the confirm matches the draft, and onboarding is flagged complete in
+ * the same step so the host lands straight in the vault (APP-528: no intro carousel). There
+ * is deliberately no permission wall and no recovery step here — permissions are primed at
+ * first use, and recovery does not
  * exist anywhere in Phase 1 (build spec §0: deferred to a later phase, accepted risk).
  * Credential writes go through the injected [CredentialStore]; the chosen language is
  * persisted fire-and-forget via [saveLanguage] (defaults to the [SettingsGraph] store).
@@ -99,17 +100,10 @@ class OnboardingViewModel(
         }
         viewModelScope.launch {
             store.setRealPin(pin)
-            // Straight to the intro cards — Phase 1 has no recovery step at all.
-            _state.update { it.copy(mismatch = false, step = OnboardingStep.INTRO_PRIVATE) }
-        }
-    }
-
-    fun onIntroNext() = goTo(OnboardingStep.INTRO_ICONS)
-
-    fun onFinish() {
-        viewModelScope.launch {
+            // Phase 1 has no recovery step and no intro carousel (APP-528): persisting the
+            // PIN completes onboarding outright, and the host opens the vault directly.
             store.completeOnboarding()
-            _state.update { it.copy(finished = true) }
+            _state.update { it.copy(mismatch = false, finished = true) }
         }
     }
 
@@ -120,10 +114,6 @@ class OnboardingViewModel(
                 OnboardingStep.LANGUAGE -> return
                 OnboardingStep.CREATE_PIN -> OnboardingStep.LANGUAGE
                 OnboardingStep.CONFIRM_PIN -> OnboardingStep.CREATE_PIN
-                // Past PIN creation the intro cards are informational; back goes no further
-                // than re-confirming the PIN.
-                OnboardingStep.INTRO_PRIVATE -> OnboardingStep.CONFIRM_PIN
-                OnboardingStep.INTRO_ICONS -> OnboardingStep.INTRO_PRIVATE
             }
         goTo(previous)
     }

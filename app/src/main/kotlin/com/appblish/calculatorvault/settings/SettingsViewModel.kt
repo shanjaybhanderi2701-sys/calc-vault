@@ -26,7 +26,7 @@ data class SettingsUiState(
 )
 
 /**
- * Backs the Settings, Theme, and hardening toggle screens. Owns the single source of truth
+ * Backs the Settings and hardening toggle screens. Owns the single source of truth
  * for [VaultSettings]; every setter persists through [SettingsStore] and optimistically
  * updates the flow so the switches feel instant. The OS-level side effects of the
  * prevent-uninstall and disguise switches happen in the screen (they need an Activity /
@@ -55,10 +55,6 @@ class SettingsViewModel(
             }
         }
     }
-
-    fun setKeypadSkin(skin: KeypadSkin) = mutate { it.copy(keypadSkin = skin) }
-
-    fun setUnlockAnimation(animation: UnlockAnimation) = mutate { it.copy(unlockAnimation = animation) }
 
     fun setBreakInAlerts(enabled: Boolean) = mutate { it.copy(breakInAlertsEnabled = enabled) }
 

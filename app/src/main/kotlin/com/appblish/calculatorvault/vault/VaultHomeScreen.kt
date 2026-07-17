@@ -27,7 +27,6 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Surface
@@ -57,7 +56,7 @@ import java.util.Locale
 /**
  * The vault-home "CalcVault" dashboard — the root vault screen in Phase 1 (design call
  * D-1 on APP-224: no bottom-nav shell, no App Lock / Explore tabs). Large-title header
- * with the docx image27 icon trio **Search · Themes · Settings**, the three Phase-1 media
+ * with the header actions **Search · Settings** (APP-528 removed Themes), the three Phase-1 media
  * categories laid out as a **2×2 tile grid** (Photos · Videos / Audios · Bin) with dual
  * counts ("300 Photos / 8 Folders"), and a cross-category Recent strip showing real cover
  * thumbnails. The first-run hint is NOT drawn in-flow here: per APP-239 / APP-234 spec §0
@@ -71,7 +70,6 @@ fun VaultHomeScreen(
     onRecentClick: (VaultItem) -> Unit,
     onRecycleBinClick: () -> Unit,
     onSearchClick: () -> Unit,
-    onThemeClick: () -> Unit,
     onSettingsClick: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: HomeViewModel = viewModel(),
@@ -89,7 +87,7 @@ fun VaultHomeScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(bottom = spacing.xxl),
     ) {
-        HomeHeader(onSearch = onSearchClick, onTheme = onThemeClick, onSettings = onSettingsClick)
+        HomeHeader(onSearch = onSearchClick, onSettings = onSettingsClick)
 
         CategoryGrid(
             state = state,
@@ -120,7 +118,6 @@ fun VaultHomeScreen(
 @Composable
 private fun HomeHeader(
     onSearch: () -> Unit,
-    onTheme: () -> Unit,
     onSettings: () -> Unit,
 ) {
     val colors = VaultTheme.colors
@@ -138,12 +135,10 @@ private fun HomeHeader(
             color = colors.textPrimary,
             modifier = Modifier.weight(1f),
         )
-        // Docx image27 header trio. The icon-switch action moved into Settings (S22).
+        // Header actions. The icon-switch action moved into Settings (S22); the Themes action
+        // was removed with the calculator-theming feature (APP-528).
         IconButton(onClick = onSearch) {
             Icon(Icons.Filled.Search, contentDescription = "Search", tint = colors.textPrimary)
-        }
-        IconButton(onClick = onTheme) {
-            Icon(Icons.Filled.Star, contentDescription = "Themes", tint = colors.textPrimary)
         }
         IconButton(onClick = onSettings) {
             Icon(Icons.Filled.Settings, contentDescription = "Settings", tint = colors.textPrimary)
