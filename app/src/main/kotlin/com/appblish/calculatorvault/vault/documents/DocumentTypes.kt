@@ -36,7 +36,10 @@ enum class DocumentKind(
          * is the format signal the user recognizes; MIME is consulted only when the extension
          * is unknown/absent. Falls back to [GENERIC] rather than guessing.
          */
-        fun classify(fileName: String, mimeType: String? = null): DocumentKind {
+        fun classify(
+            fileName: String,
+            mimeType: String? = null
+        ): DocumentKind {
             byExtension(fileName)?.let { return it }
             byMime(mimeType)?.let { return it }
             return GENERIC
@@ -67,8 +70,11 @@ enum class DocumentKind(
                 mime.contains("powerpoint") || mime.contains("presentation") -> POWERPOINT
                 mime == "application/rtf" || mime == "text/rtf" -> RICH_TEXT
                 mime.startsWith("text/") -> TEXT
-                mime.contains("zip") || mime.contains("compressed") ||
-                    mime.contains("rar") || mime.contains("tar") || mime.contains("gzip") -> ARCHIVE
+                mime.contains("zip") ||
+                    mime.contains("compressed") ||
+                    mime.contains("rar") ||
+                    mime.contains("tar") ||
+                    mime.contains("gzip") -> ARCHIVE
                 else -> null
             }
         }

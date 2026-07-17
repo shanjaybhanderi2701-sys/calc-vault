@@ -1,10 +1,12 @@
 package com.appblish.calculatorvault.vault
 
 import android.content.Context
+import android.net.Uri
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.appblish.calculatorvault.vault.actions.UnhideMessages
+import com.appblish.calculatorvault.vault.documents.DocumentImport
 import com.appblish.calculatorvault.vault.media.VaultThumbnailPipeline
 import com.appblish.calculatorvault.vault.model.GridSort
 import com.appblish.calculatorvault.vault.model.SortDirection
@@ -552,10 +554,118 @@ class CategoryViewModel(
         shareCleanupScope.launch { VaultShare.purge(session) }
     }
 
-    // Share backstop, mirroring PagerViewerViewModel: a VM clear mid-share (ON_STOP
-    // re-lock while the receiver is foreground) must not lose the purge.
+    // --- APP-527 · Documents SAF import (seam 2) -------------------------------------
+
+    /**
+     * Import SAF-picked documents into the Documents category ([VaultCategory.FILES]):
+     * resolve each `content://` URI's real name/MIME/size, stage a [VaultItem], and stream
+     * it through the shared [VaultContentRepository.hide] path — the exact encrypt-then-
+     * remove pipeline photos/videos use, minus the video poster/preview/thumbnail branches
+     * (there is no image to decode; `hide()` skips those for non-video categories already).
+     * Runs on the app-scoped [BulkOps] executor so navigating away mid-import never cancels
+     * a half-done batch, and publishes the honest one-line summary on the shared notice slot
+     * (D-3, never silent). Skips URIs whose grant is gone rather than vaulting empty records.
+     */
+    fun importDocuments(
+        context: Context,
+        uris: List<Uri>,
+    ) {
+        if (uris.isEmpty()) return
+        val appContext = context.applicationContext
+        val destinationFolderId = realOpenFolderId()
+        BulkOps.run {
+            val now = System.currentTimeMillis()
+            val resolver = appContext.contentResolver
+            val staged =
+                withContext(Dispatchers.IO) {
+                    uris.mapNotNull { uri ->
+                        DocumentImport.resolve(resolver, uri)?.let { meta ->
+                            DocumentImport.stage(meta, uri.toString(), now, destinationFolderId)
+                        }
+                    }
+                }
+            if (staged.isEmpty()) {
+                "Couldn't add documents."
+            } else {
+                val stored = repository.hide(staged)
+                val added = stored.size
+                val failed = staged.size - added
+                when {
+                    added == 0 -> "Couldn't add documents."
+                    failed > 0 -> "Added ${countLabel(added)}, $failed failed"
+                    else -> "Added ${countLabel(added)}"
+                }
+            }
+        }
+    }
+
+    // --- APP-527 · Documents view hand-off (seam 4, secure temp-file ACTION_VIEW) -----
+
+    private val _viewRequest = MutableStateFlow<VaultShare.Session?>(null)
+
+    /** A prepared single-item view session awaiting launch; DocumentViewLauncher consumes it. */
+    val viewRequest: StateFlow<VaultShare.Session?> = _viewRequest.asStateFlow()
+
+    private val _viewNotice = MutableStateFlow<String?>(null)
+
+    /** One-shot open-failure copy ("Couldn't open.") — never a silent no-op. */
+    val viewNotice: StateFlow<String?> = _viewNotice.asStateFlow()
+
+    fun consumeViewNotice() {
+        _viewNotice.value = null
+    }
+
+    // The launched-but-not-finished view session, purged the moment the viewer returns.
+    private var liveViewSession: VaultShare.Session? = null
+
+    /**
+     * Open a single document via the secure temp-file hand-off (APP-527 §4): decrypt the one
+     * blob into a scoped `cacheDir/share/<uuid>/` session (the reviewed [VaultShare.prepare]
+     * path), then surface it via [viewRequest] for the launcher to fire as an `ACTION_VIEW`
+     * read-only chooser. **Not** the pager VIEWER route — a document opens in a real
+     * installed viewer, and its cleartext copy is purged the moment that viewer returns
+     * ([viewFinished]). All-or-nothing: a decrypt failure leaves nothing behind and reports
+     * via [viewNotice]. A tap while one hand-off is already in flight is ignored (no dup).
+     */
+    fun openDocument(
+        context: Context,
+        itemId: String,
+    ) {
+        if (liveViewSession != null || _viewRequest.value != null) return
+        val appContext = context.applicationContext
+        viewModelScope.launch {
+            val item = repository.items(category).first().firstOrNull { it.id == itemId } ?: return@launch
+            val session = withContext(Dispatchers.IO) { VaultShare.prepare(appContext, repository, listOf(item)) }
+            if (session == null) {
+                _viewNotice.value = "Couldn't open."
+            } else {
+                liveViewSession = session
+                _viewRequest.value = session
+            }
+        }
+    }
+
+    /** The screen launched the viewer; consume the request so it can never re-fire. */
+    fun viewLaunched() {
+        _viewRequest.value = null
+    }
+
+    /**
+     * The viewer returned (opened or cancelled) — delete the temp copy now, per the APP-527
+     * §4 cleanup contract. Runs on [shareCleanupScope] so a VM clear racing the result can
+     * never strand the cleartext until the process-restart purge.
+     */
+    fun viewFinished() {
+        val session = liveViewSession ?: return
+        liveViewSession = null
+        shareCleanupScope.launch { VaultShare.purge(session) }
+    }
+
+    // Share/view backstop, mirroring PagerViewerViewModel: a VM clear mid-hand-off (ON_STOP
+    // re-lock while the receiver/viewer is foreground) must not lose the purge.
     override fun onCleared() {
         shareFinished()
+        viewFinished()
         super.onCleared()
     }
 

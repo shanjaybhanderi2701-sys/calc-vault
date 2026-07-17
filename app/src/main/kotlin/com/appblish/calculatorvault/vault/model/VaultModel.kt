@@ -12,17 +12,30 @@ enum class VaultCategory(
     PHOTOS("Photos", 0xFF3B82F6),
     VIDEOS("Videos", 0xFFA855F7),
     AUDIOS("Audios", 0xFFF59E0B),
-    FILES("Files", 0xFF14B8A6),
+
+    // APP-527/APP-533: the Documents category. The enum **name stays FILES** so every
+    // already-persisted index keeps decoding (category is serialized via `category.name`);
+    // only the user-facing display label became "Documents".
+    FILES("Documents", 0xFF14B8A6),
     CONTACTS("Contacts", 0xFFEC4899),
     ;
 
     companion object {
         /**
          * The Phase-1 media vault scope (build spec §0/§3, APP-225): Photos, Videos, Audio
-         * only. FILES and CONTACTS stay in the enum so persisted indexes keep decoding, but
-         * no Phase-1 surface offers them.
+         * only. This list drives the **MediaStore-backed** paths (import picker, thumbnails,
+         * seeded folders) — code that is genuinely media-only stays on PHASE1. FILES and
+         * CONTACTS stay in the enum so persisted indexes keep decoding.
          */
         val PHASE1: List<VaultCategory> = listOf(PHOTOS, VIDEOS, AUDIOS)
+
+        /**
+         * The categories surfaced on the vault **home tile grid** (APP-527 §2): the three
+         * Phase-1 media categories plus Documents. Kept separate from [PHASE1] so adding the
+         * Documents home tile never leaks FILES into the MediaStore media paths that read
+         * PHASE1. CONTACTS remains off every surface (spec §0).
+         */
+        val HOME: List<VaultCategory> = PHASE1 + FILES
     }
 }
 
