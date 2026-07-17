@@ -45,6 +45,7 @@ import com.appblish.calculatorvault.recovery.RecoveryEntryScreen
 import com.appblish.calculatorvault.recovery.RecoverySetupIntroHost
 import com.appblish.calculatorvault.recovery.RecoverySetupScreen
 import com.appblish.calculatorvault.recovery.RecoveryUnlockScreen
+import com.appblish.calculatorvault.settings.AppearanceScreen
 import com.appblish.calculatorvault.settings.ChangePinScreen
 import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.PinRecoveryScreen
@@ -590,6 +591,7 @@ fun VaultNavHost() {
                 SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
+                    onAppearance = { navController.navigate(VaultDestinations.SETTINGS_APPEARANCE) },
                     onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                     onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
                     onLanguage = { navController.navigate(VaultDestinations.SETTINGS_LANGUAGE) },
@@ -606,6 +608,10 @@ fun VaultNavHost() {
                     onDone = { navController.popBackStack() },
                     onBack = { navController.popBackStack() },
                 )
+            }
+
+            composable(VaultDestinations.SETTINGS_APPEARANCE) {
+                AppearanceScreen(onBack = { navController.popBackStack() })
             }
 
             composable(VaultDestinations.SETTINGS_THEME) {

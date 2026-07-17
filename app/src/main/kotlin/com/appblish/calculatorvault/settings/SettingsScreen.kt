@@ -35,6 +35,7 @@ import com.appblish.calculatorvault.ui.components.RowTrailing
 fun SettingsScreen(
     onBack: () -> Unit,
     onChangePin: () -> Unit,
+    onAppearance: () -> Unit,
     onTheme: () -> Unit,
     onPermissions: () -> Unit,
     onLanguage: () -> Unit,
@@ -48,6 +49,13 @@ fun SettingsScreen(
 
     SettingsScaffold(title = "Settings", onBack = onBack, modifier = modifier) {
         SettingsSectionHeader("General")
+        ListRow(
+            title = "Appearance",
+            subtitle = "${settings.themeMode.displayName} · ${settings.accentColor.displayName} accent",
+            leadingIcon = Icons.Filled.Star,
+            trailing = RowTrailing.Chevron(Icons.Filled.KeyboardArrowRight),
+            onClick = onAppearance,
+        )
         ListRow(
             title = "App language",
             subtitle = settings.appLanguage,

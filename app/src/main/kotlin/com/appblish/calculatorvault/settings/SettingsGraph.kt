@@ -54,6 +54,11 @@ object SettingsGraph {
             val settings = settingsStore.load()
             relockOnBackgroundEnabled = settings.relockOnBackgroundEnabled
             allowScreenshotsEnabled = settings.allowScreenshotsEnabled
+            // Hydrate the live theme (APP-525) from persisted values so the app opens on the
+            // user's chosen mode + accent. Dark is the default, so there is no light→dark flash
+            // while this async read completes.
+            com.appblish.calculatorvault.ui.theme.ThemeController
+                .apply(settings.themeMode, settings.accentColor)
         }
     }
 
