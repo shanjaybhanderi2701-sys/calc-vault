@@ -1070,13 +1070,13 @@ private fun FolderTileCard(
                             .padding(spacing.xs)
                             .size(VaultGridTokens.PinBadgeSize)
                             .clip(CircleShape)
-                            .background(VaultGridTokens.PinBadgeContainer)
+                            .background(colors.accentContainer)
                             .testTag("pin-badge-${tile.id}"),
                 ) {
                     Icon(
                         imageVector = VaultGridTokens.PushPin,
                         contentDescription = "Pinned",
-                        tint = VaultGridTokens.PinBadgeGlyph,
+                        tint = colors.accent,
                         modifier = Modifier.size(VaultGridTokens.PinBadgeGlyphSize),
                     )
                 }
