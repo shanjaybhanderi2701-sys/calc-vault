@@ -147,11 +147,11 @@ private fun HomeHeader(
 }
 
 /**
- * The three Phase-1 media categories + the recycle Bin, laid out as a 2×2 grid of large
- * rounded tiles (Photos·Videos / Audios·Bin) — every tile visible without horizontal
- * scroll, each with a dual item/folder count subtitle. Built from plain Rows so it
- * composes inside the home's vertical scroll (no nested lazy grid). Documents and
- * Contacts are omitted entirely — not teased (spec §0, design call D-1).
+ * The [VaultCategory.HOME] categories (Photos · Videos · Audios · Documents) + the recycle
+ * Bin, laid out as a 2-column grid of large rounded tiles — every tile visible without
+ * horizontal scroll, each with a dual item/folder count subtitle. Built from plain Rows so
+ * it composes inside the home's vertical scroll (no nested lazy grid). Documents joined the
+ * grid with the APP-527 stream; Contacts stays omitted entirely — not teased (spec §0).
  */
 @Composable
 private fun CategoryGrid(
@@ -164,7 +164,7 @@ private fun CategoryGrid(
 
     val tiles =
         buildList {
-            VaultCategory.PHASE1.forEach { category ->
+            VaultCategory.HOME.forEach { category ->
                 add(
                     HomeTile(
                         label = category.label,

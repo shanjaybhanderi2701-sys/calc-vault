@@ -96,11 +96,15 @@ import com.appblish.calculatorvault.vault.actions.PropertyDialog
 import com.appblish.calculatorvault.vault.actions.UnhideChoice
 import com.appblish.calculatorvault.vault.actions.UnhideDialog
 import com.appblish.calculatorvault.vault.actions.chosenFolderFrom
+import com.appblish.calculatorvault.vault.documents.DocumentImport
+import com.appblish.calculatorvault.vault.documents.DocumentKind
 import com.appblish.calculatorvault.vault.model.SortKey
 import com.appblish.calculatorvault.vault.model.VaultCategory
 import com.appblish.calculatorvault.vault.model.VaultItem
 import com.appblish.calculatorvault.vault.model.sortItems
+import com.appblish.calculatorvault.vault.share.DocumentViewLauncher
 import com.appblish.calculatorvault.vault.share.ShareSessionLauncher
+import com.appblish.calculatorvault.vault.ui.DocumentTypeIcon
 import com.appblish.calculatorvault.vault.ui.SortSheet
 import com.appblish.calculatorvault.vault.ui.color
 import com.appblish.calculatorvault.vault.ui.icon
@@ -203,6 +207,39 @@ fun CategoryScreen(
             viewModel.consumeShareNotice()
         }
     }
+
+    // APP-527 §4: Documents open via the secure temp-file ACTION_VIEW hand-off (decrypt →
+    // read-only FileProvider → real viewer → purge on return), NOT the pager VIEWER route.
+    val isDocuments = state.category == VaultCategory.FILES
+    val viewRequest by viewModel.viewRequest.collectAsStateWithLifecycle()
+    val viewNotice by viewModel.viewNotice.collectAsStateWithLifecycle()
+    DocumentViewLauncher(
+        request = viewRequest,
+        onLaunched = viewModel::viewLaunched,
+        onFinished = viewModel::viewFinished,
+    )
+    LaunchedEffect(viewNotice) {
+        val notice = viewNotice ?: return@LaunchedEffect
+        try {
+            snackbarHostState.showSnackbar(notice)
+        } finally {
+            viewModel.consumeViewNotice()
+        }
+    }
+
+    // APP-527 §2: the Documents FAB/Add tile imports via SAF (OpenMultipleDocuments), not the
+    // MediaStore hide picker — documents live anywhere, not in a media collection. The picked
+    // content:// URIs stream straight through the shared repository.hide(...) encrypt path.
+    val documentPicker =
+        rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+            if (uris.isNotEmpty()) viewModel.importDocuments(context, uris)
+        }
+    val hideAction: () -> Unit =
+        if (isDocuments) {
+            { documentPicker.launch(DocumentImport.PICK_MIME_TYPES) }
+        } else {
+            onHide
+        }
 
     val usesGrid =
         state.category == VaultCategory.PHOTOS ||
@@ -322,7 +359,7 @@ fun CategoryScreen(
                             selectedIds = state.selectedAlbumIds,
                             onOpen = { id -> if (!viewModel.tappedAlbum(id)) viewModel.openFolder(id) },
                             onLongPress = viewModel::startAlbumSelection,
-                            onAdd = onHide,
+                            onAdd = hideAction,
                             loadCover = { itemId -> viewModel.thumbnail(context, itemId) },
                         )
                     // S17 empty folder: per-category "No Hidden … Yet" with the hide hint.
@@ -364,6 +401,18 @@ fun CategoryScreen(
                             labelForIndex = { index -> state.folderItems.getOrNull(index)?.dateLabel },
                         )
                     }
+                    // APP-527 §3/§4: Documents render a per-format type icon (no thumbnail
+                    // decrypt) and a tap opens via the secure temp-file hand-off, never the
+                    // pager viewer.
+                    isDocuments ->
+                        DocumentList(
+                            items = state.folderItems,
+                            selectedIds = state.selectedIds,
+                            onItemClick = { item ->
+                                viewModel.tappedItem(item.id)?.let { viewModel.openDocument(context, it.id) }
+                            },
+                            onItemLongPress = { item -> viewModel.startSelection(item.id) },
+                        )
                     else ->
                         CategoryList(
                             items = state.folderItems,
@@ -383,7 +432,7 @@ fun CategoryScreen(
                 expanded = fabExpanded,
                 onExpandedChange = { fabExpanded = it },
                 onCreateFolder = { showCreateFolder = true },
-                onHide = onHide,
+                onHide = hideAction,
                 modifier = Modifier.align(Alignment.BottomEnd).padding(VaultTheme.spacing.lg),
             )
         }
@@ -1160,6 +1209,66 @@ private fun CategoryList(
                 ) {
                     Text(text = item.originalName, style = VaultTheme.typography.bodyLarge, color = colors.textPrimary)
                     Text(text = item.dateLabel, style = VaultTheme.typography.labelMedium, color = colors.textSecondary)
+                }
+            }
+        }
+        // P2-2: draggable fast-scroll for long folders (renders only past ~30 items).
+        FastScrollbar(
+            state = listState,
+            modifier = Modifier.align(Alignment.CenterEnd),
+            labelForIndex = { index -> items.getOrNull(index)?.dateLabel },
+        )
+    }
+}
+
+/**
+ * APP-527 §3 Documents list: one row per hidden document — the per-format [DocumentTypeIcon]
+ * (classified from the item's original name + stored MIME, **no blob decrypt**), the
+ * filename, and a "size · date" subtitle. Selection mirrors [CategoryList]; a plain tap is
+ * routed by the caller to the secure temp-file view hand-off (§4), never the pager viewer.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun DocumentList(
+    items: List<VaultItem>,
+    selectedIds: Set<String>,
+    onItemClick: (VaultItem) -> Unit,
+    onItemLongPress: (VaultItem) -> Unit,
+) {
+    val colors = VaultTheme.colors
+    val spacing = VaultTheme.spacing
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+            items(items, key = { it.id }) { item ->
+                val selected = item.id in selectedIds
+                val kind = DocumentKind.classify(item.originalName, item.mimeType)
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier =
+                        Modifier
+                            .fillMaxWidth()
+                            .background(if (selected) colors.accent.copy(alpha = 0.14f) else colors.canvas)
+                            .combinedClickable(
+                                onClick = { onItemClick(item) },
+                                onLongClick = { onItemLongPress(item) },
+                            ).padding(horizontal = spacing.lg, vertical = spacing.md),
+                ) {
+                    DocumentTypeIcon(kind = kind, size = 40.dp)
+                    Column(modifier = Modifier.padding(start = spacing.md).weight(1f)) {
+                        Text(
+                            text = item.originalName,
+                            style = VaultTheme.typography.bodyLarge,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            text = "${PhotoProperties.formatSize(item.sizeBytes)} · ${item.dateLabel}",
+                            style = VaultTheme.typography.labelMedium,
+                            color = colors.textSecondary,
+                        )
+                    }
                 }
             }
         }
