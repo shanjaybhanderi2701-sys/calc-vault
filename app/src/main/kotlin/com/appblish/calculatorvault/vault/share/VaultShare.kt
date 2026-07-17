@@ -102,6 +102,35 @@ object VaultShare {
         }
     }
 
+    /**
+     * The system **view** hand-off for a single decrypted document (APP-527, spec
+     * [APP-522 §3.1]): `ACTION_VIEW` on the FileProvider URI with a **read-only** grant, so
+     * the user's installed viewer for that type opens the temp copy — the vault's real
+     * storage path and ciphertext stay unreachable (same `cacheDir/share/` whitelist as a
+     * share). The caller purges the session from its activity-result callback the moment the
+     * viewer returns, so the decrypted copy never outlives the viewing (guaranteed cleanup,
+     * with [purgeAll] at process start as the crash/force-kill backstop).
+     *
+     * Requires a single-item [session] (a document is opened one at a time). Uses
+     * `setDataAndType` + `ClipData` so the read grant propagates through the chooser on
+     * every API level, exactly as [chooserIntent] does for share.
+     */
+    fun viewIntent(session: Session): Intent {
+        val uri = session.uris.singleOrNull()
+            ?: error("viewIntent requires a single-item session (${session.uris.size} uris)")
+        val view =
+            Intent(Intent.ACTION_VIEW).apply {
+                setDataAndType(uri, session.mimeType)
+                // ClipData mirrors the data URI so the read grant follows the intent through
+                // the chooser on every API level (data-URI grants alone don't always route).
+                clipData = ClipData("vault document", arrayOf(session.mimeType), ClipData.Item(uri))
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        return Intent.createChooser(view, "Open with").apply {
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    }
+
     /** Delete [session]'s temp copies now (share completed or cancelled). */
     fun purge(session: Session) {
         session.dir.deleteRecursively()
