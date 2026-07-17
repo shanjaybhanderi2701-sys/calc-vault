@@ -5,36 +5,39 @@ import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
 // ---------------------------------------------------------------------------
-// Raw palette — read from the board's 65-flow deck (design-spec, APP-142).
-// The vault is dark-first: near-black canvas, one vivid GREEN accent, and RED
-// reserved exclusively for destructive actions. No other brand hues.
+// Token palette (APP-525). The accent is a single design token supplied by the
+// user's chosen [AccentColor]; the neutral canvas/surface/text ramps come in a
+// dark and a light variant selected by the active [ThemeMode]. RED stays reserved
+// exclusively for destructive actions in both themes. No hard-coded accent hue
+// lives here anymore — the accent flows in from [vaultColors].
 // ---------------------------------------------------------------------------
 
-/** The single brand accent. Primary CTAs, active nav, toggles, selection, `=`/`AC`, FABs. */
-internal val AccentGreen = Color(0xFF22C55E)
-internal val AccentGreenPressed = Color(0xFF16A34A)
-
 /** Destructive-only. Delete, permanent-remove, break-in warnings. Never decorative. */
-internal val DestructiveRed = Color(0xFFEF4444)
+private val DestructiveRed = Color(0xFFEF4444)
+private val OnDestructive = Color(0xFFFFFFFF)
 
-// Neutral canvas.
-internal val CanvasBlack = Color(0xFF0D0F12)
-internal val SurfaceDark = Color(0xFF15181D)
-internal val SurfaceVariantDark = Color(0xFF1F242B)
-internal val DividerDark = Color(0xFF2A2F37)
+// Neutral DARK ramp — near-black canvas so the disguise and vault stay indistinguishable.
+private val CanvasBlack = Color(0xFF0D0F12)
+private val SurfaceDark = Color(0xFF15181D)
+private val SurfaceVariantDark = Color(0xFF1F242B)
+private val DividerDark = Color(0xFF2A2F37)
+private val TextPrimaryDark = Color(0xFFFFFFFF)
+private val TextSecondaryDark = Color(0xFF9AA0A6)
+private val TextDisabledDark = Color(0xFF5F656D)
 
-internal val TextPrimaryDark = Color(0xFFFFFFFF)
-internal val TextSecondaryDark = Color(0xFF9AA0A6)
-internal val TextDisabledDark = Color(0xFF5F656D)
-
-// On-accent / on-destructive foreground (dark ink reads best on the vivid green).
-internal val OnAccent = Color(0xFF06210F)
-internal val OnDestructive = Color(0xFFFFFFFF)
+// Neutral LIGHT ramp — a clean near-white surface set that reads well under any accent.
+private val CanvasLight = Color(0xFFF7F8FA)
+private val SurfaceLight = Color(0xFFFFFFFF)
+private val SurfaceVariantLight = Color(0xFFEFF1F4)
+private val DividerLight = Color(0xFFE2E5EA)
+private val TextPrimaryLight = Color(0xFF1A1C1E)
+private val TextSecondaryLight = Color(0xFF5F656D)
+private val TextDisabledLight = Color(0xFFA0A4AA)
 
 /**
- * Semantic color tokens. Screens and components read these instead of raw hex so
- * the palette can shift in one place. Exposed through [LocalVaultColors]; grab it
- * with `VaultTheme.colors`.
+ * Semantic color tokens. Screens and components read these instead of raw hex so the palette
+ * — accent AND mode — can shift in one place. Exposed through [LocalVaultColors]; grab it with
+ * `VaultTheme.colors`.
  */
 @Immutable
 data class VaultColors(
@@ -52,21 +55,33 @@ data class VaultColors(
     val textDisabled: Color,
 )
 
-internal val DarkVaultColors =
+/**
+ * Build the semantic token set for a given [accent] swatch and light/dark [dark] mode. This is
+ * the single place accent + neutrals are combined, so every screen recolors from one call. The
+ * on-accent foreground comes from the swatch's own [AccentColor.onInk] so text/icons on the
+ * accent stay legible on every swatch.
+ */
+fun vaultColors(
+    accent: AccentColor,
+    dark: Boolean,
+): VaultColors =
     VaultColors(
-        accent = AccentGreen,
-        accentPressed = AccentGreenPressed,
-        onAccent = OnAccent,
+        accent = accent.swatch,
+        accentPressed = accent.pressed,
+        onAccent = accent.onInk,
         destructive = DestructiveRed,
         onDestructive = OnDestructive,
-        canvas = CanvasBlack,
-        surface = SurfaceDark,
-        surfaceVariant = SurfaceVariantDark,
-        divider = DividerDark,
-        textPrimary = TextPrimaryDark,
-        textSecondary = TextSecondaryDark,
-        textDisabled = TextDisabledDark,
+        canvas = if (dark) CanvasBlack else CanvasLight,
+        surface = if (dark) SurfaceDark else SurfaceLight,
+        surfaceVariant = if (dark) SurfaceVariantDark else SurfaceVariantLight,
+        divider = if (dark) DividerDark else DividerLight,
+        textPrimary = if (dark) TextPrimaryDark else TextPrimaryLight,
+        textSecondary = if (dark) TextSecondaryDark else TextSecondaryLight,
+        textDisabled = if (dark) TextDisabledDark else TextDisabledLight,
     )
 
-/** Provided by [CalculatorVaultTheme]; defaults to the dark palette. */
-val LocalVaultColors = staticCompositionLocalOf { DarkVaultColors }
+/**
+ * Provided by [CalculatorVaultTheme]; defaults to the first-run palette (Blue accent, dark
+ * mode) so any composable read outside the theme still resolves to sensible tokens.
+ */
+val LocalVaultColors = staticCompositionLocalOf { vaultColors(AccentColor.DEFAULT, dark = true) }

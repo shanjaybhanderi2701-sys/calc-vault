@@ -1,5 +1,8 @@
 package com.appblish.calculatorvault.settings
 
+import com.appblish.calculatorvault.ui.theme.AccentColor
+import com.appblish.calculatorvault.ui.theme.ThemeMode
+
 /**
  * Persistence seam for the non-secret [VaultSettings]. Mirrors the shape of
  * [com.appblish.calculatorvault.auth.CredentialStore]: concrete stores only implement raw
@@ -26,6 +29,8 @@ interface SettingsStore {
 
 /** Shared encode/decode on top of three tiny primitives. */
 abstract class BaseSettingsStore : SettingsStore {
+    // ThemeMode / AccentColor persistence is by enum name (APP-525) so a renamed/removed swatch
+    // decodes to the default rather than throwing — see fromNameOrNull fallbacks below.
     protected abstract suspend fun getValue(key: String): String?
 
     protected abstract suspend fun setValue(
@@ -39,6 +44,8 @@ abstract class BaseSettingsStore : SettingsStore {
 
     override suspend fun load(): VaultSettings =
         VaultSettings(
+            themeMode = ThemeMode.fromNameOrNull(getValue(KEY_THEME_MODE)) ?: ThemeMode.DEFAULT,
+            accentColor = AccentColor.fromNameOrNull(getValue(KEY_ACCENT)) ?: AccentColor.DEFAULT,
             breakInAlertsEnabled = getBool(KEY_BREAKIN, default = true),
             fakePasswordEnabled = getBool(KEY_FAKE_PW, default = true),
             preventUninstallEnabled = getBool(KEY_PREVENT_UNINSTALL, default = false),
@@ -52,6 +59,8 @@ abstract class BaseSettingsStore : SettingsStore {
         )
 
     override suspend fun save(settings: VaultSettings) {
+        setValue(KEY_THEME_MODE, settings.themeMode.name)
+        setValue(KEY_ACCENT, settings.accentColor.name)
         setValue(KEY_BREAKIN, settings.breakInAlertsEnabled.toString())
         setValue(KEY_FAKE_PW, settings.fakePasswordEnabled.toString())
         setValue(KEY_PREVENT_UNINSTALL, settings.preventUninstallEnabled.toString())
@@ -74,6 +83,8 @@ abstract class BaseSettingsStore : SettingsStore {
     ): Boolean = getValue(key)?.toBooleanStrictOrNull() ?: default
 
     private companion object {
+        const val KEY_THEME_MODE = "theme_mode"
+        const val KEY_ACCENT = "accent_color"
         const val KEY_BREAKIN = "breakin_alerts"
         const val KEY_FAKE_PW = "fake_password"
         const val KEY_PREVENT_UNINSTALL = "prevent_uninstall"
@@ -87,6 +98,8 @@ abstract class BaseSettingsStore : SettingsStore {
 
         val KNOWN_KEYS =
             setOf(
+                KEY_THEME_MODE,
+                KEY_ACCENT,
                 KEY_BREAKIN,
                 KEY_FAKE_PW,
                 KEY_PREVENT_UNINSTALL,

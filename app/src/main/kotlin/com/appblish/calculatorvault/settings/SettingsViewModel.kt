@@ -7,6 +7,9 @@ import com.appblish.calculatorvault.auth.CredentialStore
 import com.appblish.calculatorvault.auth.RecoverySetup
 import com.appblish.calculatorvault.recovery.RecoveryGraph
 import com.appblish.calculatorvault.recovery.RecoveryManager
+import com.appblish.calculatorvault.ui.theme.AccentColor
+import com.appblish.calculatorvault.ui.theme.ThemeController
+import com.appblish.calculatorvault.ui.theme.ThemeMode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,6 +57,24 @@ class SettingsViewModel(
                 )
             }
         }
+    }
+
+    /**
+     * Appearance → theme mode (APP-525 §1.1). Updates [ThemeController] first so the whole app
+     * recolors on the next frame, then persists so the choice survives a restart.
+     */
+    fun setThemeMode(mode: ThemeMode) {
+        ThemeController.selectMode(mode)
+        mutate { it.copy(themeMode = mode) }
+    }
+
+    /**
+     * Appearance → accent swatch (APP-525 §1.2). Swaps the single accent token live via
+     * [ThemeController] (instant app-wide recolor), then persists.
+     */
+    fun setAccentColor(accent: AccentColor) {
+        ThemeController.selectAccent(accent)
+        mutate { it.copy(accentColor = accent) }
     }
 
     fun setBreakInAlerts(enabled: Boolean) = mutate { it.copy(breakInAlertsEnabled = enabled) }

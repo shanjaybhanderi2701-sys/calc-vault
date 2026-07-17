@@ -1,5 +1,8 @@
 package com.appblish.calculatorvault.settings
 
+import com.appblish.calculatorvault.ui.theme.AccentColor
+import com.appblish.calculatorvault.ui.theme.ThemeMode
+
 // Personalization + protection state surfaced on the Settings screens (Phase 5). This is the
 // non-secret configuration layer that sits alongside the auth-package credential secrets: it
 // decides which hardening switches are armed. Persisted through SettingsStore. (APP-528
@@ -10,6 +13,10 @@ package com.appblish.calculatorvault.settings
  * match the board deck.
  */
 data class VaultSettings(
+    /** App-wide light/dark selection (APP-525 §1.1). Default Dark on first run. */
+    val themeMode: ThemeMode = ThemeMode.DEFAULT,
+    /** App-wide accent token (APP-525 §1.2). Default Blue; recolors the whole app when changed. */
+    val accentColor: AccentColor = AccentColor.DEFAULT,
     /** Capture a front-camera intruder selfie after repeated wrong PINs. */
     val breakInAlertsEnabled: Boolean = true,
     /** Offer decoy (fake) PIN spaces under duress. */
