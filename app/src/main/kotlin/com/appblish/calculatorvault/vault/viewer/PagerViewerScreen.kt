@@ -801,7 +801,14 @@ private fun VideoPage(
         if (!isCurrent) playing = false
     }
     if (active) {
-        MediaPlayerPage(item.id, fileActions, playlist, onSeekbarDraggingChanged)
+        // APP-526: audio reuses the exact same encrypted playback layer (EncryptedVaultDataSource +
+        // ProgressiveMediaSource + VideoSeekbar + PlaylistEngine order modes) MINUS the video surface,
+        // rendered as a now-playing screen instead. Video keeps its full immersive surface + gestures.
+        if (item.category == VaultCategory.AUDIOS) {
+            AudioPlayerPage(item, fileActions, playlist, onSeekbarDraggingChanged)
+        } else {
+            MediaPlayerPage(item.id, fileActions, playlist, onSeekbarDraggingChanged)
+        }
     } else {
         VideoPreviewPage(
             item = item,
@@ -902,7 +909,7 @@ private fun VideoPreviewPage(
  * player is edge-to-edge and the file actions stay reachable but out of the way (spec §5c).
  */
 @Composable
-private fun ImmersivePlayerTopBar(
+internal fun ImmersivePlayerTopBar(
     fileActions: ViewerFileActions,
     modifier: Modifier = Modifier,
 ) {
@@ -1392,7 +1399,7 @@ private fun subtitleDisplayName(
  * never a crash, never a silent black screen.
  */
 @Composable
-private fun UnsupportedMediaPage(error: PlaybackException) {
+internal fun UnsupportedMediaPage(error: PlaybackException) {
     val isFormatIssue =
         when (error.errorCode) {
             PlaybackException.ERROR_CODE_DECODING_FORMAT_UNSUPPORTED,
