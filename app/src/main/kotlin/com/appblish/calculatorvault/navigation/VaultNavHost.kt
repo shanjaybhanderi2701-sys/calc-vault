@@ -50,7 +50,6 @@ import com.appblish.calculatorvault.settings.PermissionManagementScreen
 import com.appblish.calculatorvault.settings.PinRecoveryScreen
 import com.appblish.calculatorvault.settings.SettingsLanguageScreen
 import com.appblish.calculatorvault.settings.SettingsScreen
-import com.appblish.calculatorvault.settings.ThemeScreen
 import com.appblish.calculatorvault.vault.CategoryScreen
 import com.appblish.calculatorvault.vault.CategoryState
 import com.appblish.calculatorvault.vault.CategoryViewModel
@@ -324,7 +323,6 @@ fun VaultNavHost() {
                     onRecentClick = { openContent(VaultDestinations.viewer(it.id, it.category)) },
                     onRecycleBinClick = { openContent(VaultDestinations.RECYCLE_BIN) },
                     onSearchClick = { navController.navigate(VaultDestinations.SEARCH) },
-                    onThemeClick = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                     onSettingsClick = { navController.navigate(VaultDestinations.SETTINGS) },
                 )
 
@@ -585,12 +583,12 @@ fun VaultNavHost() {
             }
 
             // Minimal Phase-1 Settings (S22): language, change password, switch app icon,
-            // theme, All Files Access status, hide-from-recents, about.
+            // All Files Access status, hide-from-recents, about. (APP-528 removed the Theme
+            // entry along with the calculator-theming feature.)
             composable(VaultDestinations.SETTINGS) {
                 SettingsScreen(
                     onBack = { navController.popBackStack() },
                     onChangePin = { navController.navigate(VaultDestinations.SETTINGS_CHANGE_PIN) },
-                    onTheme = { navController.navigate(VaultDestinations.SETTINGS_THEME) },
                     onPermissions = { navController.navigate(VaultDestinations.SETTINGS_PERMISSIONS) },
                     onLanguage = { navController.navigate(VaultDestinations.SETTINGS_LANGUAGE) },
                     onPinRecovery = { navController.navigate(VaultDestinations.SETTINGS_PIN_RECOVERY) },
@@ -606,10 +604,6 @@ fun VaultNavHost() {
                     onDone = { navController.popBackStack() },
                     onBack = { navController.popBackStack() },
                 )
-            }
-
-            composable(VaultDestinations.SETTINGS_THEME) {
-                ThemeScreen(onBack = { navController.popBackStack() })
             }
 
             composable(VaultDestinations.SETTINGS_PERMISSIONS) {

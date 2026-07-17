@@ -47,7 +47,6 @@ class OrientationPolicyTest {
             VaultDestinations.RECOVERY_SETUP,
             VaultDestinations.RECOVERY_UNLOCK,
             VaultDestinations.SETTINGS,
-            VaultDestinations.SETTINGS_THEME,
             VaultDestinations.SETTINGS_CHANGE_PIN,
             VaultDestinations.SETTINGS_PERMISSIONS,
             VaultDestinations.SETTINGS_LANGUAGE,

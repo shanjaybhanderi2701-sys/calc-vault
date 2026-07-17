@@ -15,8 +15,6 @@ class SettingsStoreTest {
     fun `defaults match the deck when nothing is stored`() =
         runTest {
             val settings = store().load()
-            assertThat(settings.keypadSkin).isEqualTo(KeypadSkin.GREEN_CLASSIC)
-            assertThat(settings.unlockAnimation).isEqualTo(UnlockAnimation.FADE_IN)
             assertThat(settings.breakInAlertsEnabled).isTrue()
             assertThat(settings.fakePasswordEnabled).isTrue()
             assertThat(settings.preventUninstallEnabled).isFalse()
@@ -34,8 +32,6 @@ class SettingsStoreTest {
             val store = store()
             val saved =
                 VaultSettings(
-                    keypadSkin = KeypadSkin.EMERALD_ROUNDED,
-                    unlockAnimation = UnlockAnimation.SLIDE_LEFT,
                     breakInAlertsEnabled = false,
                     fakePasswordEnabled = false,
                     preventUninstallEnabled = true,
@@ -50,19 +46,11 @@ class SettingsStoreTest {
         }
 
     @Test
-    fun `an unknown persisted skin name falls back to the default`() =
-        runTest {
-            val store = store()
-            store.importRaw(mapOf("keypad_skin" to "NOT_A_SKIN"))
-            assertThat(store.load().keypadSkin).isEqualTo(KeypadSkin.DEFAULT)
-        }
-
-    @Test
     fun `importRaw ignores keys outside the known settings set`() =
         runTest {
             val store = store()
-            store.importRaw(mapOf("keypad_skin" to KeypadSkin.FOREST_DEEP.name, "malicious_key" to "x"))
+            store.importRaw(mapOf("prevent_uninstall" to "true", "malicious_key" to "x"))
             assertThat(store.exportRaw()).doesNotContainKey("malicious_key")
-            assertThat(store.load().keypadSkin).isEqualTo(KeypadSkin.FOREST_DEEP)
+            assertThat(store.load().preventUninstallEnabled).isTrue()
         }
 }

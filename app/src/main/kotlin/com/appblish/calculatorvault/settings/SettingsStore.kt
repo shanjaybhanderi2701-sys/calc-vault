@@ -39,8 +39,6 @@ abstract class BaseSettingsStore : SettingsStore {
 
     override suspend fun load(): VaultSettings =
         VaultSettings(
-            keypadSkin = KeypadSkin.fromNameOrNull(getValue(KEY_SKIN)) ?: KeypadSkin.DEFAULT,
-            unlockAnimation = UnlockAnimation.fromNameOrNull(getValue(KEY_ANIM)) ?: UnlockAnimation.DEFAULT,
             breakInAlertsEnabled = getBool(KEY_BREAKIN, default = true),
             fakePasswordEnabled = getBool(KEY_FAKE_PW, default = true),
             preventUninstallEnabled = getBool(KEY_PREVENT_UNINSTALL, default = false),
@@ -54,8 +52,6 @@ abstract class BaseSettingsStore : SettingsStore {
         )
 
     override suspend fun save(settings: VaultSettings) {
-        setValue(KEY_SKIN, settings.keypadSkin.name)
-        setValue(KEY_ANIM, settings.unlockAnimation.name)
         setValue(KEY_BREAKIN, settings.breakInAlertsEnabled.toString())
         setValue(KEY_FAKE_PW, settings.fakePasswordEnabled.toString())
         setValue(KEY_PREVENT_UNINSTALL, settings.preventUninstallEnabled.toString())
@@ -78,8 +74,6 @@ abstract class BaseSettingsStore : SettingsStore {
     ): Boolean = getValue(key)?.toBooleanStrictOrNull() ?: default
 
     private companion object {
-        const val KEY_SKIN = "keypad_skin"
-        const val KEY_ANIM = "unlock_animation"
         const val KEY_BREAKIN = "breakin_alerts"
         const val KEY_FAKE_PW = "fake_password"
         const val KEY_PREVENT_UNINSTALL = "prevent_uninstall"
@@ -93,8 +87,6 @@ abstract class BaseSettingsStore : SettingsStore {
 
         val KNOWN_KEYS =
             setOf(
-                KEY_SKIN,
-                KEY_ANIM,
                 KEY_BREAKIN,
                 KEY_FAKE_PW,
                 KEY_PREVENT_UNINSTALL,

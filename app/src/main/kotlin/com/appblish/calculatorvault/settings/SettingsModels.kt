@@ -1,82 +1,15 @@
 package com.appblish.calculatorvault.settings
 
-import androidx.compose.ui.graphics.Color
-
 // Personalization + protection state surfaced on the Settings screens (Phase 5). This is the
 // non-secret configuration layer that sits alongside the auth-package credential secrets: it
-// decides how the disguise keypad looks, which unlock animation plays, and which hardening
-// switches are armed. Persisted through SettingsStore.
+// decides which hardening switches are armed. Persisted through SettingsStore. (APP-528
+// removed the calculator-theming layer — keypad skin + unlock animation — entirely.)
 
 /**
- * A keypad skin for the calculator disguise. Only the accent *tone* and [keyShape] change —
- * the layout, digits, and secret-unlock behaviour stay identical so the cover never looks
- * like anything other than a calculator. Per the standing board rule the accent stays a
- * single **green** identity hue on every screen; skins vary the green tone and key
- * silhouette only, never introducing a competing colour.
- */
-enum class KeypadSkin(
-    val displayName: String,
-    val accent: Color,
-    val keyShape: KeySkinShape,
-) {
-    /** The default deck skin: vivid green, circular keys. */
-    GREEN_CLASSIC("Classic Green", Color(0xFF22C55E), KeySkinShape.CIRCLE),
-
-    /** Deeper emerald green, rounded-square keys. */
-    EMERALD_ROUNDED("Emerald", Color(0xFF16A34A), KeySkinShape.ROUNDED),
-
-    /** Darkest forest green — the most inconspicuous, rounded-square keys. */
-    FOREST_DEEP("Forest", Color(0xFF15803D), KeySkinShape.ROUNDED),
-
-    /** Bright lime green, circular keys. */
-    LIME_BRIGHT("Lime", Color(0xFF4ADE80), KeySkinShape.CIRCLE),
-    ;
-
-    companion object {
-        val DEFAULT = GREEN_CLASSIC
-
-        fun fromNameOrNull(name: String?): KeypadSkin? = entries.firstOrNull { it.name == name }
-    }
-}
-
-/** Key silhouette for a [KeypadSkin]. */
-enum class KeySkinShape {
-    CIRCLE,
-    ROUNDED,
-}
-
-/**
- * The transition played when a correct PIN opens a vault. Cosmetic only; the resolve
- * decision has already been made by [com.appblish.calculatorvault.auth.CredentialStore].
- * The six named options match the deck's Theme → *Unlock animation* list exactly — four
- * directional slides plus fade-in/fade-out. No option is invented outside the deck.
- */
-enum class UnlockAnimation(
-    val displayName: String,
-    val description: String,
-) {
-    SLIDE_TOP("Slide Top", "The vault slides up from the bottom of the screen."),
-    SLIDE_DOWN("Slide Down", "The vault drops in from the top of the screen."),
-    SLIDE_RIGHT("Slide Right", "The vault slides in from the left edge."),
-    SLIDE_LEFT("Slide Left", "The vault slides in from the right edge."),
-    FADE_IN("Fade In", "The vault fades gently into view."),
-    FADE_OUT("Fade Out", "The calculator fades out as the vault appears."),
-    ;
-
-    companion object {
-        val DEFAULT = FADE_IN
-
-        fun fromNameOrNull(name: String?): UnlockAnimation? = entries.firstOrNull { it.name == name }
-    }
-}
-
-/**
- * The full snapshot of user settings. Immutable value read by the Settings/Theme screens
- * and by the calculator disguise (for the live skin). Defaults match the board deck.
+ * The full snapshot of user settings. Immutable value read by the Settings screens. Defaults
+ * match the board deck.
  */
 data class VaultSettings(
-    val keypadSkin: KeypadSkin = KeypadSkin.DEFAULT,
-    val unlockAnimation: UnlockAnimation = UnlockAnimation.DEFAULT,
     /** Capture a front-camera intruder selfie after repeated wrong PINs. */
     val breakInAlertsEnabled: Boolean = true,
     /** Offer decoy (fake) PIN spaces under duress. */

@@ -29,15 +29,14 @@ class OnboardingViewModelTest {
     @After fun tearDown() = Dispatchers.resetMain()
 
     @Test
-    fun `wizard has no permission wall or recovery step`() {
-        // The whole ordered wizard, in order: language, the two PIN steps, two intro cards.
+    fun `wizard has no permission wall, recovery step, or intro carousel`() {
+        // The whole ordered wizard, in order: language then the two PIN steps. APP-528 removed
+        // the trailing 2-page intro viewpager, so confirming the PIN ends onboarding outright.
         assertThat(OnboardingStep.entries)
             .containsExactly(
                 OnboardingStep.LANGUAGE,
                 OnboardingStep.CREATE_PIN,
                 OnboardingStep.CONFIRM_PIN,
-                OnboardingStep.INTRO_PRIVATE,
-                OnboardingStep.INTRO_ICONS,
             ).inOrder()
     }
 
@@ -106,7 +105,7 @@ class OnboardingViewModelTest {
         }
 
     @Test
-    fun `confirming the PIN persists it and skips straight to the intro cards`() =
+    fun `confirming the PIN persists it and finishes onboarding straight away`() =
         runTest(dispatcher) {
             val store = InMemoryCredentialStore()
             val vm = OnboardingViewModel(store, saveLanguage = {})
@@ -116,8 +115,11 @@ class OnboardingViewModelTest {
             vm.onPinConfirmed("1234")
             dispatcher.scheduler.advanceUntilIdle()
 
-            // Straight to the intro cards — no recovery step in between (none exists in Phase 1).
-            assertThat(vm.state.value.step).isEqualTo(OnboardingStep.INTRO_PRIVATE)
+            // APP-528: no intro carousel — confirming the PIN completes onboarding and the host
+            // opens the vault. The final draft PIN is carried on the state for that hand-off.
+            assertThat(vm.state.value.finished).isTrue()
+            assertThat(vm.state.value.pinDraft).isEqualTo("1234")
+            assertThat(store.isOnboarded()).isTrue()
             // The real PIN is set and nothing recovery-related is captured during onboarding.
             assertThat(store.resolve("1234")).isEqualTo(VaultKind.Real)
             assertThat(store.recoveryInfo()).isNull()
