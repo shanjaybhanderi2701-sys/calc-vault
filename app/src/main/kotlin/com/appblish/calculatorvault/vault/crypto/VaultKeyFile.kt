@@ -87,7 +87,14 @@ class VaultKeyFile(
     /** True once BOTH recovery wraps (security answer + recovery code) are configured. */
     fun isRecoveryConfigured(): Boolean {
         if (!file.exists()) return false
-        val slots = readSlots()
+        // Under scoped storage the `.vaultkey` can stat-`exists()` yet be **unreadable**: with no
+        // MANAGE_EXTERNAL_STORAGE grant, the subsequent open/read fails with EACCES (surfaced as an
+        // IOException). `exists()` is therefore not a proxy for readability. This is a read-only
+        // "is it configured?" query on a common permission state (fresh install before the
+        // All-Files-Access grant, or after a revoke), so an unreadable envelope must degrade to
+        // "not configured" rather than propagate out of the IO coroutine and crash the app
+        // (APP-574).
+        val slots = readSlotsOrNull() ?: return false
         return slots.containsKey(WrapKind.SECURITY_ANSWER) && slots.containsKey(WrapKind.RECOVERY_CODE)
     }
 
@@ -230,6 +237,22 @@ class VaultKeyFile(
         cipher.init(Cipher.ENCRYPT_MODE, kek, GCMParameterSpec(TAG_BITS, iv))
         return WrapSlot(kind, ITERATIONS, salt, iv, cipher.doFinal(dek.encoded))
     }
+
+    /**
+     * [readSlots] for read-only "is it configured?" queries that must never crash the app: returns
+     * `null` when the envelope cannot be read at all — absent, or (the APP-574 case) present-but-
+     * unreadable because MANAGE_EXTERNAL_STORAGE is not granted, which surfaces the underlying
+     * `EACCES`/`ErrnoException` as an [IOException] (or, on some paths, a [SecurityException]).
+     * Malformed-content failures are intentionally NOT swallowed here — those stay loud.
+     */
+    private fun readSlotsOrNull(): Map<WrapKind, WrapSlot>? =
+        try {
+            readSlots()
+        } catch (e: IOException) {
+            null
+        } catch (e: SecurityException) {
+            null
+        }
 
     /** Parse the key file into wrap slots, reading either the v2 or the legacy v1 format. */
     private fun readSlots(): Map<WrapKind, WrapSlot> {
