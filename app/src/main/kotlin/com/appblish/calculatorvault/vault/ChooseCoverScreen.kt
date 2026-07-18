@@ -160,14 +160,14 @@ private fun CoverCandidateTile(
                         .fillMaxSize()
                         .border(
                             width = VaultGridTokens.CoverRingWidth,
-                            color = VaultGridTokens.CoverRingColor,
+                            color = colors.accent,
                             shape = VaultTheme.shapes.thumbnail,
                         ),
             )
             Icon(
                 imageVector = Icons.Filled.Check,
                 contentDescription = "Selected",
-                tint = VaultGridTokens.CoverRingColor,
+                tint = colors.accent,
                 modifier = Modifier.align(Alignment.TopStart).padding(spacing.xs).size(20.dp),
             )
         }

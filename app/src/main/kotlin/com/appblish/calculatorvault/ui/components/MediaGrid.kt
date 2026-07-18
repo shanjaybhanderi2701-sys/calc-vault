@@ -187,7 +187,7 @@ private fun MediaThumbnail(
                 modifier =
                     Modifier
                         .fillMaxSize()
-                        .background(colors.accent.copy(alpha = 0.18f)),
+                        .background(colors.accentContainer),
             )
         }
     }

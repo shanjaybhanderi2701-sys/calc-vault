@@ -133,14 +133,14 @@ private fun DirectionToggle(
             Text(
                 text = direction.label,
                 style = VaultTheme.typography.labelLarge,
-                color = if (selected) VaultGridTokens.SegmentedSelectedLabel else colors.textSecondary,
+                color = if (selected) colors.accent else colors.textSecondary,
                 textAlign = TextAlign.Center,
                 modifier =
                     Modifier
                         .weight(1f)
                         .clip(VaultTheme.shapes.card)
                         .background(
-                            if (selected) VaultGridTokens.SegmentedSelectedContainer else colors.surfaceVariant,
+                            if (selected) colors.accentContainer else colors.surfaceVariant,
                         ).clickable { onSelect(direction) }
                         .padding(vertical = 10.dp)
                         .testTag("sort-direction-${direction.name}"),

@@ -13,22 +13,20 @@ import androidx.compose.ui.unit.dp
  * token *names* live here; surfaces reference them, never literals.
  */
 object VaultGridTokens {
-    // album.pinBadge — filled pin glyph 14dp on a 24dp circle, Primary glyph on
-    // Primary-container, top-END of the album cover (top-start belongs to select.check;
-    // the two never collide on a selected pinned tile).
+    // album.pinBadge — filled pin glyph 14dp on a 24dp circle. The badge sits at the
+    // top-END of the album cover (top-start belongs to select.check; the two never
+    // collide on a selected pinned tile). Colors are the live accent token, not a
+    // literal hue — glyph = `colors.accent` on `colors.accentContainer` (spec A3).
     val PinBadgeSize = 24.dp
     val PinBadgeGlyphSize = 14.dp
-    val PinBadgeGlyph = Color(0xFF2563EB)
-    val PinBadgeContainer = Color(0xFFDCE7FF)
 
-    // cover.selectRing — Primary 2dp ring inside the chosen tile's bounds (§6).
-    val CoverRingColor = Color(0xFF2563EB)
+    // cover.selectRing — accent 2dp ring inside the chosen tile's bounds (spec A3/§6);
+    // the ring color is `colors.accent` at the call site.
     val CoverRingWidth = 2.dp
 
-    // control.segmented — the sort sheet's Ascending/Descending pill (§7).
+    // control.segmented — the sort sheet's Ascending/Descending pill (§7). Selected
+    // container = `colors.accentContainer`, label = `colors.accent` (spec B2).
     val SegmentedHeight = 40.dp
-    val SegmentedSelectedContainer = Color(0xFFDCE7FF)
-    val SegmentedSelectedLabel = Color(0xFF0A245F)
 
     // sort.sheet radio rows / viewer.moreMenu items — 48dp minimum touch height.
     val MenuRowHeight = 48.dp

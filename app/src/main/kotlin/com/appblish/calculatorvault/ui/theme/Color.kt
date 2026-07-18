@@ -43,6 +43,8 @@ private val TextDisabledLight = Color(0xFFA0A4AA)
 data class VaultColors(
     val accent: Color,
     val accentPressed: Color,
+    /** Accent @12% — the single selection/active container fill used everywhere (spec §C). */
+    val accentContainer: Color,
     val onAccent: Color,
     val destructive: Color,
     val onDestructive: Color,
@@ -68,6 +70,7 @@ fun vaultColors(
     VaultColors(
         accent = accent.swatch,
         accentPressed = accent.pressed,
+        accentContainer = accent.swatch.copy(alpha = 0.12f),
         onAccent = accent.onInk,
         destructive = DestructiveRed,
         onDestructive = OnDestructive,
