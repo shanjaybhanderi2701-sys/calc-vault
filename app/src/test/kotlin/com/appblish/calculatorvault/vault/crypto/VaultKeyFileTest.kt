@@ -73,6 +73,28 @@ class VaultKeyFileTest {
     }
 
     @Test
+    fun `isRecoveryConfigured returns false and does not throw when the key file is unreadable`() {
+        // Reproduce the APP-574 permission state: the `.vaultkey` path stat-`exists()` but reading
+        // it fails (EACCES under scoped storage with no MANAGE_EXTERNAL_STORAGE). A directory at the
+        // path is the pure-JVM stand-in — `exists()` is true, yet `readText()` throws IOException,
+        // exactly as the on-device EACCES does. The query must degrade to "not configured", never
+        // let the IOException escape and crash the app.
+        val path = File(tmp.newFolder(".CalcVault"), ".vaultkey")
+        assertThat(path.mkdir()).isTrue()
+        assertThat(path.exists()).isTrue()
+
+        assertThat(VaultKeyFile(path).isRecoveryConfigured()).isFalse()
+    }
+
+    @Test
+    fun `isRecoveryConfigured returns false when the key file is absent`() {
+        val path = File(tmp.newFolder(".CalcVault"), ".vaultkey")
+        assertThat(path.exists()).isFalse()
+
+        assertThat(VaultKeyFile(path).isRecoveryConfigured()).isFalse()
+    }
+
+    @Test
     fun `key file never contains the raw data key`() {
         val file = keyFile()
         val dek = VaultKeyFile(file).unlockOrCreate("1234")
